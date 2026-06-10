@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/svg+xml" href="/agent-team/deep-agent-logo.svg" />
+    <link rel="alternate icon" type="image/png" href="/agent-team/favicon.png" />
+    <link rel="apple-touch-icon" href="/agent-team/deep-agent-logo.png" />
+    <meta name="theme-color" content="#0747A6" />
+    <!-- Atlassian Sans/Mono are self-hosted in /fonts (declared in index.css). -->
+    <link
+      rel="preload"
+      href="/agent-team/fonts/AtlassianSans-latin.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link
+      rel="preload"
+      href="/agent-team/fonts/AtlassianSans-vietnamese.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <title>Agent Team</title>
+    <script>
+      // Apply the persisted theme before first paint (no flash). Light default
+      // (Jira is a light-first product); dark mode is opt-in and persisted.
+      (function () {
+        try {
+          var t = localStorage.getItem("da.theme");
+          document.documentElement.classList.toggle("dark", t === "dark");
+        } catch (e) {}
+      })();
+    </script>
+    <script type="module" crossorigin src="/agent-team/assets/index-CoEKGn1h.js"></script>
+    <link rel="stylesheet" crossorigin href="/agent-team/assets/index-CPAgHcTW.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
