@@ -17,7 +17,10 @@ from agent_team.features.board.board_events import get_board_bus
 from agent_team.features.board.models import AgentTeamRun
 from agent_team.features.board.repositories import activity as activity_repo
 from agent_team.features.board.repositories.comments import list_comments
-from agent_team.features.board.repositories.runs import get_run
+from agent_team.features.board.repositories.runs import (
+    get_run,
+    list_runs_for_conversation,
+)
 from agent_team.features.board.repositories.tasks import get_task
 from agent_team.features.board.runtime import event_store, registry
 from agent_team.features.board.runtime import events as ev
@@ -214,17 +217,23 @@ class LocalRunBackend:
         await _cancel_ai_coding(thread_id)
 
 
-def _load_task_notes(db, task_id: str) -> list[dict]:
+def _load_task_notes(db, task_id: str, *, since=None) -> list[dict]:
     """Return the task's notes as ``{author, body, attachments}`` dicts.
 
     Author display names are resolved in a single query (id → name) so the agent
     sees which user left each note. Soft-deleted notes are already excluded by
     ``list_comments``; people-only notes (``visible_to_agents=False``) are
     filtered here so they never reach the agent's context.
+
+    When ``since`` is given, only notes created strictly after that time are
+    returned — used on follow-up turns to send just the new notes (the earlier
+    ones are already in the thread history).
     """
     from core.database.models import User
 
     comments = [c for c in list_comments(db, task_id) if c.visible_to_agents]
+    if since is not None:
+        comments = [c for c in comments if c.created_at and c.created_at > since]
     author_ids = {c.author_id for c in comments if c.author_id}
     names: dict[str, str] = {}
     if author_ids:
@@ -246,6 +255,23 @@ def _load_task_notes(db, task_id: str) -> list[dict]:
     ]
 
 
+def _previous_run(db, run: AgentTeamRun) -> AgentTeamRun | None:
+    """The run immediately before ``run`` in the same conversation, if any.
+
+    A conversation maps 1:1 to a checkpointer thread, so "no previous run" means
+    this is the thread's first turn (or the thread was just reset). That is the
+    boundary we use to decide full vs. delta context.
+    """
+    if not run.conversation_id:
+        return None
+    prev: AgentTeamRun | None = None
+    for r in list_runs_for_conversation(db, run.conversation_id):
+        if r.id == run.id:
+            break
+        prev = r
+    return prev
+
+
 def _load_run_context(run_id: str) -> dict | None:
     """Load the run + task, ensure the workspace, and build the agent input."""
     db = SessionLocal()
@@ -257,11 +283,28 @@ def _load_run_context(run_id: str) -> dict | None:
         if task is None:
             return None
         prepare_workspace(task)
-        notes = _load_task_notes(db, run.task_id)
+        # First turn of the thread → full context; otherwise send only the delta
+        # (new notes / changed description) so the prompt cache reuses the prior
+        # prefix instead of re-billing the whole task context every turn.
+        prior = _previous_run(db, run)
+        full = prior is None
+        since = prior.created_at if prior is not None else None
+        notes = _load_task_notes(db, run.task_id, since=since)
+        include_description = full or (
+            since is not None
+            and task.updated_at is not None
+            and task.updated_at > since
+        )
         return {
             "agent_alias": run.agent_alias,
             "thread_id": run.thread_id,
-            "input_text": build_task_context(task, run.prompt, notes=notes),
+            "input_text": build_task_context(
+                task,
+                run.prompt,
+                notes=notes,
+                full=full,
+                include_description=include_description,
+            ),
             "task_id": run.task_id,
             "board_id": task.board_id,
             "workspace_path": task.workspace_path,

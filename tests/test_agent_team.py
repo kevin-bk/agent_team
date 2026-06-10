@@ -1227,6 +1227,61 @@ def test_comments_agent_visibility(db):
     ]
 
 
+def test_run_context_first_turn_full_then_delta(db):
+    """First run gets full context; a later run only sees notes added since."""
+    from datetime import UTC, datetime, timedelta
+
+    from agent_team.features.board.repositories import comments as comments_repo
+    from agent_team.features.board.repositories import conversations as conv_repo
+    from agent_team.features.board.repositories import runs as runs_repo
+    from agent_team.features.board.runtime.local_backend import (
+        _load_task_notes,
+        _previous_run,
+    )
+
+    task = _make_task(db)
+    conv = conv_repo.get_or_create_active_conversation(
+        db, task_id=task.id, agent_alias="alice"
+    )
+
+    def _run(prompt: str):
+        return runs_repo.create_run(
+            db, task_id=task.id, conversation=conv, agent_alias="alice",
+            trigger="mention", actor_id=None, prompt=prompt,
+        )
+
+    pre_note = comments_repo.create_comment(
+        db, task_id=task.id, author_id=None, body="pre", attachments=None
+    )
+    run1 = _run("first")
+    mid_note = comments_repo.create_comment(
+        db, task_id=task.id, author_id=None, body="mid", attachments=None
+    )
+    run2 = _run("second")
+
+    base = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
+    pre_note.created_at = base - timedelta(minutes=5)
+    run1.created_at = base
+    mid_note.created_at = base + timedelta(minutes=5)
+    run2.created_at = base + timedelta(minutes=10)
+    db.commit()
+    db.expire_all()
+
+    run1 = runs_repo.get_run(db, run1.id)
+    run2 = runs_repo.get_run(db, run2.id)
+
+    # First turn of the thread has no predecessor → full context is used.
+    assert _previous_run(db, run1) is None
+    # The second turn's predecessor is run1; its created_at is the delta boundary.
+    assert _previous_run(db, run2).id == run1.id
+
+    # Delta for run2 = only notes added after run1's turn (pre-note excluded).
+    since = run1.created_at
+    assert [n["body"] for n in _load_task_notes(db, task.id, since=since)] == ["mid"]
+    # No boundary (first turn) → every visible note is included.
+    assert [n["body"] for n in _load_task_notes(db, task.id)] == ["pre", "mid"]
+
+
 def test_activity_record_and_list_newest_first(db):
     from agent_team.features.board.repositories import activity as activity_repo
 
@@ -1654,3 +1709,37 @@ def test_build_task_context_without_notes_has_no_notes_block():
     # Notes with neither body nor usable attachments add nothing.
     empty = [{"body": "", "attachments": [{"filename": "x"}]}]
     assert "User notes" not in build_task_context(_fake_task(), "Go.", notes=empty)
+
+
+def test_build_task_context_delta_turn_omits_repeated_header():
+    """A follow-up turn sends only the delta (new notes / changed description)."""
+    from agent_team.features.board.runtime.context import build_task_context
+
+    new_notes = [
+        {"author": "carol", "created_at": "2026-06-10 09:00 UTC",
+         "body": "One more thing.", "attachments": []},
+    ]
+    text = build_task_context(
+        _fake_task(), "Continue.", notes=new_notes, full=False, include_description=True
+    )
+    # The header/description/workspace are NOT re-sent (they're in history).
+    assert "Task T-7: Build the importer" not in text
+    assert "Shared workspace folder" not in text
+    # Delta notes use the "new notes" framing and the prompt is present.
+    assert "New notes added since the last message" in text
+    assert "One more thing." in text
+    assert text.rstrip().endswith("Continue.")
+    # Description is only re-sent (with an "updated" marker) when flagged changed.
+    assert "The task description was updated:" in text
+
+
+def test_build_task_context_delta_pure_prompt_is_prompt_only():
+    """When nothing changed, only the prompt is sent so the cache prefix is reused."""
+    from agent_team.features.board.runtime.context import build_task_context
+
+    text = build_task_context(
+        _fake_task(), "Just this.", notes=[], full=False, include_description=False
+    )
+    assert text == "Just this."
+    assert "Task T-7" not in text
+    assert "--- User's current message ---" not in text
