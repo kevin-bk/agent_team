@@ -97,6 +97,7 @@ import { FileViewerModal } from "./cockpit/FileViewerModal";
 import { NoteEditor } from "./cockpit/NoteEditor";
 import { RunChanges, changedFileCount } from "./cockpit/RunChanges";
 import { ARTIFACT_DND_TYPE, TaskFiles } from "./cockpit/TaskFiles";
+import { TaskRepoCard } from "./cockpit/TaskRepoCard";
 import { PRIORITY_META, PRIORITY_ORDER, PriorityIcon } from "./priority";
 import { SelectMenu } from "@/components/ui/select-menu";
 import { statusColor } from "./statusColor";
@@ -487,6 +488,11 @@ export function TaskCockpit({
               task={task}
               canEdit={canEdit}
               onClose={() => setArtifactsOpen(false)}
+            />
+            <TaskRepoCard
+              taskId={task.id}
+              canEdit={canEdit}
+              onOpenPath={setFilePath}
             />
             <div className="flex items-center gap-2 border-y border-border px-4 py-2.5">
               <FolderGit2 className="h-3.5 w-3.5 text-muted-foreground" />

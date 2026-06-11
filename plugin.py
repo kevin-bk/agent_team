@@ -51,6 +51,10 @@ class AgentTeamPlugin(PluginBase):
             AgentTeamRunEvent,
             AgentTeamTask,
         )
+        from agent_team.features.repos.models import (
+            AgentTeamBoardRepo,
+            AgentTeamRepo,
+        )
 
         return [
             AgentTeamKeySeq,
@@ -62,13 +66,16 @@ class AgentTeamPlugin(PluginBase):
             AgentTeamRunEvent,
             AgentTeamComment,
             AgentTeamActivity,
+            AgentTeamRepo,
+            AgentTeamBoardRepo,
         ]
 
     def routers(self) -> list[APIRouter]:
         from agent_team.features.board.router import router as board_router
+        from agent_team.features.repos.router import router as repos_router
         from agent_team.router import router as platform_router
 
-        return [platform_router, board_router]
+        return [platform_router, board_router, repos_router]
 
     def tool_factories(self) -> list[ToolFactory]:
         # Only registered (and therefore offered to agents) while this plugin is
@@ -84,7 +91,19 @@ class AgentTeamPlugin(PluginBase):
                 category="agent_team",
                 default_enabled=True,
                 create_tools=_create_view_image_tools,
-            )
+            ),
+            ToolFactory(
+                key="enable_agent_team_git_push",
+                display_name="Git Push",
+                description=(
+                    "Let the agent push a board repo's task working copy to its "
+                    "remote using the repo's stored credentials. Push is still "
+                    "gated per-repo by the admin's allow-push policy."
+                ),
+                category="agent_team",
+                default_enabled=True,
+                create_tools=_create_git_tools,
+            ),
         ]
 
     def asgi_apps(self) -> list[PluginAsgiApp]:
@@ -126,8 +145,36 @@ class AgentTeamPlugin(PluginBase):
                 "agent_team: marked %d orphaned run(s) as error on startup", recovered
             )
 
+        # Start the in-process scheduled-pull ticker for board repositories.
+        try:
+            from agent_team.features.repos.scheduler import start_ticker
+
+            start_ticker()
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "agent_team: failed to start repo pull ticker"
+            )
+
+    def on_shutdown(self) -> None:
+        try:
+            from agent_team.features.repos.scheduler import stop_ticker
+
+            stop_ticker()
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).exception(
+                "agent_team: failed to stop repo pull ticker"
+            )
+
 
 def _create_view_image_tools(agent_alias: str, settings: dict[str, str]) -> list:
     from agent_team.features.board.runtime.image_tools import get_image_tools
 
     return get_image_tools(agent_alias, settings)
+
+
+def _create_git_tools(agent_alias: str, settings: dict[str, str]) -> list:
+    from agent_team.features.board.runtime.git_tools import get_git_tools
+
+    return get_git_tools(agent_alias, settings)

@@ -6,7 +6,7 @@ import { SessionList } from "@/features/sessions/SessionList";
 import { cn } from "@/lib/utils";
 import { ProfilePicker } from "./ProfilePicker";
 
-export type View = "board" | "chat";
+export type View = "board" | "chat" | "repos";
 
 /**
  * The contextual project sidebar that sits between the deep-blue {@link NavRail}
@@ -28,7 +28,8 @@ export function Sidebar({
   onSelectConv: (id: string) => void;
   collapsed: boolean;
 }) {
-  if (collapsed) return null;
+  // The repositories page is full-width and needs no contextual sidebar.
+  if (collapsed || view === "repos") return null;
 
   return (
     <aside className="flex h-full w-60 shrink-0 flex-col border-r border-border bg-surface-1">

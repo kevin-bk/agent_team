@@ -58,6 +58,34 @@ def _format_notes(notes: Sequence[dict] | None, *, new_only: bool = False) -> st
     return "\n".join(out) if len(out) > 1 else ""
 
 
+def _format_repos(repos: Sequence[dict] | None) -> str:
+    """Render the task's checked-out code repos as a context block, or ""."""
+    items = [r for r in (repos or []) if r.get("path")]
+    if not items:
+        return ""
+    out = [
+        "Code repositories checked out in this workspace (each is an independent "
+        "git clone you can read, edit, build, and commit in — paths are relative "
+        "to the shared workspace folder). Each is already on its own task branch; "
+        "commit your work there, do not switch to the default branch:"
+    ]
+    pushable = False
+    for repo in items:
+        branch = (repo.get("branch") or "").strip()
+        suffix = f" (branch {branch})" if branch else ""
+        if repo.get("can_push"):
+            suffix += " — push enabled"
+            pushable = True
+        out.append(f"- `{repo['path']}/`{suffix}")
+    if pushable:
+        out.append(
+            "To publish commits to a repo's remote, use the `git_push` tool "
+            "(it pushes with managed credentials — you don't need a token). "
+            "Plain `git push` will not reach the remote."
+        )
+    return "\n".join(out)
+
+
 def build_task_context(
     task: AgentTeamTask,
     prompt: str,
@@ -65,6 +93,7 @@ def build_task_context(
     *,
     full: bool = True,
     include_description: bool = True,
+    repos: Sequence[dict] | None = None,
 ) -> str:
     """Return the user-message text for one run (turn).
 
@@ -89,6 +118,10 @@ def build_task_context(
             header.append(task.description.strip())
         header.append("")
         header.append(f"Shared workspace folder: {task.workspace_path}")
+        repo_block = _format_repos(repos)
+        if repo_block:
+            header.append("")
+            header.append(repo_block)
         sections.append("\n".join(header))
     elif include_description and task.description:
         sections.append("The task description was updated:\n\n" + task.description.strip())

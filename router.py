@@ -14,7 +14,7 @@ router = APIRouter(prefix=API_PREFIX, tags=["agent-team"])
 
 def _is_admin(user) -> bool:
     role = getattr(user.role, "value", user.role)
-    return str(role).lower() == "admin"
+    return str(role).lower() in {"admin", "super_admin"}
 
 
 @router.get("/me")

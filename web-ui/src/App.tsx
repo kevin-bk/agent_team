@@ -18,12 +18,14 @@ import { useTheme } from "@/lib/useTheme";
 import { BoardView } from "@/features/board/BoardView";
 import { BoardsView } from "@/features/board/BoardsView";
 import { ChatView } from "@/features/chat/ChatView";
+import { ReposPage } from "@/features/repos/ReposPage";
 
 const LS_PROFILE = "da.profile";
 const LS_COLLAPSED = "da.sidebar.collapsed";
 
 function viewFromPath(pathname: string): View {
   if (pathname.startsWith("/chat")) return "chat";
+  if (pathname.startsWith("/repositories")) return "repos";
   return "board";
 }
 
@@ -68,6 +70,7 @@ function Shell() {
 
   const goToView = (v: View) => {
     if (v === "board") navigate("/boards");
+    else if (v === "repos") navigate("/repositories");
     else navigate(`/${v}`);
   };
 
@@ -146,6 +149,7 @@ export function App() {
           <Route path="boards/:boardSlug/tasks/:taskKey" element={<BoardRoute />} />
           <Route path="chat" element={<ChatRoute />} />
           <Route path="chat/:convId" element={<ChatRoute />} />
+          <Route path="repositories" element={<ReposPage />} />
           <Route path="*" element={<Navigate to="/boards" replace />} />
         </Route>
       </Routes>

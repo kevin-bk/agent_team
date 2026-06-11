@@ -504,6 +504,110 @@ export interface TaskActivityDTO {
   created_at: string;
 }
 
+// ── Code repositories (board repos) ─────────────────────────────────
+
+export type RepoAuthType = "none" | "token" | "ssh";
+export type RepoScheduleMode = "off" | "interval" | "cron";
+export type RepoCloneStatus = "absent" | "cloning" | "cloned" | "error";
+
+export interface RepoDTO {
+  id: string;
+  owner_id: string | null;
+  name: string;
+  slug: string;
+  git_url: string;
+  default_branch: string | null;
+  auth_type: RepoAuthType;
+  auth_username: string | null;
+  /** True when a credential is stored — the secret itself is never returned. */
+  has_secret: boolean;
+  schedule_mode: RepoScheduleMode;
+  schedule_interval_seconds: number;
+  schedule_cron: string | null;
+  /** Whether agents may push this repo (the git_push tool). */
+  allow_push: boolean;
+  committer_name: string | null;
+  committer_email: string | null;
+  clone_status: RepoCloneStatus;
+  last_synced_at: string | null;
+  last_sync_status: string | null;
+  last_sync_error: string | null;
+  next_pull_at: string | null;
+  used_by_boards: number;
+  archived: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface RepoCreateBody {
+  name: string;
+  git_url: string;
+  default_branch?: string | null;
+  auth_type?: RepoAuthType;
+  auth_username?: string | null;
+  auth_secret?: string | null;
+  schedule_mode?: RepoScheduleMode;
+  schedule_interval_seconds?: number;
+  schedule_cron?: string | null;
+  allow_push?: boolean;
+  committer_name?: string | null;
+  committer_email?: string | null;
+}
+
+export interface RepoUpdateBody {
+  name?: string;
+  git_url?: string;
+  default_branch?: string | null;
+  auth_type?: RepoAuthType;
+  auth_username?: string | null;
+  /** Omit to keep the stored secret; send "" to clear it. */
+  auth_secret?: string | null;
+  schedule_mode?: RepoScheduleMode;
+  schedule_interval_seconds?: number;
+  schedule_cron?: string | null;
+  allow_push?: boolean;
+  committer_name?: string | null;
+  committer_email?: string | null;
+  archived?: boolean;
+}
+
+export interface BoardRepoDTO {
+  repo: RepoDTO;
+  branch_override: string | null;
+  /** This board's push opt-in (effective push also needs repo.allow_push). */
+  allow_push: boolean;
+}
+
+export interface BoardReposResponse {
+  assigned: BoardRepoDTO[];
+  available: RepoDTO[];
+}
+
+export interface RepoSyncResult {
+  ok: boolean;
+  action: string;
+  message: string;
+  repo: RepoDTO | null;
+}
+
+export interface TaskRepoDir {
+  slug: string;
+  /** Path relative to the task workspace. */
+  path: string;
+  /** True when the working copy exists in the task folder. */
+  present: boolean;
+}
+
+export interface RepoStatusDTO {
+  repo_id: string;
+  is_git: boolean;
+  branch?: string | null;
+  last_commit?: string | null;
+  behind?: number | null;
+  ahead?: number | null;
+  error?: string | null;
+}
+
 export class ApiError extends Error {
   constructor(
     public status: number,

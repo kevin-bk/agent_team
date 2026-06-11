@@ -283,6 +283,15 @@ def _load_run_context(run_id: str) -> dict | None:
         if task is None:
             return None
         prepare_workspace(task)
+        # Lazily materialise per-task working copies of the board's repos so the
+        # agent can code in them. Failures here must not abort the run.
+        repos: list[dict] = []
+        try:
+            from agent_team.features.repos.task_copy import prepare_task_repos
+
+            repos = prepare_task_repos(db, task)
+        except Exception:
+            logger.exception("agent_team: failed to prepare task repos for %s", task.id)
         # First turn of the thread → full context; otherwise send only the delta
         # (new notes / changed description) so the prompt cache reuses the prior
         # prefix instead of re-billing the whole task context every turn.
@@ -304,6 +313,7 @@ def _load_run_context(run_id: str) -> dict | None:
                 notes=notes,
                 full=full,
                 include_description=include_description,
+                repos=repos,
             ),
             "task_id": run.task_id,
             "board_id": task.board_id,

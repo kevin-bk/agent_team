@@ -24,6 +24,14 @@ import {
   type PatchTaskBody,
   type PlanDTO,
   type ProfileDTO,
+  type BoardRepoDTO,
+  type BoardReposResponse,
+  type RepoCreateBody,
+  type RepoDTO,
+  type RepoStatusDTO,
+  type RepoSyncResult,
+  type RepoUpdateBody,
+  type TaskRepoDir,
   type SearchHit,
   type TaskActivityDTO,
   type CommentAttachment,
@@ -485,6 +493,74 @@ export class ApiClient {
   taskWorkspaceFileRawUrl(taskId: string, path: string) {
     const q = new URLSearchParams({ path });
     return apiUrl(`/api/tasks/${taskId}/files/raw?${q}`);
+  }
+
+  // ── code repositories ────────────────────────────────────────────
+  listRepos() {
+    return this.request<RepoDTO[]>("/api/repos");
+  }
+  createRepo(body: RepoCreateBody) {
+    return this.request<RepoDTO>("/api/repos", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+  patchRepo(repoId: string, body: RepoUpdateBody) {
+    return this.request<RepoDTO>(`/api/repos/${repoId}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    });
+  }
+  deleteRepo(repoId: string) {
+    return this.request<{ ok: boolean }>(`/api/repos/${repoId}`, {
+      method: "DELETE",
+    });
+  }
+  cloneRepo(repoId: string) {
+    return this.request<RepoSyncResult>(`/api/repos/${repoId}/clone`, {
+      method: "POST",
+    });
+  }
+  pullRepo(repoId: string) {
+    return this.request<RepoSyncResult>(`/api/repos/${repoId}/pull`, {
+      method: "POST",
+    });
+  }
+  repoStatus(repoId: string) {
+    return this.request<RepoStatusDTO>(`/api/repos/${repoId}/status`);
+  }
+  listBoardRepos(boardId: string) {
+    return this.request<BoardReposResponse>(`/api/boards/${boardId}/repos`);
+  }
+  assignBoardRepo(
+    boardId: string,
+    repoId: string,
+    branchOverride?: string | null,
+    allowPush?: boolean,
+  ) {
+    return this.request<BoardRepoDTO>(`/api/boards/${boardId}/repos`, {
+      method: "POST",
+      body: JSON.stringify({
+        repo_id: repoId,
+        branch_override: branchOverride ?? null,
+        ...(allowPush === undefined ? {} : { allow_push: allowPush }),
+      }),
+    });
+  }
+  unassignBoardRepo(boardId: string, repoId: string) {
+    return this.request<{ ok: boolean }>(
+      `/api/boards/${boardId}/repos/${repoId}`,
+      { method: "DELETE" },
+    );
+  }
+  listTaskRepos(taskId: string) {
+    return this.request<TaskRepoDir[]>(`/api/tasks/${taskId}/repos`);
+  }
+  prepareTaskRepos(taskId: string) {
+    return this.request<{ prepared: TaskRepoDir[] }>(
+      `/api/tasks/${taskId}/repos/prepare`,
+      { method: "POST" },
+    );
   }
 }
 

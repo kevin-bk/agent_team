@@ -1,4 +1,5 @@
 import {
+  FolderGit2,
   LayoutGrid,
   MessagesSquare,
   Moon,
@@ -6,6 +7,7 @@ import {
   PanelLeftOpen,
   Sun,
 } from "@/components/icons";
+import { useMe } from "@/api/hooks";
 import { cn } from "@/lib/utils";
 import { AuthButton } from "./AuthButton";
 import type { View } from "./Sidebar";
@@ -19,6 +21,10 @@ interface RailItem {
 const ITEMS: RailItem[] = [
   { id: "board", label: "Boards", icon: LayoutGrid },
   { id: "chat", label: "Chats", icon: MessagesSquare },
+];
+
+const ADMIN_ITEMS: RailItem[] = [
+  { id: "repos", label: "Repositories", icon: FolderGit2 },
 ];
 
 /**
@@ -41,6 +47,8 @@ export function NavRail({
   collapsed: boolean;
   onToggleCollapse: () => void;
 }) {
+  const me = useMe();
+  const items = me.data?.is_admin ? [...ITEMS, ...ADMIN_ITEMS] : ITEMS;
   return (
     <aside className="flex h-full w-16 shrink-0 flex-col items-center gap-1.5 bg-nav py-4 text-nav-foreground">
       <a
@@ -55,7 +63,7 @@ export function NavRail({
         />
       </a>
 
-      {ITEMS.map(({ id, label, icon: Icon }) => {
+      {items.map(({ id, label, icon: Icon }) => {
         const active = view === id;
         return (
           <button

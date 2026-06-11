@@ -4,6 +4,7 @@ import {
   Calendar,
   ChevronDown,
   Columns3,
+  GitBranch,
   List,
   Plus,
   Search,
@@ -20,6 +21,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { BoardEventsProvider } from "./BoardEventsContext";
 import { BoardAgentsDialog } from "./BoardAgentsDialog";
+import { BoardReposDialog } from "./BoardReposDialog";
 import { BoardJiraDialog } from "./BoardJiraDialog";
 import { BoardJiraSyncDialog } from "./BoardJiraSyncDialog";
 import { BoardSettingsDialog } from "./BoardSettingsDialog";
@@ -77,6 +79,7 @@ function BoardViewInner({
   const [membersOpen, setMembersOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [agentsOpen, setAgentsOpen] = useState(false);
+  const [reposOpen, setReposOpen] = useState(false);
   const [jiraOpen, setJiraOpen] = useState(false);
   const [jiraSyncOpen, setJiraSyncOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -207,6 +210,15 @@ function BoardViewInner({
             {canEdit && (
               <Button
                 variant="ghost"
+                aria-label="Board repositories"
+                onClick={() => setReposOpen(true)}
+              >
+                <GitBranch className="h-4 w-4" /> Code
+              </Button>
+            )}
+            {canEdit && (
+              <Button
+                variant="ghost"
                 aria-label="Board settings"
                 onClick={() => setSettingsOpen(true)}
               >
@@ -276,6 +288,12 @@ function BoardViewInner({
         board={board.data}
         open={agentsOpen}
         onClose={() => setAgentsOpen(false)}
+      />
+
+      <BoardReposDialog
+        boardId={boardId}
+        open={reposOpen}
+        onClose={() => setReposOpen(false)}
       />
 
       <BoardJiraDialog

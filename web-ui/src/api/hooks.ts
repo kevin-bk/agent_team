@@ -14,6 +14,8 @@ import type {
   PatchBoardBody,
   PatchCronBody,
   PatchTaskBody,
+  RepoCreateBody,
+  RepoUpdateBody,
   TaskDTO,
 } from "./types";
 
@@ -50,6 +52,9 @@ export const qk = {
   taskComments: (taskId: string) => ["task-comments", taskId] as const,
   taskActivity: (taskId: string) => ["task-activity", taskId] as const,
   users: (q: string) => ["users", q] as const,
+  repos: ["repos"] as const,
+  boardRepos: (id: string) => ["board-repos", id] as const,
+  taskRepos: (taskId: string) => ["task-repos", taskId] as const,
 };
 
 export function useMe() {
@@ -599,4 +604,94 @@ export function useCronMutations(profile: string | undefined) {
         client.runCronNow(profile as string, jobId),
     }),
   };
+}
+
+// ── code repositories ──────────────────────────────────────────────
+
+export function useRepos() {
+  const { client } = useApi();
+  return useQuery({ queryKey: qk.repos, queryFn: () => client.listRepos() });
+}
+
+export function useRepoMutations() {
+  const { client } = useApi();
+  const qc = useQueryClient();
+  const invalidate = () => void qc.invalidateQueries({ queryKey: qk.repos });
+  return {
+    create: useMutation({
+      mutationFn: (body: RepoCreateBody) => client.createRepo(body),
+      onSuccess: invalidate,
+    }),
+    patch: useMutation({
+      mutationFn: (vars: { repoId: string; body: RepoUpdateBody }) =>
+        client.patchRepo(vars.repoId, vars.body),
+      onSuccess: invalidate,
+    }),
+    remove: useMutation({
+      mutationFn: (repoId: string) => client.deleteRepo(repoId),
+      onSuccess: invalidate,
+    }),
+    clone: useMutation({
+      mutationFn: (repoId: string) => client.cloneRepo(repoId),
+      onSuccess: invalidate,
+    }),
+    pull: useMutation({
+      mutationFn: (repoId: string) => client.pullRepo(repoId),
+      onSuccess: invalidate,
+    }),
+  };
+}
+
+export function useBoardRepos(boardId: string | undefined) {
+  const { client } = useApi();
+  return useQuery({
+    queryKey: qk.boardRepos(boardId ?? "_"),
+    queryFn: () => client.listBoardRepos(boardId as string),
+    enabled: !!boardId,
+  });
+}
+
+export function useBoardRepoMutations(boardId: string) {
+  const { client } = useApi();
+  const qc = useQueryClient();
+  const invalidate = () =>
+    void qc.invalidateQueries({ queryKey: qk.boardRepos(boardId) });
+  return {
+    assign: useMutation({
+      mutationFn: (vars: {
+        repoId: string;
+        branchOverride?: string | null;
+        allowPush?: boolean;
+      }) =>
+        client.assignBoardRepo(
+          boardId,
+          vars.repoId,
+          vars.branchOverride,
+          vars.allowPush,
+        ),
+      onSuccess: invalidate,
+    }),
+    unassign: useMutation({
+      mutationFn: (repoId: string) => client.unassignBoardRepo(boardId, repoId),
+      onSuccess: invalidate,
+    }),
+  };
+}
+
+export function useTaskRepos(taskId: string | undefined) {
+  const { client } = useApi();
+  return useQuery({
+    queryKey: qk.taskRepos(taskId ?? "_"),
+    queryFn: () => client.listTaskRepos(taskId as string),
+    enabled: !!taskId,
+  });
+}
+
+export function usePrepareTaskRepos(taskId: string) {
+  const { client } = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => client.prepareTaskRepos(taskId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.taskRepos(taskId) }),
+  });
 }

@@ -20,6 +20,7 @@ from agent_team.features.board.models import (
 from agent_team.features.board.repositories import boards as boards_repo
 from agent_team.features.board.repositories import tasks as tasks_repo
 from agent_team.features.board.workspace import workspace_path_for
+from agent_team.features.repos.models import AgentTeamBoardRepo, AgentTeamRepo
 from agent_team.plugin import SPA_MOUNT_PATH, AgentTeamPlugin
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -35,6 +36,8 @@ _PLUGIN_MODELS = (
     AgentTeamRunEvent,
     AgentTeamComment,
     AgentTeamActivity,
+    AgentTeamRepo,
+    AgentTeamBoardRepo,
 )
 
 
@@ -67,6 +70,11 @@ def db(monkeypatch):
     monkeypatch.setattr(local_backend, "SessionLocal", factory)
     monkeypatch.setattr(activity_repo, "SessionLocal", factory)
 
+    # ``git_service``/``scheduler`` open their own session via this attribute.
+    import core.database.base as core_db
+
+    monkeypatch.setattr(core_db, "SessionLocal", factory)
+
     session = factory()
     try:
         yield session
@@ -92,6 +100,8 @@ def test_plugin_meta_models_and_menu():
         "plugin_agent_team_run_event",
         "plugin_agent_team_comment",
         "plugin_agent_team_activity",
+        "plugin_agent_team_repo",
+        "plugin_agent_team_board_repo",
     ]
     menu = plugin.menu_items()
     assert len(menu) == 1
@@ -1743,3 +1753,371 @@ def test_build_task_context_delta_pure_prompt_is_prompt_only():
     assert text == "Just this."
     assert "Task T-7" not in text
     assert "--- User's current message ---" not in text
+
+
+# ---------------------------------------------------------------------------
+# Board code repositories
+# ---------------------------------------------------------------------------
+
+
+def _git(*args, cwd) -> None:
+    import subprocess
+
+    subprocess.run(
+        ["git", *args], cwd=str(cwd), check=True, capture_output=True, text=True
+    )
+
+
+def _make_source_repo(path):
+    path.mkdir(parents=True, exist_ok=True)
+    _git("init", "-q", cwd=path)
+    _git("config", "user.email", "t@example.com", cwd=path)
+    _git("config", "user.name", "Tester", cwd=path)
+    (path / "README.md").write_text("hello\n")
+    _git("add", ".", cwd=path)
+    _git("commit", "-q", "-m", "init", cwd=path)
+    return path
+
+
+def test_repo_dto_never_leaks_secret(db):
+    from agent_team.features.repos import repositories as repos_repo
+    from agent_team.features.repos.schemas import RepoCreate
+
+    repo = repos_repo.create_repo(
+        db,
+        owner_id=None,
+        payload=RepoCreate(
+            name="Backend",
+            git_url="https://example.com/x.git",
+            auth_type="token",
+            auth_secret="supersecret",
+        ),
+    )
+    dto = repos_repo.serialize_repo(db, repo)
+    assert dto.has_secret is True
+    dumped = dto.model_dump()
+    assert "auth_secret" not in dumped
+    assert "supersecret" not in str(dumped)
+
+
+def test_repo_update_secret_write_only(db):
+    from agent_team.features.repos import repositories as repos_repo
+    from agent_team.features.repos.schemas import RepoCreate, RepoUpdate
+
+    repo = repos_repo.create_repo(
+        db,
+        owner_id=None,
+        payload=RepoCreate(
+            name="Svc", git_url="https://example.com/x.git", auth_type="token",
+            auth_secret="a",
+        ),
+    )
+    # Omitting the secret keeps it; other fields still update.
+    repo = repos_repo.update_repo(db, repo, RepoUpdate(name="Renamed"))
+    assert repo.name == "Renamed"
+    assert repo.has_secret() is True
+    # Sending "" clears it.
+    repo = repos_repo.update_repo(db, repo, RepoUpdate(auth_secret=""))
+    assert repo.has_secret() is False
+
+
+def test_repo_assign_and_repos_for_board(db):
+    from agent_team.features.repos import repositories as repos_repo
+    from agent_team.features.repos.schemas import RepoCreate
+
+    board = boards_repo.create_board(
+        db, name="B", description=None, columns=None, owner_id="owner1"
+    )
+    db.commit()
+    repo = repos_repo.create_repo(
+        db, owner_id="owner1", payload=RepoCreate(name="Svc", git_url="https://x/y.git")
+    )
+    repos_repo.assign_repo(
+        db, board_id=board.id, repo_id=repo.id, branch_override="dev"
+    )
+    pairs = repos_repo.repos_for_board(db, board.id)
+    assert len(pairs) == 1
+    assert pairs[0][0].id == repo.id
+    assert pairs[0][1] == "dev"
+    assert pairs[0][2] is False  # per-board push defaults off
+    # Toggling the board's push opt-in persists without re-creating the row.
+    repos_repo.assign_repo(
+        db, board_id=board.id, repo_id=repo.id, branch_override="dev", allow_push=True
+    )
+    updated = repos_repo.repos_for_board(db, board.id)[0]
+    assert updated[1] == "dev" and updated[2] is True
+    assert repos_repo.count_boards_for_repo(db, repo.id) == 1
+    assert repos_repo.boards_using_repo(db, repo.id) == [board.id]
+    assert repos_repo.unassign_repo(db, board_id=board.id, repo_id=repo.id) is True
+    assert repos_repo.repos_for_board(db, board.id) == []
+
+
+def test_repo_schedule_sets_next_pull(db):
+    from agent_team.features.repos import repositories as repos_repo
+    from agent_team.features.repos.schemas import RepoCreate
+
+    scheduled = repos_repo.create_repo(
+        db,
+        owner_id=None,
+        payload=RepoCreate(
+            name="A", git_url="https://x/a.git", schedule_mode="interval",
+            schedule_interval_seconds=120,
+        ),
+    )
+    assert scheduled.next_pull_at is not None
+    off = repos_repo.create_repo(
+        db, owner_id=None, payload=RepoCreate(name="B", git_url="https://x/b.git")
+    )
+    assert off.next_pull_at is None
+
+
+def test_repo_auth_builds_token_header_and_ssh_key(tmp_path):
+    import base64
+    import os
+
+    from agent_team.features.repos.git_service import _auth
+
+    token_repo = AgentTeamRepo(
+        name="x", slug="x", git_url="https://h/r.git",
+        auth_type="token", auth_username="me", auth_secret="tok",
+    )
+    with _auth(token_repo) as (extra, env):
+        assert extra[0] == "-c"
+        assert extra[1].startswith("http.extraHeader=Authorization: Basic ")
+        encoded = extra[1].split("Basic ", 1)[1]
+        assert base64.b64decode(encoded).decode() == "me:tok"
+        assert env == {}
+
+    ssh_repo = AgentTeamRepo(
+        name="y", slug="y", git_url="git@h:r.git",
+        auth_type="ssh", auth_secret="KEYDATA",
+    )
+    keyfile_holder = {}
+    with _auth(ssh_repo) as (extra, env):
+        assert extra == []
+        cmd = env["GIT_SSH_COMMAND"]
+        keyfile = cmd.split("-i ", 1)[1].split(" ", 1)[0]
+        keyfile_holder["path"] = keyfile
+        assert os.path.exists(keyfile)
+        assert open(keyfile).read().startswith("KEYDATA")
+    # The temp key is cleaned up when the context exits.
+    assert not os.path.exists(keyfile_holder["path"])
+
+
+def test_repo_sync_clone_and_task_copy(db, tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENT_TEAM_WORKSPACE_ROOT", str(tmp_path / "ws"))
+    src = _make_source_repo(tmp_path / "src")
+
+    from agent_team.features.repos import git_service
+    from agent_team.features.repos import repositories as repos_repo
+    from agent_team.features.repos.paths import canonical_path
+    from agent_team.features.repos.schemas import RepoCreate
+    from agent_team.features.repos.task_copy import (
+        cleanup_task_repos,
+        prepare_task_repos,
+    )
+
+    repo = repos_repo.create_repo(
+        db, owner_id="owner1", payload=RepoCreate(name="Svc", git_url=str(src))
+    )
+    result = git_service.sync_repo_by_id(repo.id)
+    assert result.ok, result.message
+    db.expire_all()
+    repo = repos_repo.get_repo(db, repo.id)
+    assert repo.clone_status == "cloned"
+    assert repo.last_sync_status == "ok"
+    canon = canonical_path("owner1", repo.slug)
+    assert (canon / ".git").exists()
+
+    board = boards_repo.create_board(
+        db, name="B", description=None, columns=None, owner_id="owner1"
+    )
+    db.commit()
+    repos_repo.assign_repo(db, board_id=board.id, repo_id=repo.id)
+    task = tasks_repo.create_task(
+        db, board_id=board.id, title="T", description=None, status="todo",
+        assignee_id=None, labels=None, priority=None, created_by=None,
+    )
+    db.commit()
+
+    prepared = prepare_task_repos(db, task)
+    assert prepared and prepared[0]["slug"] == repo.slug
+    from pathlib import Path
+
+    copy = Path(task.workspace_path) / repo.slug
+    assert (copy / ".git").exists()
+    assert (copy / "README.md").exists()
+
+    # `git clone --local` hardlinks the object store: at least one loose object
+    # shares an inode with the canonical clone (so history costs ~no extra disk).
+    canon_objs = {
+        p.stat().st_ino
+        for p in (canon / ".git" / "objects").rglob("*")
+        if p.is_file()
+    }
+    copy_objs = {
+        p.stat().st_ino
+        for p in (copy / ".git" / "objects").rglob("*")
+        if p.is_file()
+    }
+    assert canon_objs & copy_objs
+
+    # Re-running is idempotent (copy already present).
+    again = prepare_task_repos(db, task)
+    assert again and again[0]["slug"] == repo.slug
+
+    assert cleanup_task_repos(db, task) == 1
+    assert not copy.exists()
+
+
+def test_build_task_context_includes_repos_only_on_first_turn(db):
+    from agent_team.features.board.runtime.context import build_task_context
+
+    task = _make_task(db)
+    repos = [{"slug": "backend", "path": "backend", "branch": "main"}]
+    full = build_task_context(task, "Do it.", repos=repos, full=True)
+    assert "Code repositories checked out" in full
+    assert "`backend/` (branch main)" in full
+    # Follow-up turns don't repeat the repo list (it's already in history).
+    delta = build_task_context(
+        task, "More.", repos=repos, full=False, include_description=False
+    )
+    assert "backend/" not in delta
+
+
+def test_repo_push_policy_roundtrip(db):
+    from agent_team.features.repos import repositories as repos_repo
+    from agent_team.features.repos.schemas import RepoCreate, RepoUpdate
+
+    repo = repos_repo.create_repo(
+        db,
+        owner_id="owner1",
+        payload=RepoCreate(
+            name="Svc",
+            git_url="https://example.com/x.git",
+            allow_push=True,
+            committer_name="Bot",
+            committer_email="bot@org.com",
+        ),
+    )
+    dto = repos_repo.serialize_repo(db, repo)
+    assert dto.allow_push is True
+    assert dto.committer_name == "Bot"
+    assert dto.committer_email == "bot@org.com"
+
+    # Turning push off and clearing identity persists.
+    repos_repo.update_repo(
+        db, repo, RepoUpdate(allow_push=False, committer_name="", committer_email="")
+    )
+    dto2 = repos_repo.serialize_repo(db, repo)
+    assert dto2.allow_push is False
+    assert dto2.committer_name is None
+    assert dto2.committer_email is None
+
+
+def _prepare_pushable_task(db, tmp_path, monkeypatch, *, allow_push: bool):
+    """Clone a source repo, assign to a board, create a task, prepare copies."""
+    monkeypatch.setenv("AGENT_TEAM_WORKSPACE_ROOT", str(tmp_path / "ws"))
+    src = _make_source_repo(tmp_path / "src")
+
+    from agent_team.features.repos import git_service
+    from agent_team.features.repos import repositories as repos_repo
+    from agent_team.features.repos.schemas import RepoCreate
+
+    repo = repos_repo.create_repo(
+        db,
+        owner_id="owner1",
+        payload=RepoCreate(
+            name="Svc",
+            git_url=str(src),
+            allow_push=allow_push,
+            committer_name="Bot",
+            committer_email="bot@org.com",
+        ),
+    )
+    assert git_service.sync_repo_by_id(repo.id).ok
+    board = boards_repo.create_board(
+        db, name="B", description=None, columns=None, owner_id="owner1"
+    )
+    db.commit()
+    repos_repo.assign_repo(
+        db, board_id=board.id, repo_id=repo.id, allow_push=True
+    )
+    task = tasks_repo.create_task(
+        db, board_id=board.id, title="T", description=None, status="todo",
+        assignee_id=None, labels=None, priority=None, created_by=None,
+    )
+    db.commit()
+    return src, repo, task
+
+
+def test_prepare_task_repos_sets_task_branch_and_identity(db, tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from agent_team.features.repos.task_copy import prepare_task_repos, task_branch_name
+
+    _src, repo, task = _prepare_pushable_task(
+        db, tmp_path, monkeypatch, allow_push=True
+    )
+    prepared = prepare_task_repos(db, task)
+    assert prepared[0]["can_push"] is True
+    assert prepared[0]["branch"] == task_branch_name(task)
+
+    copy = Path(task.workspace_path) / repo.slug
+    import subprocess
+
+    branch = subprocess.run(
+        ["git", "-C", str(copy), "rev-parse", "--abbrev-ref", "HEAD"],
+        capture_output=True, text=True,
+    ).stdout.strip()
+    assert branch == task_branch_name(task)
+    email = subprocess.run(
+        ["git", "-C", str(copy), "config", "user.email"],
+        capture_output=True, text=True,
+    ).stdout.strip()
+    assert email == "bot@org.com"
+
+
+def test_git_push_tool_respects_allow_push(db, tmp_path, monkeypatch):
+    from agent_team.features.board.runtime.git_tools import get_git_tools
+    from agent_team.features.repos import repositories as repos_repo
+    from agent_team.features.repos.schemas import RepoUpdate
+    from agent_team.features.repos.task_copy import prepare_task_repos, task_branch_name
+
+    from plugins.standard_tools.tools.workspace_override import (
+        reset_workspace_override,
+        set_workspace_override,
+    )
+
+    src, repo, task = _prepare_pushable_task(
+        db, tmp_path, monkeypatch, allow_push=False
+    )
+    prepare_task_repos(db, task)
+
+    token = set_workspace_override(task.workspace_path)
+    try:
+        tools = {t.name: t for t in get_git_tools("alice", {})}
+        git_push = tools["git_push"]
+
+        # Push disabled by policy → refused, nothing reaches the remote.
+        out = git_push.invoke({"repo": repo.slug})
+        assert "disabled" in out.lower()
+
+        # Admin enables push; agent makes a change and pushes its task branch.
+        repos_repo.update_repo(db, repo, RepoUpdate(allow_push=True))
+        from pathlib import Path
+
+        (Path(task.workspace_path) / repo.slug / "new.txt").write_text("hi\n")
+        out2 = git_push.invoke({"repo": repo.slug, "message": "add file"})
+        assert "pushed" in out2.lower(), out2
+    finally:
+        reset_workspace_override(token)
+
+    import subprocess
+
+    branch = task_branch_name(task)
+    rc = subprocess.run(
+        ["git", "-C", str(src), "rev-parse", "--verify", f"refs/heads/{branch}"],
+        capture_output=True, text=True,
+    )
+    assert rc.returncode == 0, "task branch should exist on the remote after push"

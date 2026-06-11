@@ -51,7 +51,7 @@ from core.database.base import SessionLocal, get_db
 
 def _is_admin(user) -> bool:
     role = getattr(user.role, "value", user.role)
-    return str(role).lower() == "admin"
+    return str(role).lower() in {"admin", "super_admin"}
 
 router = APIRouter(prefix=API_PREFIX, tags=["agent-team-board"])
 
@@ -629,12 +629,58 @@ async def archive_task(task_id: str, request: Request, db: Session = Depends(get
         return not_found("Task not found")
     task.archived = True
     board_id = task.board_id
+    # Reclaim disk: drop the per-task repo working copies (re-created on demand if
+    # the task runs again). Best-effort — never block archiving on cleanup.
+    try:
+        from agent_team.features.repos.task_copy import cleanup_task_repos
+
+        cleanup_task_repos(db, task)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception(
+            "agent_team: failed to clean task repos for %s", task_id
+        )
     db.commit()
     get_board_bus().publish(
         board_id,
         {"type": "task.deleted", "board_id": board_id, "task_id": task_id},
     )
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Task code repositories (working copies)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/tasks/{task_id}/repos")
+async def list_task_repos(task_id: str, request: Request, db: Session = Depends(get_db)):
+    _, err = auth_or_401(db, request)
+    if err:
+        return err
+    task = tasks_repo.get_task(db, task_id)
+    if task is None:
+        return not_found("Task not found")
+    from agent_team.features.repos.task_copy import list_task_repo_dirs
+
+    return list_task_repo_dirs(db, task)
+
+
+@router.post("/tasks/{task_id}/repos/prepare")
+async def prepare_task_repos_endpoint(
+    task_id: str, request: Request, db: Session = Depends(get_db)
+):
+    _, err = auth_or_401(db, request)
+    if err:
+        return err
+    task = tasks_repo.get_task(db, task_id)
+    if task is None:
+        return not_found("Task not found")
+    from agent_team.features.repos.task_copy import prepare_task_repos_by_id
+
+    prepared = await asyncio.to_thread(prepare_task_repos_by_id, task_id)
+    return {"prepared": prepared}
 
 
 # ---------------------------------------------------------------------------
