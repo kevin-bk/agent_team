@@ -84,7 +84,9 @@ agent_team/
 ├── web.py                     # Shared web helpers (auth)
 ├── spa.py                     # Serves the built single-page app
 ├── db_migrations/             # SQL migrations (auto-applied by core)
-├── static/                    # Built web UI bundle
+├── docs/                      # Documentation assets (screenshots)
+├── web-ui/                    # React + Vite source for the SPA (see "Building the web UI")
+├── static/                    # Built web UI bundle (output of `web-ui`, served by the plugin)
 └── features/
     └── board/
         ├── models.py          # SQLAlchemy models (board, task, run, comment, …)
@@ -116,6 +118,32 @@ When the plugin is enabled, agents gain a **View Image** tool (`view_image`) tha
 
 ---
 
+## Building the web UI
+
+The frontend source lives in [`web-ui/`](web-ui) (React + Vite + TypeScript). The
+plugin only serves the **built bundle** from `static/`, so after changing the UI
+you rebuild and the output is copied into `static/` for you:
+
+```bash
+cd web-ui
+npm install               # first time only
+npm run build:agent-team  # builds with the /agent-team base path, then copies dist → ../static
+```
+
+`build:agent-team` runs Vite in `agent-team` mode (assets are referenced under
+the `/agent-team/` sub-path where the plugin mounts the SPA), writes to
+`web-ui/dist-agent-team/`, and `scripts/copy-to-plugin.mjs` syncs that into
+`../static/`. Commit the updated `static/` so the plugin works without a build
+step on deploy.
+
+For local UI development with hot reload (proxying the API to a running
+agent-manager):
+
+```bash
+cd web-ui
+npm run dev               # http://localhost:5173
+```
+
 ## Development
 
 Run the plugin's tests:
@@ -129,5 +157,3 @@ Lint:
 ```bash
 uv run ruff check community_plugins/agent_team
 ```
-
-The web UI is built separately and copied into `static/`; see the web project's `build:agent-team` script.

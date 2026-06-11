@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="512" x2="512" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0052CC"/>
+      <stop offset="1" stop-color="#2684FF"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" fill="url(#bg)"/>
+  <!-- deep-agent mark: two ascending Jira-style arrow blocks with a four-point
+       AI spark replacing the top arrow — familiar rhythm, distinct identity. -->
+  <g fill="#FFFFFF">
+    <!-- middle arrow block -->
+    <path d="M85.121 39.04H38.902c0 11.519 9.325 20.847 20.844 20.847h8.504v8.226c0 11.52 9.328 20.848 20.848 20.848V43.016a3.983 3.983 0 0 0-3.977-3.977zm0 0"
+          transform="translate(64,64) scale(3)"/>
+    <!-- bottom arrow block -->
+    <path d="M62.219 62.078H16c0 11.524 9.324 20.848 20.848 20.848h8.5v8.23c0 11.52 9.327 20.844 20.847 20.844V66.059a3.984 3.984 0 0 0-3.976-3.98zm0 0"
+          transform="translate(64,64) scale(3)"/>
+    <!-- AI spark where Jira's top arrow would sit -->
+    <path d="M332 88
+             Q 332 172 416 172
+             Q 332 172 332 256
+             Q 332 172 248 172
+             Q 332 172 332 88 Z"/>
+  </g>
+</svg>
