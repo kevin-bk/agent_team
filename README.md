@@ -31,6 +31,9 @@ Tasks as cards across your columns, with color-coded issue types, assignees, and
 
 ![Kanban board](docs/images/board_view.png)
 
+### Import tasks from Jira
+![Jira import](docs/images/jira_import.png)
+
 ### Task detail
 The task "cockpit": a Markdown description, a discussion thread with notes/comments and attachments, an editable **Details** panel (status, reporter, assignee, priority), and the task's **Artifacts** workspace.
 
