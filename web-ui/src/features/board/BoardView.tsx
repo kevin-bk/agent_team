@@ -4,6 +4,8 @@ import {
   Calendar,
   ChevronDown,
   Columns3,
+  Download,
+  FileText,
   GitBranch,
   List,
   Plus,
@@ -13,8 +15,11 @@ import {
   Users,
 } from "@/components/icons";
 import { type ReactNode, useCallback, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
+import { useApi } from "@/api/ApiProvider";
 import { useBoard, useBoardMembers, useBoardTasks, useMoveTask } from "@/api/hooks";
 import type { BoardMemberDTO, TaskDTO } from "@/api/types";
+import { BoardImportDialog } from "./BoardImportDialog";
 import { AvatarGroup, Breadcrumbs, JiraIcon } from "@/components/jira";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -82,7 +87,28 @@ function BoardViewInner({
   const [reposOpen, setReposOpen] = useState(false);
   const [jiraOpen, setJiraOpen] = useState(false);
   const [jiraSyncOpen, setJiraSyncOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [query, setQuery] = useState("");
+  const { client } = useApi();
+
+  const onExport = useCallback(async () => {
+    setExporting(true);
+    try {
+      const csv = await client.exportBoardTasksCsv(boardId);
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${board.data?.slug ?? "board"}-tasks.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Export failed");
+    } finally {
+      setExporting(false);
+    }
+  }, [client, boardId, board.data?.slug]);
 
   const tasks = useMemo(() => tasksQuery.data ?? [], [tasksQuery.data]);
   const visibleTasks = useMemo(
@@ -219,6 +245,23 @@ function BoardViewInner({
             {canEdit && (
               <Button
                 variant="ghost"
+                aria-label="Import tasks from CSV"
+                onClick={() => setImportOpen(true)}
+              >
+                <FileText className="h-4 w-4" /> Import
+              </Button>
+            )}
+            <Button
+              variant="ghost"
+              aria-label="Export tasks to CSV"
+              onClick={onExport}
+              disabled={exporting}
+            >
+              <Download className="h-4 w-4" /> Export
+            </Button>
+            {canEdit && (
+              <Button
+                variant="ghost"
                 aria-label="Board settings"
                 onClick={() => setSettingsOpen(true)}
               >
@@ -294,6 +337,12 @@ function BoardViewInner({
         boardId={boardId}
         open={reposOpen}
         onClose={() => setReposOpen(false)}
+      />
+
+      <BoardImportDialog
+        boardId={boardId}
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
       />
 
       <BoardJiraDialog

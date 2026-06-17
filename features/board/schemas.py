@@ -218,6 +218,34 @@ class JiraPreviewResponse(BaseModel):
     items: list[JiraPreviewItem]
 
 
+class CsvImportRow(BaseModel):
+    """One parsed CSV row's planned outcome (dry-run preview)."""
+
+    line: int
+    #: ``create`` | ``update`` | ``error``.
+    action: str
+    title: str = ""
+    #: Target task key on update; null on create/error.
+    human_key: str | None = None
+    #: Warnings (lenient fallbacks) or the error reason.
+    message: str = ""
+
+
+class CsvImportPreview(BaseModel):
+    rows: list[CsvImportRow]
+    total: int = 0
+    creates: int = 0
+    updates: int = 0
+    errors: int = 0
+
+
+class CsvImportResult(BaseModel):
+    created: int = 0
+    updated: int = 0
+    skipped: int = 0
+    errors: list[str] = Field(default_factory=list)
+
+
 class CommentDTO(BaseModel):
     id: str
     task_id: str

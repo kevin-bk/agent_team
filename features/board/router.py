@@ -8,7 +8,7 @@ import shutil
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Request, UploadFile
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from sqlalchemy.orm import Session
 
 from agent_team.features.board import attachments
@@ -35,6 +35,9 @@ from agent_team.features.board.schemas import (
     BoardUpdate,
     CommentCreate,
     CommentUpdate,
+    CsvImportPreview,
+    CsvImportResult,
+    CsvImportRow,
     JiraImportBody,
     JiraPreviewItem,
     JiraPreviewResponse,
@@ -659,6 +662,104 @@ async def archive_task(task_id: str, request: Request, db: Session = Depends(get
         {"type": "task.deleted", "board_id": board_id, "task_id": task_id},
     )
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# CSV import / export of tasks
+# ---------------------------------------------------------------------------
+
+
+@router.get("/boards/{board_id}/tasks/export.csv")
+async def export_board_tasks_csv(
+    board_id: str,
+    request: Request,
+    include_archived: bool = False,
+    db: Session = Depends(get_db),
+):
+    """Download the board's tasks as CSV (one row per task)."""
+    _, err = auth_or_401(db, request)
+    if err:
+        return err
+    board = boards_repo.get_board(db, board_id)
+    if board is None:
+        return not_found("Board not found")
+    from agent_team.features.board import csv_tasks
+
+    body = csv_tasks.export_tasks_csv(db, board, include_archived=include_archived)
+    filename = f"{board.slug or 'board'}-tasks.csv"
+    return Response(
+        # Prepend a BOM so Excel opens UTF-8 (e.g. accents) correctly.
+        content="\ufeff" + body,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def _csv_preview(plans) -> CsvImportPreview:
+    rows = [CsvImportRow(**p.as_dict()) for p in plans]
+    return CsvImportPreview(
+        rows=rows,
+        total=len(rows),
+        creates=sum(1 for p in plans if p.action == "create"),
+        updates=sum(1 for p in plans if p.action == "update"),
+        errors=sum(1 for p in plans if p.action == "error"),
+    )
+
+
+@router.post("/boards/{board_id}/tasks/import/preview")
+async def preview_board_tasks_csv(
+    board_id: str,
+    request: Request,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    """Dry-run an upload: validate every row and report create/update/error."""
+    _, err = auth_or_401(db, request)
+    if err:
+        return err
+    board = boards_repo.get_board(db, board_id)
+    if board is None:
+        return not_found("Board not found")
+    from agent_team.features.board import csv_tasks
+
+    data = await file.read()
+    try:
+        plans = csv_tasks.plan_import(db, board, data)
+    except csv_tasks.CsvImportError as exc:
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
+    return _csv_preview(plans)
+
+
+@router.post("/boards/{board_id}/tasks/import")
+async def import_board_tasks_csv(
+    board_id: str,
+    request: Request,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    """Apply an upload: create/update tasks, then refresh the board."""
+    user, err = auth_or_401(db, request)
+    if err:
+        return err
+    board = boards_repo.get_board(db, board_id)
+    if board is None:
+        return not_found("Board not found")
+    from agent_team.features.board import csv_tasks
+
+    data = await file.read()
+    try:
+        plans = csv_tasks.plan_import(db, board, data)
+    except csv_tasks.CsvImportError as exc:
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
+
+    result, any_changes = csv_tasks.apply_import(db, board, plans, actor_id=user.id)
+    db.commit()
+    if any_changes:
+        # No task_id → every open board view refreshes its task list.
+        get_board_bus().publish(
+            board.id, {"type": "task.updated", "board_id": board.id}
+        )
+    return CsvImportResult(**result.as_dict())
 
 
 # ---------------------------------------------------------------------------

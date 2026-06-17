@@ -356,6 +356,34 @@ export interface MoveTaskBody {
   position: number;
 }
 
+// ── CSV import / export ─────────────────────────────────────────────
+
+export type CsvImportAction = "create" | "update" | "error";
+
+export interface CsvImportRow {
+  line: number;
+  action: CsvImportAction;
+  title: string;
+  human_key: string | null;
+  /** Warnings (lenient fallbacks) or the error reason. */
+  message: string;
+}
+
+export interface CsvImportPreview {
+  rows: CsvImportRow[];
+  total: number;
+  creates: number;
+  updates: number;
+  errors: number;
+}
+
+export interface CsvImportResult {
+  created: number;
+  updated: number;
+  skipped: number;
+  errors: string[];
+}
+
 export interface AddMemberBody {
   user_id?: string | null;
   email?: string | null;

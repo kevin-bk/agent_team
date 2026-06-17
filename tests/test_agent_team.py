@@ -1409,6 +1409,84 @@ def test_known_cli_aliases_covers_engines():
     assert known_cli_aliases() == {"cli:claude", "cli:cursor", "cli:codex"}
 
 
+def test_csv_export_then_reimport_round_trips(db):
+    """Exported rows carry human_key, so re-importing updates (not duplicates)."""
+    from agent_team.features.board import csv_tasks
+    from agent_team.features.board.repositories import tasks as tasks_repo
+
+    board = boards_repo.create_board(
+        db, name="CSV RT", description=None, columns=None, owner_id=None
+    )
+    db.commit()
+    tasks_repo.create_task(
+        db, board_id=board.id, title="First", description="d1", status="todo",
+        assignee_id=None, labels=["a", "b"], priority="high", created_by=None,
+    )
+    tasks_repo.create_task(
+        db, board_id=board.id, title="Second", description=None, status="todo",
+        assignee_id=None, labels=None, priority=None, created_by=None,
+    )
+    db.commit()
+
+    text = csv_tasks.export_tasks_csv(db, board, include_archived=False)
+    assert "human_key,title,description" in text.splitlines()[0]
+    assert "First" in text and "a;b" in text
+
+    # Re-importing the export updates both rows (matched by human_key).
+    plans = csv_tasks.plan_import(db, board, text.encode("utf-8"))
+    assert [p.action for p in plans] == ["update", "update"]
+    result, changed = csv_tasks.apply_import(db, board, plans, actor_id=None)
+    db.commit()
+    assert (result.created, result.updated) == (0, 2)
+    assert changed is True
+    # No new tasks were created.
+    assert len(tasks_repo.list_tasks(db, board_id=board.id)) == 2
+
+
+def test_csv_import_creates_with_defaults_and_flags_errors(db):
+    """title is required; optional fields fall back to defaults with warnings."""
+    from agent_team.features.board import csv_tasks
+    from agent_team.features.board.repositories import tasks as tasks_repo
+
+    board = boards_repo.create_board(
+        db, name="CSV Import", description=None, columns=None, owner_id=None
+    )
+    db.commit()
+    first_col = board.columns()[0]["key"]
+
+    csv_text = (
+        "title,status,priority,labels,task_type\n"
+        "Valid task,in_progress,High,x;y,bug\n"
+        "Bad status,nonsense,,,,\n"
+        ",todo,,,\n"  # missing title → error
+    )
+    plans = csv_tasks.plan_import(db, board, csv_text.encode("utf-8"))
+    assert [p.action for p in plans] == ["create", "create", "error"]
+    # Unknown status degrades to the first column, with a warning.
+    bad = plans[1]
+    assert bad.values["status"] == first_col
+    assert "unknown status" in bad.message
+
+    result, _ = csv_tasks.apply_import(db, board, plans, actor_id=None)
+    db.commit()
+    assert (result.created, result.skipped) == (2, 1)
+    assert any("row 4" in e for e in result.errors)
+
+    titles = {t.title for t in tasks_repo.list_tasks(db, board_id=board.id)}
+    assert {"Valid task", "Bad status"} <= titles
+
+
+def test_csv_import_requires_title_column(db):
+    from agent_team.features.board import csv_tasks
+
+    board = boards_repo.create_board(
+        db, name="No title col", description=None, columns=None, owner_id=None
+    )
+    db.commit()
+    with pytest.raises(csv_tasks.CsvImportError):
+        csv_tasks.plan_import(db, board, b"name,status\nfoo,todo\n")
+
+
 def test_board_members_add_list_remove(db):
     from agent_team.features.board.repositories import members as members_repo
 

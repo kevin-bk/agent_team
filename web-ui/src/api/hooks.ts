@@ -207,6 +207,22 @@ export function useCreateBoard() {
   });
 }
 
+export function usePreviewBoardTasksCsv(boardId: string) {
+  const { client } = useApi();
+  return useMutation({
+    mutationFn: (file: File) => client.previewBoardTasksCsv(boardId, file),
+  });
+}
+
+export function useImportBoardTasksCsv(boardId: string) {
+  const { client } = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (file: File) => client.importBoardTasksCsv(boardId, file),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.boardTasks(boardId) }),
+  });
+}
+
 export function useUpdateBoard(boardId: string) {
   const { client } = useApi();
   const qc = useQueryClient();

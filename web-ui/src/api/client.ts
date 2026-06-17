@@ -13,6 +13,8 @@ import {
   type CreateCronBody,
   type CreateTaskBody,
   type CronJob,
+  type CsvImportPreview,
+  type CsvImportResult,
   type JiraBatchResult,
   type JiraPreviewResponse,
   type Me,
@@ -303,6 +305,35 @@ export class ApiClient {
       method: "POST",
       body: JSON.stringify({ jira_key: jiraKey }),
     });
+  }
+
+  // ── CSV import / export ──────────────────────────────────────────
+  async exportBoardTasksCsv(
+    boardId: string,
+    includeArchived = false,
+  ): Promise<string> {
+    const q = new URLSearchParams({
+      include_archived: String(includeArchived),
+    });
+    return this.request<string>(
+      `/api/boards/${boardId}/tasks/export.csv?${q}`,
+    );
+  }
+  previewBoardTasksCsv(boardId: string, file: File) {
+    const fd = new FormData();
+    fd.append("file", file);
+    return this.request<CsvImportPreview>(
+      `/api/boards/${boardId}/tasks/import/preview`,
+      { method: "POST", body: fd },
+    );
+  }
+  importBoardTasksCsv(boardId: string, file: File) {
+    const fd = new FormData();
+    fd.append("file", file);
+    return this.request<CsvImportResult>(
+      `/api/boards/${boardId}/tasks/import`,
+      { method: "POST", body: fd },
+    );
   }
 
   // ── agents / mentions / runs (plan 16 Phase 2) ───────────────────
