@@ -32,6 +32,7 @@ import {
 import { toast } from "sonner";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useApi } from "@/api/ApiProvider";
 import {
   useAgents,
@@ -218,13 +219,24 @@ export function TaskCockpit({
     return set;
   }, [runs.data]);
 
-  const [thread, setThread] = useState<string>(OVERVIEW);
+  // The open thread lives in the URL (?agent=<id>) so a reload (F5) keeps the
+  // user on the same agent instead of dropping back to the overview. Opening a
+  // task from the board clears the query, so a fresh task starts on overview.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const urlAgent = searchParams.get("agent");
+  const [thread, setThread] = useState<string>(urlAgent || OVERVIEW);
   const [filePath, setFilePath] = useState("");
   const [artifactsOpen, setArtifactsOpen] = useState(true);
   // When viewing a *past* attempt (read-only history); null = the live thread.
   const [viewConvId, setViewConvId] = useState<string | null>(null);
   // Bumped on reset to remount the live Conversation so it reloads (empty).
   const [resetNonce, setResetNonce] = useState(0);
+  // Keep the thread in sync with the URL: browser back/forward, or the query
+  // being cleared when a different task is opened, both flow through here.
+  useEffect(() => {
+    setThread(urlAgent || OVERVIEW);
+    setViewConvId(null);
+  }, [urlAgent]);
   const reset = useResetTaskThread(task.id);
   const syncJira = useSyncTaskFromJira(task.board_id);
   const [keyPromptOpen, setKeyPromptOpen] = useState(false);
@@ -244,6 +256,17 @@ export function TaskCockpit({
   const selectThread = (id: string) => {
     setThread(id);
     setViewConvId(null);
+    // Persist the open thread in the URL so a reload stays on it. `replace`
+    // keeps thread switches out of the back-button history.
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (id === OVERVIEW) next.delete("agent");
+        else next.set("agent", id);
+        return next;
+      },
+      { replace: true },
+    );
   };
 
   const attempts = useTaskAttempts(task.id, activeAgent?.id);
@@ -546,6 +569,7 @@ export function TaskCockpit({
                   key={`${task.id}:${activeAgent.id}:${viewConvId}`}
                   taskId={task.id}
                   agentId={activeAgent.id}
+                  agentName={activeAgent.display_name}
                   convId={viewConvId as string}
                   attempt={
                     attemptList.find((a) => a.conv_id === viewConvId)?.attempt
@@ -1897,7 +1921,12 @@ function Conversation({
               Message {`@${agentName}`} to get started.
             </div>
           ) : (
-            <Timeline blocks={blocks} running={running} onOpenFile={onOpenFile} />
+            <Timeline
+              blocks={blocks}
+              running={running}
+              onOpenFile={onOpenFile}
+              agentName={agentName}
+            />
           )}
           {fatalError && (
             <div className="mx-auto max-w-3xl px-4 pb-3 text-xs text-destructive">
@@ -2102,6 +2131,7 @@ function AttemptHistoryMenu({
 function AttemptHistoryView({
   taskId,
   agentId,
+  agentName,
   convId,
   attempt,
   onOpenFile,
@@ -2109,6 +2139,7 @@ function AttemptHistoryView({
 }: {
   taskId: string;
   agentId: string;
+  agentName: string;
   convId: string;
   attempt: number | undefined;
   onOpenFile: (path: string) => void;
@@ -2146,7 +2177,12 @@ function AttemptHistoryView({
             This conversation has no messages.
           </div>
         ) : (
-          <Timeline blocks={blocks} running={false} onOpenFile={onOpenFile} />
+          <Timeline
+            blocks={blocks}
+            running={false}
+            onOpenFile={onOpenFile}
+            agentName={agentName}
+          />
         )}
       </div>
     </>

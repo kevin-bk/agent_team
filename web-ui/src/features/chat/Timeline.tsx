@@ -25,10 +25,13 @@ export function Timeline({
   blocks,
   running,
   onOpenFile,
+  agentName,
 }: {
   blocks: Block[];
   running: boolean;
   onOpenFile?: (path: string) => void;
+  /** Display name shown above assistant messages (defaults to "deep-agent"). */
+  agentName?: string;
 }) {
   const endRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -49,6 +52,7 @@ export function Timeline({
           block={b}
           onOpenFile={onOpenFile}
           streaming={streamingText && b.id === lastBlock.id}
+          agentName={agentName}
         />
       ))}
       {running && !streamingText && (
@@ -180,10 +184,12 @@ function BlockView({
   block,
   onOpenFile,
   streaming,
+  agentName,
 }: {
   block: Block;
   onOpenFile?: (path: string) => void;
   streaming?: boolean;
+  agentName?: string;
 }) {
   switch (block.kind) {
     case "user": {
@@ -211,7 +217,11 @@ function BlockView({
     }
     case "assistant":
       return (
-        <Row icon={<Sparkles className="h-4 w-4" />} role="deep-agent" accent>
+        <Row
+          icon={<Sparkles className="h-4 w-4" />}
+          role={agentName ?? "deep-agent"}
+          accent
+        >
           <AssistantText text={block.text} streaming={streaming} />
         </Row>
       );
