@@ -50,6 +50,7 @@ class AgentTeamPlugin(PluginBase):
             AgentTeamRun,
             AgentTeamRunEvent,
             AgentTeamTask,
+            AgentTeamToolOutput,
         )
         from agent_team.features.repos.models import (
             AgentTeamBoardRepo,
@@ -68,6 +69,7 @@ class AgentTeamPlugin(PluginBase):
             AgentTeamActivity,
             AgentTeamRepo,
             AgentTeamBoardRepo,
+            AgentTeamToolOutput,
         ]
 
     def routers(self) -> list[APIRouter]:

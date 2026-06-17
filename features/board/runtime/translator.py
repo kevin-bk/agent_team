@@ -1,10 +1,20 @@
 """Translate LangGraph stream chunks into ``AgentEvent`` frames.
 
-P1 consumes ``stream_mode="updates"``: assistant message snapshots become
-``text_delta`` frames (the last one is the final answer), tool calls/results
-become ``tool_use_start``/``tool_use_end`` pairs. Token-level deltas and ACP
-``custom`` progress events are a later enhancement; unknown modes are ignored so
-the stream degrades gracefully.
+The run streams token-by-token. Three stream modes are consumed together:
+
+* ``messages`` — the live source of visible output. Each chunk is an
+  ``(AIMessageChunk, metadata)`` pair; assistant text becomes ``text_delta``
+  frames and reasoning/thinking content becomes ``thinking`` frames, both
+  emitted incrementally as the model generates them.
+* ``updates`` — full node snapshots. Used only for the structured execution
+  frames (``tool_use_start`` / ``tool_use_end``) and to capture the final
+  assistant text (persisted as the run's final answer). The snapshot text is
+  *not* re-streamed, since ``messages`` already streamed it token-by-token.
+* ``custom`` — live progress emitted by AI-coding sub-agents (Claude/Codex/
+  Cursor ACP). Surfaced as ``tool_use_progress`` on the running tool card so
+  the user sees the sub-agent work as it happens.
+
+Unknown modes are ignored so the stream degrades gracefully.
 """
 
 from __future__ import annotations
@@ -20,7 +30,11 @@ from core.agents.stream_updates import (
 )
 
 _ERROR_HINTS = ("error", "traceback", "exception", "failed")
-_PREVIEW_LIMIT = 500
+#: Chars of a tool result kept inline in the streamed frame. The full output is
+#: persisted out-of-stream and lazy-loaded on demand (see ``local_backend`` /
+#: the ``/runs/{id}/tools/{tool_id}/output`` endpoint), so this only bounds what
+#: the timeline shows by default.
+_PREVIEW_LIMIT = 2000
 
 #: Structured content-block types that represent a tool invocation, never
 #: visible prose. They are surfaced as ``tool_use_start`` frames, so any copy
@@ -28,6 +42,9 @@ _PREVIEW_LIMIT = 500
 _TOOL_BLOCK_TYPES = frozenset(
     {"tool_use", "tool_call", "input_json_delta", "server_tool_use"}
 )
+
+#: Content-block types that carry the model's reasoning/thinking text.
+_THINKING_BLOCK_TYPES = frozenset({"thinking", "reasoning", "reasoning_content"})
 
 
 def _looks_like_error(message: str) -> bool:
@@ -67,11 +84,11 @@ def strip_tool_blocks(text: str) -> str:
     """Remove tool-use JSON blocks that leaked into assistant text.
 
     Anthropic-style messages carry ``content`` as a list of ``text`` and
-    ``tool_use`` blocks. The upstream normalizer serializes each non-text block
-    as a standalone JSON line, so a tool call appears both as a proper tool
-    frame and as a JSON line in the text. The tool frame is the source of truth;
-    here we discard every line that parses to a tool-invocation block, leaving
-    only the model's prose. Lines that are not such blocks are kept verbatim.
+    ``tool_use`` blocks. A snapshot serializes each non-text block as a
+    standalone JSON line, so a tool call would appear both as a proper tool
+    frame and as a JSON line in the text. The tool frame is the source of
+    truth; here we discard every line that parses to a tool-invocation block,
+    leaving only the model's prose. Lines that are not such blocks are kept.
     """
     if "tool_use" not in text:
         return text
@@ -90,6 +107,110 @@ def strip_tool_blocks(text: str) -> str:
     return "\n".join(kept).strip()
 
 
+# --- message-chunk parsing -------------------------------------------------
+
+
+def _looks_like_message(obj: Any) -> bool:
+    """True for a LangChain message/-chunk (has ``content``, not a str/dict)."""
+    return hasattr(obj, "content") and not isinstance(obj, (str, bytes, dict))
+
+
+def _extract_message(data: Any) -> Any:
+    """Peel ``messages``-mode wrappers down to the ``AIMessageChunk``.
+
+    Depending on ``stream_mode``/``subgraphs`` the payload is either the raw
+    ``(message, metadata)`` pair or ``(namespace, (message, metadata))``. The
+    namespace wrapper is peeled until the message-like object is found.
+    """
+    cur = data
+    for _ in range(4):
+        if isinstance(cur, tuple) and len(cur) == 2:
+            first, second = cur
+            if _looks_like_message(first):
+                return first
+            cur = second
+        else:
+            break
+    return cur if _looks_like_message(cur) else None
+
+
+def _is_ai_message(msg: Any) -> bool:
+    class_name = type(msg).__name__.lower()
+    if "tool" in class_name or "human" in class_name or "system" in class_name:
+        return False
+    msg_type = str(getattr(msg, "type", "") or "").lower()
+    return "ai" in class_name or msg_type in ("ai", "aimessagechunk")
+
+
+def _split_message_deltas(msg: Any) -> tuple[str, str]:
+    """Return ``(thinking, text)`` deltas carried by one message chunk.
+
+    Handles plain-string content and Anthropic-style block lists; tool-use and
+    JSON-delta blocks are skipped (they surface as tool frames via ``updates``).
+    Provider reasoning carried in ``additional_kwargs`` is also collected.
+    """
+    content = getattr(msg, "content", None)
+    text_parts: list[str] = []
+    think_parts: list[str] = []
+    if isinstance(content, str):
+        text_parts.append(content)
+    elif isinstance(content, list):
+        for block in content:
+            if isinstance(block, str):
+                text_parts.append(block)
+            elif isinstance(block, dict):
+                block_type = block.get("type")
+                if block_type == "text":
+                    value = block.get("text")
+                    if isinstance(value, str):
+                        text_parts.append(value)
+                elif block_type in _THINKING_BLOCK_TYPES:
+                    value = (
+                        block.get("thinking")
+                        or block.get("reasoning")
+                        or block.get("text")
+                    )
+                    if isinstance(value, str):
+                        think_parts.append(value)
+    extra = getattr(msg, "additional_kwargs", None)
+    if isinstance(extra, dict):
+        reasoning = extra.get("reasoning_content")
+        if isinstance(reasoning, str):
+            think_parts.append(reasoning)
+    return "".join(think_parts), "".join(text_parts)
+
+
+# --- custom (sub-agent) progress parsing -----------------------------------
+
+
+def _unwrap_custom(data: Any) -> dict | None:
+    """Peel any ``(namespace, payload)`` wrapper down to the custom dict."""
+    cur = data
+    for _ in range(4):
+        if isinstance(cur, dict):
+            return cur
+        if isinstance(cur, tuple) and len(cur) == 2:
+            cur = cur[1]
+        else:
+            break
+    return cur if isinstance(cur, dict) else None
+
+
+def _acp_progress_text(key: str, value: Any) -> str:
+    """Map one AI-coding ACP custom event to a short progress line, or ""."""
+    if not isinstance(value, str) or not value:
+        return ""
+    if key.endswith(("_progress", "_thought", "_plan")):
+        return value
+    if key.endswith("_tool_start"):
+        # Encoded as ``kind\x00title\x00tool_id`` (see ai_code _acp_base).
+        parts = value.split("\x00")
+        title = parts[1] if len(parts) > 1 else parts[0]
+        return f"\u2192 {title}\n" if title else ""
+    # ``_tool_progress`` / ``_usage`` are noisy status pings — skip them.
+    return ""
+
+
 class StreamTranslator:
     """Stateful translator: pairs tool calls with results across chunks."""
 
@@ -97,30 +218,44 @@ class StreamTranslator:
         self._tool_counter = 0
         #: FIFO of ``(tool_id, tool_name)`` awaiting their result frame.
         self._pending_tools: list[tuple[str, str]] = []
-        #: Last assistant text seen, surfaced as the final answer at run end.
+        #: Last full assistant snapshot seen, surfaced as the final answer.
         self.final_text = ""
-        #: Text already streamed for the current (open) assistant bubble, so we
-        #: emit only the new suffix and never re-send a duplicated snapshot.
-        self._open_text = ""
 
-    #: Emit order within a single update: the model's prose ("I'll use a tool")
-    #: comes before the tool call it announces, and tool results come last. The
-    #: upstream parser lists tool calls before their message text, so we reorder
-    #: here to match how the conversation actually reads in the UI.
-    _EVENT_ORDER = {"node_message": 0, "tool_call": 1, "tool_result": 2}
+    #: Emit order within a single ``updates`` chunk: tool calls before results.
+    _EVENT_ORDER = {"tool_call": 0, "tool_result": 1}
 
     def translate(self, chunk: Any) -> list[tuple[str, dict]]:
         """Return ``(event_type, data)`` frames produced by one stream chunk."""
         mode, data = normalize_stream_chunk(chunk)
-        if mode != "updates":
-            return []
+        if mode == "messages":
+            return self._on_messages_mode(data)
+        if mode == "custom":
+            return self._on_custom_mode(data)
+        if mode == "updates":
+            return self._on_updates_mode(data)
+        return []
 
+    # --- messages mode (live token stream) ---------------------------------
+
+    def _on_messages_mode(self, data: Any) -> list[tuple[str, dict]]:
+        msg = _extract_message(data)
+        if msg is None or not _is_ai_message(msg):
+            return []
+        thinking_text, text = _split_message_deltas(msg)
         frames: list[tuple[str, dict]] = []
-        # ``sorted`` is stable, so frames within the same category keep their
-        # original relative order while text moves ahead of its tool call.
+        if thinking_text:
+            frames.append(ev.thinking(thinking_text))
+        if text:
+            frames.append(ev.text_delta(text))
+        return frames
+
+    # --- updates mode (tool frames + final-answer capture) -----------------
+
+    def _on_updates_mode(self, data: Any) -> list[tuple[str, dict]]:
+        frames: list[tuple[str, dict]] = []
         ordered = sorted(
             iter_stream_chunk_events(data),
-            key=lambda it: self._EVENT_ORDER.get(it.get("event_type"), 3),
+            key=lambda it: self._EVENT_ORDER.get(it.get("event_type"), 2),
         )
         for item in ordered:
             event_type = item.get("event_type")
@@ -130,35 +265,15 @@ class StreamTranslator:
             elif event_type == "tool_result":
                 frames.append(self._on_tool_result(payload))
             elif event_type == "node_message":
-                frame = self._on_node_message(str(payload.get("message") or ""))
-                if frame is not None:
-                    frames.append(frame)
+                # The snapshot is the authoritative final answer; capture it
+                # but do not emit a frame — the text already streamed live via
+                # the ``messages`` mode. Leaked tool-use JSON is stripped.
+                text = strip_tool_blocks(str(payload.get("message") or ""))
+                if text:
+                    self.final_text = text
         return frames
 
-    def _on_node_message(self, text: str) -> tuple[str, dict] | None:
-        """Emit a ``text_delta`` for new assistant text only (deduped).
-
-        ``updates`` mode delivers full message snapshots, and the same snapshot
-        can surface twice (subgraph + parent). The client treats ``text_delta``
-        as an append, so we send only the suffix beyond what we already streamed
-        into the current bubble and drop exact-duplicate snapshots. Leaked
-        tool-use JSON blocks are stripped first so they never reach the UI.
-        """
-        text = strip_tool_blocks(text)
-        if not text or text == self._open_text:
-            return None
-        if self._open_text and text.startswith(self._open_text):
-            delta = text[len(self._open_text) :]
-        else:
-            delta = text
-        self._open_text = text
-        self.final_text = text
-        return ev.text_delta(delta)
-
     def _on_tool_call(self, payload: dict) -> tuple[str, dict]:
-        # A tool call starts a new turn: the client closes the open assistant
-        # bubble, so the next text begins a fresh one — reset the suffix tracker.
-        self._open_text = ""
         self._tool_counter += 1
         tool_id = f"t{self._tool_counter}"
         tool_name = str(payload.get("tool_name") or "tool")
@@ -175,12 +290,17 @@ class StreamTranslator:
         tool_id, tool_name = self._match_pending(result_name)
         message = str(payload.get("message") or "")
         is_error = _looks_like_error(message)
+        truncated = len(message) > _PREVIEW_LIMIT
         return ev.tool_use_end(
             tool_id=tool_id,
             tool_name=tool_name or result_name or "tool",
             success=not is_error,
             is_error=is_error,
             output_preview=message[:_PREVIEW_LIMIT],
+            truncated=truncated,
+            # Carried out-of-band for the backend to persist; only the full
+            # output (when actually longer than the preview) is worth storing.
+            output_full=message if truncated else None,
         )
 
     def _match_pending(self, result_name: str) -> tuple[str, str]:
@@ -193,6 +313,24 @@ class StreamTranslator:
             return self._pending_tools.pop(0)
         self._tool_counter += 1
         return f"t{self._tool_counter}", result_name
+
+    # --- custom mode (sub-agent live progress) -----------------------------
+
+    def _on_custom_mode(self, data: Any) -> list[tuple[str, dict]]:
+        payload = _unwrap_custom(data)
+        if not payload:
+            return []
+        # Attribute progress to the tool currently running (the ACP sub-agent
+        # call). Without an open tool there is nowhere to show it, so skip.
+        if not self._pending_tools:
+            return []
+        tool_id = self._pending_tools[-1][0]
+        frames: list[tuple[str, dict]] = []
+        for key, value in payload.items():
+            chunk = _acp_progress_text(str(key), value)
+            if chunk:
+                frames.append(ev.tool_use_progress(tool_id=tool_id, chunk=chunk))
+        return frames
 
 
 def extract_usage(chunk: Any) -> dict[str, int]:

@@ -50,7 +50,7 @@ def _assistant_blocks(events: list[dict]) -> tuple[list[dict], str]:
             else:
                 blocks.append({"type": "text", "text": text})
         elif ftype == EVENT_THINKING:
-            text = str(data.get("text") or "")
+            text = str(data.get("thinking") or "")
             if not text:
                 continue
             if blocks and blocks[-1]["type"] == "thinking":
@@ -77,6 +77,9 @@ def _assistant_blocks(events: list[dict]) -> tuple[list[dict], str]:
                     "tool_use_id": str(data.get("tool_id") or ""),
                     "content": data.get("output_preview") or "",
                     "is_error": bool(data.get("is_error")),
+                    # Full output lives in the tool-output store; the flag lets
+                    # the UI offer "show more" after a reload too.
+                    "truncated": bool(data.get("truncated")),
                 }
             )
     # Sanitize on read too: runs recorded before tool-use blocks were filtered

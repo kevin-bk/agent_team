@@ -47,7 +47,7 @@ def text_delta(text: str) -> tuple[str, dict]:
 
 
 def thinking(text: str) -> tuple[str, dict]:
-    return EVENT_THINKING, {"text": text}
+    return EVENT_THINKING, {"thinking": text}
 
 
 def tool_use_start(*, tool_id: str, tool_name: str, tool_input: dict | None) -> tuple[str, dict]:
@@ -70,7 +70,17 @@ def tool_use_end(
     is_error: bool,
     output_preview: str,
     duration_ms: int | None = None,
+    truncated: bool = False,
+    output_full: str | None = None,
 ) -> tuple[str, dict]:
+    """Build a ``tool_use_end`` frame.
+
+    ``truncated`` marks that ``output_preview`` is shorter than the real result,
+    so the UI can offer a "show more" affordance. ``output_full`` carries the
+    complete output for the backend to persist out-of-stream; it is popped
+    before the frame is stored/streamed, so it never bloats the event store or
+    SSE (see ``local_backend``).
+    """
     return EVENT_TOOL_USE_END, {
         "tool_id": tool_id,
         "tool_name": tool_name,
@@ -78,6 +88,8 @@ def tool_use_end(
         "is_error": is_error,
         "output_preview": output_preview,
         "duration_ms": duration_ms,
+        "truncated": truncated,
+        "output_full": output_full,
     }
 
 

@@ -141,6 +141,12 @@ export class ApiClient {
       { method: "POST" },
     );
   }
+  /** Full output of one tool call, loaded on demand when a card is expanded. */
+  getToolOutput(runId: string, toolId: string) {
+    return this.request<{ content: string; is_error: boolean }>(
+      `/api/runs/${runId}/tools/${encodeURIComponent(toolId)}/output`,
+    );
+  }
   uploadConversationAttachments(convId: string, files: File[]) {
     const fd = new FormData();
     for (const f of files) fd.append("files", f);

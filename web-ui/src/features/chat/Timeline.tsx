@@ -19,6 +19,7 @@ import { cn } from "@/lib/utils";
 import { TODO_TOOL } from "./plan";
 import { ToolCard } from "./ToolCard";
 import type { Block, Sender, UserAttachment } from "./types";
+import { useSmoothText } from "./useSmoothText";
 
 export function Timeline({
   blocks,
@@ -316,7 +317,10 @@ function AssistantText({
   text: string;
   streaming?: boolean;
 }) {
-  const segments = useMemo(() => parseThinking(text), [text]);
+  // Reveal streamed text at a steady cadence so bursty tokens read as smooth
+  // typing; non-streaming (historical/final) text is returned as-is.
+  const display = useSmoothText(text, !!streaming);
+  const segments = useMemo(() => parseThinking(display), [display]);
   const hasVisible = segments.some(
     (s) => s.type === "thinking" || s.content.trim(),
   );

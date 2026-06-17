@@ -5,6 +5,7 @@ import {
   XCircle,
 } from "@/components/icons";
 import { useState } from "react";
+import { useApi } from "@/api/ApiProvider";
 import { CodeView } from "@/components/CodeView";
 import { DiffStatBadge, DiffView, diffStats } from "@/components/DiffView";
 import { Spinner } from "@/components/ui/spinner";
@@ -22,11 +23,34 @@ export function ToolCard({
   block: ToolBlock;
   onOpenFile?: (path: string) => void;
 }) {
+  const { client } = useApi();
   const [open, setOpen] = useState(false);
+  // Lazily fetched full output (only when the user asks for it), so large tool
+  // results never travel over the live stream or load up-front.
+  const [fullOutput, setFullOutput] = useState<string | null>(null);
+  const [loadingFull, setLoadingFull] = useState(false);
+  const [fullError, setFullError] = useState(false);
   const arg = summarizeInput(block.input);
   const filePath = pickPath(block.input);
   const isWrite = WRITE_TOOLS.has(block.name);
   const isEdit = EDIT_TOOLS.has(block.name);
+
+  const shownOutput = fullOutput ?? block.outputPreview ?? block.progress;
+  const canExpand = !!block.truncated && !!block.runId && fullOutput === null;
+
+  const loadFull = async () => {
+    if (!block.runId || loadingFull) return;
+    setLoadingFull(true);
+    setFullError(false);
+    try {
+      const res = await client.getToolOutput(block.runId, block.toolId);
+      setFullOutput(res.content ?? "");
+    } catch {
+      setFullError(true);
+    } finally {
+      setLoadingFull(false);
+    }
+  };
 
   const editStats =
     isEdit &&
@@ -109,10 +133,25 @@ export function ToolCard({
               </pre>
             )
           )}
-          {(block.progress || block.outputPreview) && (
+          {shownOutput && (
             <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded bg-[hsl(var(--code-bg))] p-2 text-[11px] leading-relaxed text-[hsl(210_14%_88%)] scrollbar-thin">
-              {block.outputPreview ?? block.progress}
+              {shownOutput}
             </pre>
+          )}
+          {canExpand && (
+            <button
+              type="button"
+              onClick={loadFull}
+              disabled={loadingFull}
+              className="mt-1 text-[11px] font-medium text-primary hover:underline disabled:opacity-60"
+            >
+              {loadingFull ? "Đang tải…" : "Xem thêm"}
+            </button>
+          )}
+          {fullError && (
+            <span className="mt-1 block text-[11px] text-destructive">
+              Không tải được output đầy đủ.
+            </span>
           )}
         </div>
       )}

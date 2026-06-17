@@ -16,6 +16,7 @@ from agent_team.features.board.models import (
     AgentTeamRun,
     AgentTeamRunEvent,
     AgentTeamTask,
+    AgentTeamToolOutput,
 )
 from agent_team.features.board.repositories import boards as boards_repo
 from agent_team.features.board.repositories import tasks as tasks_repo
@@ -38,6 +39,7 @@ _PLUGIN_MODELS = (
     AgentTeamActivity,
     AgentTeamRepo,
     AgentTeamBoardRepo,
+    AgentTeamToolOutput,
 )
 
 
@@ -102,6 +104,7 @@ def test_plugin_meta_models_and_menu():
         "plugin_agent_team_activity",
         "plugin_agent_team_repo",
         "plugin_agent_team_board_repo",
+        "plugin_agent_team_tool_output",
     ]
     menu = plugin.menu_items()
     assert len(menu) == 1
@@ -939,7 +942,9 @@ def test_translator_pairs_tools_and_tracks_final_text():
     assert start_frames[0][1]["tool_id"] == end_frames[0][1]["tool_id"]
     assert end_frames[0][1]["is_error"] is False
 
-    assert [t for t, _ in answer_frames] == [ev.EVENT_TEXT_DELTA]
+    # ``updates`` snapshots no longer re-stream text (it streamed live via the
+    # ``messages`` mode); the snapshot only captures the final answer.
+    assert answer_frames == []
     assert translator.final_text == "Done: listed files"
 
 
@@ -1047,6 +1052,10 @@ async def test_local_backend_drives_run_and_persists_events(db, monkeypatch, tmp
 
     monkeypatch.setenv("AGENT_TEAM_WORKSPACE_ROOT", str(tmp_path))
 
+    from langchain_core.messages import AIMessageChunk
+
+    ns = ("agent:1",)
+
     async def fake_build_graph(agent_alias, checkpointer, session=None, **kwargs):
         return _FakeAgent(
             [
@@ -1070,6 +1079,10 @@ async def test_local_backend_drives_run_and_persists_events(db, monkeypatch, tmp
                         "messages": [ToolMessage(content="ok", name="shell", tool_call_id="x")]
                     }
                 },
+                # The final answer streams token-by-token via ``messages`` mode,
+                # then the ``updates`` snapshot captures the full final answer.
+                (ns, "messages", (AIMessageChunk(content="All "), {})),
+                (ns, "messages", (AIMessageChunk(content="done"), {})),
                 {"agent": {"messages": [AIMessage(content="All done")]}},
             ]
         )
@@ -1113,6 +1126,12 @@ async def test_local_backend_drives_run_and_persists_events(db, monkeypatch, tmp
     assert types[0] == ev.EVENT_RUN_START
     assert ev.EVENT_TOOL_USE_START in types
     assert ev.EVENT_TOOL_USE_END in types
+    # The final answer streamed as text_delta tokens before the run ended.
+    assert ev.EVENT_TEXT_DELTA in types
+    text = "".join(
+        f["data"].get("text", "") for f in frames if f["type"] == ev.EVENT_TEXT_DELTA
+    )
+    assert text == "All done"
     assert ev.EVENT_FINAL_ANSWER in types
     assert types[-1] == ev.EVENT_RUN_END
 
@@ -1443,29 +1462,74 @@ def test_board_bus_fans_out_typed_events_to_subscribers():
     asyncio.run(scenario())
 
 
-def test_translator_dedupes_snapshot_and_emits_suffix():
+def test_translator_streams_text_tokens_from_messages_mode():
+    """``messages`` mode streams assistant text token-by-token as text_delta."""
     from agent_team.features.board.runtime import events as ev
     from agent_team.features.board.runtime.translator import StreamTranslator
-    from langchain_core.messages import AIMessage
+    from langchain_core.messages import AIMessageChunk
 
     translator = StreamTranslator()
+    ns = ("agent:1",)
 
-    first = translator.translate({"agent": {"messages": [AIMessage(content="Hello")]}})
-    # Same snapshot surfacing again (subgraph + parent) must not be re-emitted.
-    dup = translator.translate({"agent": {"messages": [AIMessage(content="Hello")]}})
-    # A growing snapshot emits only the new suffix.
-    more = translator.translate(
-        {"agent": {"messages": [AIMessage(content="Hello world")]}}
-    )
+    first = translator.translate((ns, "messages", (AIMessageChunk(content="Hello"), {})))
+    second = translator.translate((ns, "messages", (AIMessageChunk(content=" world"), {})))
 
     assert [(t, d["text"]) for t, d in first] == [(ev.EVENT_TEXT_DELTA, "Hello")]
-    assert dup == []
-    assert [(t, d["text"]) for t, d in more] == [(ev.EVENT_TEXT_DELTA, " world")]
+    assert [(t, d["text"]) for t, d in second] == [(ev.EVENT_TEXT_DELTA, " world")]
 
 
-def test_translator_strips_leaked_tool_use_blocks_from_text():
-    """Anthropic tool_use blocks must surface as tool frames, never as text."""
+def test_translator_streams_thinking_tokens_from_messages_mode():
+    """Reasoning/thinking blocks stream as ``thinking`` frames (not text)."""
     from agent_team.features.board.runtime import events as ev
+    from agent_team.features.board.runtime.translator import StreamTranslator
+    from langchain_core.messages import AIMessageChunk
+
+    translator = StreamTranslator()
+    ns = ("agent:1",)
+
+    chunk = AIMessageChunk(
+        content=[
+            {"type": "thinking", "thinking": "Let me reason"},
+            {"type": "text", "text": "Here is the answer"},
+        ]
+    )
+    frames = translator.translate((ns, "messages", (chunk, {})))
+
+    assert [t for t, _ in frames] == [ev.EVENT_THINKING, ev.EVENT_TEXT_DELTA]
+    assert frames[0][1]["thinking"] == "Let me reason"
+    assert frames[1][1]["text"] == "Here is the answer"
+
+
+def test_translator_messages_mode_ignores_tool_use_blocks():
+    """Tool-use blocks in a message chunk are not streamed as visible text."""
+    from agent_team.features.board.runtime.translator import StreamTranslator
+    from langchain_core.messages import AIMessageChunk
+
+    translator = StreamTranslator()
+    ns = ("agent:1",)
+    chunk = AIMessageChunk(
+        content=[
+            {"type": "text", "text": "Reading file"},
+            {
+                "type": "tool_use",
+                "id": "toolu_123",
+                "name": "read_file",
+                "input": {"file_path": "/ws/T-1"},
+            },
+        ]
+    )
+    frames = translator.translate((ns, "messages", (chunk, {})))
+    joined = "".join(d.get("text", "") for _, d in frames)
+    assert joined == "Reading file"
+    assert "tool_use" not in joined and "toolu_123" not in joined
+
+
+def test_translator_updates_capture_final_text_without_streaming_it():
+    """``updates`` snapshots set the final answer but emit no text frame.
+
+    Leaked Anthropic tool-use JSON in the snapshot text is stripped, so the
+    persisted final answer is clean prose.
+    """
     from agent_team.features.board.runtime.translator import StreamTranslator
     from langchain_core.messages import AIMessage
 
@@ -1491,22 +1555,56 @@ def test_translator_strips_leaked_tool_use_blocks_from_text():
     )
 
     frames = translator.translate({"agent": {"messages": [message]}})
-    by_type: dict[str, list[dict]] = {}
-    for ftype, data in frames:
-        by_type.setdefault(ftype, []).append(data)
+    types = [t for t, _ in frames]
+    # The tool call surfaces as a proper tool frame; no text frame is emitted.
+    assert "tool_use_start" in types
+    assert "text_delta" not in types
+    # The captured final text carries only the prose, never the JSON block.
+    assert translator.final_text == "Let me read the file:"
+    assert "tool_use" not in translator.final_text
+    assert "toolu_123" not in translator.final_text
 
-    # The tool call is surfaced as a proper tool frame ...
-    assert by_type.get(ev.EVENT_TOOL_USE_START)
-    # ... and the visible text carries only the prose, never the JSON block.
-    text_frames = by_type.get(ev.EVENT_TEXT_DELTA, [])
-    assert text_frames, "expected the prose to still stream"
-    joined = "".join(d["text"] for d in text_frames)
-    assert joined == "Let me read the file:"
-    assert "tool_use" not in joined
-    assert "toolu_123" not in joined
-    # The model speaks before it calls the tool, so text must lead.
-    order = [t for t, _ in frames]
-    assert order.index(ev.EVENT_TEXT_DELTA) < order.index(ev.EVENT_TOOL_USE_START)
+
+def test_translator_custom_mode_surfaces_acp_progress_on_running_tool():
+    """ACP sub-agent custom progress streams as tool_use_progress on the tool."""
+    from agent_team.features.board.runtime import events as ev
+    from agent_team.features.board.runtime.translator import StreamTranslator
+    from langchain_core.messages import AIMessage
+
+    translator = StreamTranslator()
+    ns = ("agent:1",)
+
+    # The model calls the claude_acp tool → opens a tool card.
+    call = {
+        "agent": {
+            "messages": [
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "claude_acp", "args": {}, "id": "c1"}],
+                )
+            ]
+        }
+    }
+    start = translator.translate(call)
+    tool_id = start[0][1]["tool_id"]
+
+    # While it runs, the sub-agent emits live progress on the custom channel.
+    progress = translator.translate((ns, "custom", {"claude_acp_progress": "working..."}))
+    thought = translator.translate((ns, "custom", {"claude_acp_thought": "hmm"}))
+
+    assert [t for t, _ in progress] == [ev.EVENT_TOOL_USE_PROGRESS]
+    assert progress[0][1]["tool_id"] == tool_id
+    assert progress[0][1]["chunk"] == "working..."
+    assert [t for t, _ in thought] == [ev.EVENT_TOOL_USE_PROGRESS]
+    assert thought[0][1]["chunk"] == "hmm"
+
+
+def test_translator_custom_mode_without_running_tool_is_ignored():
+    from agent_team.features.board.runtime.translator import StreamTranslator
+
+    translator = StreamTranslator()
+    frames = translator.translate((("agent:1",), "custom", {"claude_acp_progress": "x"}))
+    assert frames == []
 
 
 def test_thread_messages_reconstructs_user_and_assistant_turns(db):

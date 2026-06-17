@@ -4,7 +4,8 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "vite --mode agent-team",
+    "dev:agent-team": "vite --mode agent-team",
     "build": "tsc --noEmit && vite build",
     "build:agent-team": "tsc --noEmit && vite build --mode agent-team && node scripts/copy-to-plugin.mjs",
     "preview": "vite preview",

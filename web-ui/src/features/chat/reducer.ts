@@ -114,6 +114,7 @@ export function blocksFromHistory(
           kind: "tool",
           id: nid("tool"),
           toolId,
+          runId: m.run_id ?? undefined,
           name: typeof block.name === "string" ? block.name : "tool",
           input: (block.input as Record<string, unknown>) ?? {},
           status: "success",
@@ -132,6 +133,7 @@ export function blocksFromHistory(
               status: block.is_error ? "error" : "success",
               outputPreview:
                 toolResultPreview(block.content) || b.outputPreview,
+              truncated: block.truncated === true,
             };
           }
         }
@@ -293,6 +295,7 @@ function applyEvent(state: RunState, ev: AgentEvent): RunState {
         kind: "tool",
         id: nid("tool"),
         toolId: ev.tool_id,
+        runId: ev.run_id,
         name: ev.tool_name,
         input: ev.input ?? {},
         status: "running",
@@ -321,6 +324,7 @@ function applyEvent(state: RunState, ev: AgentEvent): RunState {
             ...b,
             status: ev.is_error || !ev.success ? "error" : "success",
             outputPreview: ev.output_preview ?? undefined,
+            truncated: ev.truncated ?? false,
             durationMs: ev.duration_ms,
           };
         }

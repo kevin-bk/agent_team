@@ -55,6 +55,8 @@ export interface ToolUseEndEvent extends BaseEvent {
   duration_ms: number;
   output_preview?: string | null;
   is_error: boolean;
+  /** Result longer than the inline preview; full text is fetched on demand. */
+  truncated?: boolean;
 }
 export interface CompactionEvent extends BaseEvent {
   type: "compaction";

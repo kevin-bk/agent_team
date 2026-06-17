@@ -25,6 +25,7 @@ from agent_team.features.board.repositories import members as members_repo
 from agent_team.features.board.repositories import messages as messages_repo
 from agent_team.features.board.repositories import runs as runs_repo
 from agent_team.features.board.repositories import tasks as tasks_repo
+from agent_team.features.board.repositories import tool_outputs as tool_outputs_repo
 from agent_team.features.board.runtime import event_store
 from agent_team.features.board.runtime.backend import get_run_backend
 from agent_team.features.board.runtime.events import TERMINAL_RUN_STATUSES
@@ -827,6 +828,26 @@ async def cancel_run(run_id: str, request: Request, db: Session = Depends(get_db
         return not_found("Run not found")
     ok = await get_run_backend().cancel(run_id)
     return {"ok": ok, "status": event_store.get_run_status(run_id)}
+
+
+@router.get("/runs/{run_id}/tools/{tool_id}/output")
+async def get_tool_output(
+    run_id: str, tool_id: str, request: Request, db: Session = Depends(get_db)
+):
+    """Full text of one tool result, loaded on demand when a card is expanded.
+
+    The streamed frame only carries a short preview, so the complete output is
+    fetched here only for the specific tool the user chose to expand.
+    """
+    _, err = auth_or_401(db, request)
+    if err:
+        return err
+    if runs_repo.get_run(db, run_id) is None:
+        return not_found("Run not found")
+    output = tool_outputs_repo.get_tool_output(run_id, tool_id)
+    if output is None:
+        return not_found("Tool output not found")
+    return output
 
 
 @router.get("/runs/{run_id}/events")

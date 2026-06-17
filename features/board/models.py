@@ -391,3 +391,27 @@ class AgentTeamRunEvent(Base):
     type: Mapped[str] = mapped_column(String(64), nullable=False)
     data: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class AgentTeamToolOutput(Base):
+    """Full text of one tool result, stored out of the event/SSE stream.
+
+    The streamed ``tool_use_end`` frame keeps only a short ``output_preview``
+    (and a ``truncated`` flag) so the timeline and SSE replay stay light. The
+    complete output lives here, keyed by ``(run_id, tool_id)``, and is fetched
+    on demand when the user expands a tool card — so large outputs never bloat
+    the live stream yet remain fully readable later.
+    """
+
+    __tablename__ = "plugin_agent_team_tool_output"
+
+    run_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("plugin_agent_team_run.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    #: Per-run tool id assigned by the stream translator (e.g. ``t3``).
+    tool_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    content: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    is_error: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

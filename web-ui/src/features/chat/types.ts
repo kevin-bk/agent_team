@@ -43,11 +43,15 @@ export interface ToolBlock {
   kind: "tool";
   id: string;
   toolId: string;
+  /** Run that produced this tool call; needed to lazy-load the full output. */
+  runId?: string;
   name: string;
   input: Record<string, unknown>;
   status: ToolStatus;
   progress: string;
   outputPreview?: string;
+  /** True when the result is longer than the inline preview (offer "show more"). */
+  truncated?: boolean;
   durationMs?: number;
 }
 export interface SubagentBlock {

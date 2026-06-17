@@ -17,6 +17,7 @@ from agent_team.features.board.board_events import get_board_bus
 from agent_team.features.board.models import AgentTeamRun
 from agent_team.features.board.repositories import activity as activity_repo
 from agent_team.features.board.repositories.comments import list_comments
+from agent_team.features.board.repositories import tool_outputs as tool_outputs_repo
 from agent_team.features.board.repositories.runs import (
     get_run,
     list_runs_for_conversation,
@@ -105,7 +106,11 @@ class LocalRunBackend:
                 {"messages": [{"role": "user", "content": input_text}]},
                 {"configurable": {"thread_id": thread_id}},
                 subgraphs=True,
-                stream_mode=["updates", "custom"],
+                # ``messages`` streams the model output token-by-token (text +
+                # thinking); ``updates`` carries the structured tool frames and
+                # the final-answer snapshot; ``custom`` carries AI-coding
+                # sub-agent live progress.
+                stream_mode=["messages", "updates", "custom"],
             )
             last_cancel_poll = 0.0
             try:
@@ -120,6 +125,7 @@ class LocalRunBackend:
                             cancelled = True
                             break
                     for event_type, data in translator.translate(raw_chunk):
+                        data = await _persist_tool_output(run_id, event_type, data)
                         await asyncio.to_thread(
                             event_store.append_event, run_id, event_type, data
                         )
@@ -378,6 +384,30 @@ async def _log_run_finished(
                 "status": status,
             },
         )
+
+
+async def _persist_tool_output(run_id: str, event_type: str, data: dict) -> dict:
+    """Offload a tool's full output out of the streamed frame.
+
+    For ``tool_use_end`` frames the full result (``output_full``) is saved to
+    the tool-output store keyed by ``(run_id, tool_id)`` and dropped from the
+    frame, so the event store / SSE keep only the light preview. ``run_id`` is
+    stamped onto tool frames so the UI can fetch the full output on demand.
+    """
+    if event_type not in (ev.EVENT_TOOL_USE_START, ev.EVENT_TOOL_USE_END):
+        return data
+    data = {**data, "run_id": run_id}
+    if event_type == ev.EVENT_TOOL_USE_END:
+        full = data.pop("output_full", None)
+        if full:
+            await asyncio.to_thread(
+                tool_outputs_repo.save_tool_output,
+                run_id,
+                str(data.get("tool_id") or ""),
+                str(full),
+                is_error=bool(data.get("is_error")),
+            )
+    return data
 
 
 async def _cancel_ai_coding(thread_id: str) -> None:
