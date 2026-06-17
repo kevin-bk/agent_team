@@ -428,6 +428,11 @@ export function TaskCockpit({
                     {activeAgent.model}
                   </span>
                 )}
+                {(viewConvId ?? activeAttempt?.conv_id) && (
+                  <ConversationIdBadge
+                    convId={(viewConvId ?? activeAttempt?.conv_id) as string}
+                  />
+                )}
                 <div className="ml-auto flex items-center gap-1">
                   {attemptList.length > 1 && (
                     <AttemptHistoryMenu
@@ -1696,6 +1701,19 @@ function formatTypingNames(names: string[]): string {
   return `${names[0]} and ${names.length - 1} others are typing…`;
 }
 
+/** Small monospace badge showing the conversation id. */
+function ConversationIdBadge({ convId }: { convId: string }) {
+  return (
+    <span
+      title={`Conversation ID: ${convId}`}
+      className="inline-flex items-center gap-1 rounded-sm bg-surface-1 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground"
+    >
+      <span className="opacity-60">id:</span>
+      <span className="max-w-[180px] truncate">{convId}</span>
+    </span>
+  );
+}
+
 function Conversation({
   taskId,
   agentId,
@@ -1982,6 +2000,12 @@ function AttemptHistoryMenu({
               </div>
               <span className="text-[11px] text-muted-foreground">
                 #{a.attempt} · {fmtTime(a.created_at)}
+              </span>
+              <span
+                title={`Conversation ID: ${a.conv_id}`}
+                className="block w-full truncate font-mono text-[10px] text-muted-foreground/70"
+              >
+                id: {a.conv_id}
               </span>
             </DropdownMenuItem>
           );
