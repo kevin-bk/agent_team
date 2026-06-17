@@ -35,6 +35,7 @@ export const qk = {
   boardTasks: (id: string) => ["board-tasks", id] as const,
   boardMembers: (id: string) => ["board-members", id] as const,
   agents: ["agents"] as const,
+  cliTargets: ["cli-targets"] as const,
   taskRuns: (taskId: string, agentId?: string) =>
     ["task-runs", taskId, agentId ?? "_all"] as const,
   runStats: (boardId: string, days: number, agentId?: string) =>
@@ -334,6 +335,15 @@ export function useAgents() {
     queryKey: qk.agents,
     queryFn: () => client.listAgents(),
     staleTime: 30_000,
+  });
+}
+
+export function useCliTargets() {
+  const { client } = useApi();
+  return useQuery({
+    queryKey: qk.cliTargets,
+    queryFn: () => client.listCliTargets(),
+    staleTime: 60_000,
   });
 }
 

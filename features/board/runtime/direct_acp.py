@@ -1,0 +1,349 @@
+"""Direct CLI run path: chat straight with an ACP coding agent.
+
+A *direct CLI* conversation talks to Claude / Cursor / Codex over ACP without the
+LLM orchestrator in between. Only the agent_team plugin uses this. A direct run
+drives one ACP prompt turn on the shared background loop that owns every ACP
+connection and translates the agent's live progress — assistant text, thinking,
+tool calls — into the same ``AgentEvent`` frames the LLM path emits, so the
+cockpit renders a direct conversation identically to a regular agent one.
+
+The CLI keeps its own persistent session keyed by the conversation thread, so a
+follow-up turn continues the same conversation: that session *is* the
+conversational memory (there is no LLM checkpointer here).
+
+A direct agent is addressed by a synthetic alias ``cli:<engine>`` (e.g.
+``cli:claude``). The alias flows through the normal conversation/run/thread
+machinery untouched; only the run driver branches here instead of building a
+graph.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+import queue
+import shutil
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
+
+from agent_team.features.board.runtime import events as ev
+
+logger = logging.getLogger(__name__)
+
+#: Synthetic-alias namespace marking a direct CLI conversation.
+CLI_ALIAS_PREFIX = "cli:"
+
+#: Polling slice used while waiting on the ACP run's progress queue.
+_DRAIN_TIMEOUT_SECONDS = 0.2
+
+#: ACP custom-progress keys (see ai_code ``_acp_base._route_update``).
+_KEY_PROGRESS = "claude_acp_progress"
+_KEY_THOUGHT = "claude_acp_thought"
+_KEY_PLAN = "claude_acp_plan"
+_KEY_TOOL_START = "claude_acp_tool_start"
+_KEY_TOOL_PROGRESS = "claude_acp_tool_progress"
+_KEY_USAGE = "claude_acp_usage"
+
+#: ACP tool-call statuses that close a tool card.
+_TERMINAL_TOOL_STATUSES = frozenset({"completed", "failed"})
+
+
+@dataclass(frozen=True)
+class _EngineSpec:
+    """Static defaults + env-key prefix for one ACP engine."""
+
+    engine: str
+    label: str
+    command: str
+    args: str
+
+
+#: Direct CLI engines, mirroring the per-agent ACP tools' defaults. Config is
+#: read from the process environment with the same ``AI_CODE_<ENGINE>_ACP_*``
+#: keys, so a direct agent needs no Agent row — it is deliberately *not* one.
+_ENGINES: dict[str, _EngineSpec] = {
+    "claude": _EngineSpec(
+        "claude", "Claude", "npx", "-y @agentclientprotocol/claude-agent-acp"
+    ),
+    "cursor": _EngineSpec("cursor", "Cursor", "cursor-agent", "acp"),
+    "codex": _EngineSpec("codex", "Codex", "npx", "-y @zed-industries/codex-acp"),
+}
+
+
+def is_direct_cli_alias(alias: str | None) -> bool:
+    """True when ``alias`` addresses a direct CLI engine (``cli:<engine>``)."""
+    return bool(alias) and alias.startswith(CLI_ALIAS_PREFIX)
+
+
+def engine_for_alias(alias: str | None) -> str:
+    """Return the engine name encoded in a ``cli:<engine>`` alias, or ""."""
+    if not is_direct_cli_alias(alias):
+        return ""
+    return (alias or "")[len(CLI_ALIAS_PREFIX):].strip().lower()
+
+
+def alias_for_engine(engine: str) -> str:
+    """Return the synthetic alias for an engine (inverse of :func:`engine_for_alias`)."""
+    return f"{CLI_ALIAS_PREFIX}{engine}"
+
+
+def known_cli_aliases() -> set[str]:
+    """All valid direct-CLI aliases (``cli:<engine>``), regardless of install state.
+
+    Used to validate a board's enabled-CLI list: an engine may be enabled even
+    when its launch command is not installed on this host (it can run elsewhere).
+    """
+    return {alias_for_engine(engine) for engine in _ENGINES}
+
+
+def display_name_for_alias(alias: str | None) -> str:
+    """Human label for a direct CLI alias (e.g. ``cli:claude`` → ``Claude (direct)``)."""
+    spec = _ENGINES.get(engine_for_alias(alias))
+    return f"{spec.label} (direct)" if spec else (alias or "")
+
+
+@dataclass(frozen=True)
+class _EngineRuntime:
+    label: str
+    command: str
+    args: list[str]
+    timeout_seconds: int
+    create_timeout_seconds: int
+
+
+def _env(key: str, default: str = "") -> str:
+    return (os.environ.get(key) or default).strip()
+
+
+def _engine_runtime(engine: str) -> _EngineRuntime:
+    """Resolve an engine's command/args/timeout from env (defaults as fallback)."""
+    from plugins.ai_code.tools._acp_base import (
+        _DEFAULT_CREATE_TIMEOUT_SECONDS,
+        _DEFAULT_TIMEOUT_SECONDS,
+    )
+    from plugins.ai_code.tools.cli_tools import _safe_timeout, _split_args
+
+    spec = _ENGINES[engine]
+    up = engine.upper()
+    return _EngineRuntime(
+        label=f"{spec.label} ACP",
+        command=_env(f"AI_CODE_{up}_ACP_COMMAND", spec.command),
+        args=_split_args(_env(f"AI_CODE_{up}_ACP_ARGS", spec.args)),
+        timeout_seconds=_safe_timeout(
+            _env(f"AI_CODE_{up}_ACP_TIMEOUT_SECONDS", str(_DEFAULT_TIMEOUT_SECONDS)),
+            default=_DEFAULT_TIMEOUT_SECONDS,
+        ),
+        create_timeout_seconds=_DEFAULT_CREATE_TIMEOUT_SECONDS,
+    )
+
+
+def available_targets() -> list[dict]:
+    """List the direct CLI engines, flagging which look runnable on this host.
+
+    ``available`` is a best-effort hint (the engine's launch command is on
+    ``PATH``); the UI uses it to disable engines that clearly are not installed.
+    A run still surfaces a precise error if the command turns out to be missing.
+    """
+    targets: list[dict] = []
+    for engine, spec in _ENGINES.items():
+        command = _env(f"AI_CODE_{engine.upper()}_ACP_COMMAND", spec.command)
+        targets.append(
+            {
+                "id": alias_for_engine(engine),
+                "engine": engine,
+                "label": spec.label,
+                "available": shutil.which(command) is not None,
+            }
+        )
+    return targets
+
+
+class _DirectAcpTranslator:
+    """Map ACP custom-progress deltas to ``AgentEvent`` frames.
+
+    Unlike the LLM path — where the whole ACP call is one tool card and its
+    progress is folded into that card — a direct conversation surfaces the agent
+    naturally: assistant text streams as ``text_delta``, reasoning as
+    ``thinking``, and each ACP tool call becomes its own tool card. Tool calls
+    are paired by the ACP tool id so a card opens on start and closes on the
+    terminal progress update.
+    """
+
+    def __init__(self) -> None:
+        self._counter = 0
+        #: ACP tool-call id → ``(our tool_id, tool_name)`` for open tool cards.
+        self._open: dict[str, tuple[str, str]] = {}
+
+    def on_delta(self, delta: dict[str, object]) -> list[tuple[str, dict]]:
+        frames: list[tuple[str, dict]] = []
+        for key, value in delta.items():
+            if isinstance(value, str) and value:
+                frames.extend(self._on_event(key, value))
+        return frames
+
+    def finalize(self) -> list[tuple[str, dict]]:
+        """Close any tool cards still open when the run ends (best-effort)."""
+        frames = [
+            ev.tool_use_end(
+                tool_id=tool_id,
+                tool_name=tool_name,
+                success=True,
+                is_error=False,
+                output_preview="",
+            )
+            for tool_id, tool_name in self._open.values()
+        ]
+        self._open.clear()
+        return frames
+
+    def _on_event(self, key: str, value: str) -> list[tuple[str, dict]]:
+        if key == _KEY_PROGRESS:
+            return [ev.text_delta(value)]
+        if key in (_KEY_THOUGHT, _KEY_PLAN):
+            return [ev.thinking(value)]
+        if key == _KEY_TOOL_START:
+            return self._tool_start(value)
+        if key == _KEY_TOOL_PROGRESS:
+            return self._tool_progress(value)
+        if key == _KEY_USAGE:
+            # The CLI's own context-window gauge (e.g. "45,000/200,000 tokens").
+            # Surfaced as a live ``usage`` frame; it is not LLM billing, so the
+            # run's token total stays zero.
+            return [ev.usage({"text": value})]
+        # Unknown keys are status pings — ignore.
+        return []
+
+    def _tool_start(self, value: str) -> list[tuple[str, dict]]:
+        # Encoded ``kind\x00title\x00tool_id`` (see ai_code ``_acp_base``).
+        parts = value.split("\x00")
+        kind = parts[0] if parts else ""
+        title = parts[1] if len(parts) > 1 else ""
+        acp_id = parts[2] if len(parts) > 2 else ""
+        if not (title or kind):
+            return []
+        self._counter += 1
+        tool_id = f"c{self._counter}"
+        tool_name = title or kind or "tool"
+        if acp_id:
+            self._open[acp_id] = (tool_id, tool_name)
+        return [
+            ev.tool_use_start(
+                tool_id=tool_id,
+                tool_name=tool_name,
+                tool_input={"kind": kind} if kind else {},
+            )
+        ]
+
+    def _tool_progress(self, value: str) -> list[tuple[str, dict]]:
+        # Encoded ``tool_id\x00status\x00title``.
+        parts = value.split("\x00")
+        acp_id = parts[0] if parts else ""
+        status = parts[1] if len(parts) > 1 else ""
+        title = parts[2] if len(parts) > 2 else ""
+        opened = self._open.get(acp_id)
+        if opened is None:
+            return []
+        tool_id, tool_name = opened
+        if status in _TERMINAL_TOOL_STATUSES:
+            self._open.pop(acp_id, None)
+            return [
+                ev.tool_use_end(
+                    tool_id=tool_id,
+                    tool_name=title or tool_name,
+                    success=status != "failed",
+                    is_error=status == "failed",
+                    output_preview=title or "",
+                )
+            ]
+        return [ev.tool_use_progress(tool_id=tool_id, chunk=title)] if title else []
+
+
+class DirectCliRun:
+    """Drives one direct ACP prompt turn and streams its frames.
+
+    ``stream_frames`` yields ``(event_type, data)`` frames as the agent works and,
+    when the run completes, records the assistant's full reply in
+    :attr:`final_text`. The caller persists the frames (the event store is the
+    source of truth) exactly as for an LLM run.
+    """
+
+    def __init__(self, *, engine: str, prompt: str, cwd: str, thread_id: str) -> None:
+        self.engine = engine
+        self.prompt = prompt
+        self.cwd = cwd
+        self.thread_id = thread_id
+        self.final_text = ""
+        self.ok = True
+        self.cancelled = False
+        self._translator = _DirectAcpTranslator()
+
+    async def stream_frames(
+        self, cancel_event: asyncio.Event
+    ) -> AsyncIterator[tuple[str, dict]]:
+        spec = _ENGINES.get(self.engine)
+        if spec is None:
+            self.ok = False
+            self.final_text = f"Unknown direct CLI engine: {self.engine!r}."
+            yield ev.error(error_class="ValueError", message=self.final_text)
+            return
+
+        from plugins.ai_code.tools._acp_base import (
+            _BackgroundLoop,
+            _drain_queue,
+            _manager_run_ok,
+            cancel_acp_sessions,
+        )
+
+        runtime = _engine_runtime(self.engine)
+        progress_q: queue.Queue = queue.Queue()
+        # Account-scoped session key, persistent so a follow-up turn on the same
+        # conversation thread continues the same ACP session.
+        key = f"{alias_for_engine(self.engine)}::{self.thread_id}"
+        future = _BackgroundLoop.instance().submit(
+            _manager_run_ok(
+                key=key,
+                persist=True,
+                prompt=self.prompt,
+                cwd=self.cwd or None,
+                command=runtime.command,
+                args=list(runtime.args),
+                env_overrides={},
+                auto_approve=True,
+                timeout_seconds=runtime.timeout_seconds,
+                create_timeout=runtime.create_timeout_seconds,
+                progress_q=progress_q,
+                cancel_id=self.thread_id,
+                agent_label=runtime.label,
+            )
+        )
+        loop = asyncio.get_running_loop()
+        result_fut = asyncio.wrap_future(future)
+        try:
+            while not result_fut.done():
+                if cancel_event.is_set():
+                    self.cancelled = True
+                    future.cancel()
+                    await asyncio.to_thread(cancel_acp_sessions, self.thread_id)
+                    return
+                deltas = await loop.run_in_executor(
+                    None, _drain_queue, progress_q, _DRAIN_TIMEOUT_SECONDS
+                )
+                for delta in deltas:
+                    for frame in self._translator.on_delta(delta):
+                        yield frame
+            # Flush whatever progress arrived just before completion.
+            for delta in _drain_queue(progress_q, 0):
+                for frame in self._translator.on_delta(delta):
+                    yield frame
+        except asyncio.CancelledError:
+            self.cancelled = True
+            future.cancel()
+            await asyncio.to_thread(cancel_acp_sessions, self.thread_id)
+            raise
+
+        text, ok = await result_fut
+        self.ok = ok
+        self.final_text = (text or "").strip()
+        for frame in self._translator.finalize():
+            yield frame

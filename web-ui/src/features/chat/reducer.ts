@@ -11,6 +11,8 @@ export interface RunState {
   blocks: Block[];
   running: boolean;
   usage: UsageSnapshot | null;
+  /** Direct CLI's own context-window gauge text (e.g. "45,000/200,000 tokens"). */
+  cliUsage: string | null;
   context: ContextSnapshot | null;
   fatalError: string | null;
 }
@@ -41,6 +43,7 @@ export const initialRunState: RunState = {
   blocks: [],
   running: false,
   usage: null,
+  cliUsage: null,
   context: null,
   fatalError: null,
 };
@@ -441,6 +444,15 @@ function applyEvent(state: RunState, ev: AgentEvent): RunState {
           window: ev.context_window ?? state.context?.window ?? null,
         },
       };
+    }
+
+    case "usage": {
+      // Direct CLI surfaces its context-window gauge as a usage frame carrying
+      // a preformatted ``text``. (LLM usage rides the ``budget`` frame instead.)
+      const text = ev.usage?.text;
+      return typeof text === "string" && text
+        ? { ...state, cliUsage: text }
+        : state;
     }
 
     case "budget": {

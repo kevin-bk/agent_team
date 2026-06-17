@@ -192,6 +192,8 @@ export interface BoardDTO {
   columns: BoardColumn[];
   /** Agents staffing this board — tasks only show these agents. */
   agent_ids?: string[];
+  /** Direct-CLI aliases (`cli:<engine>`) enabled on this board. */
+  cli_target_ids?: string[];
   archived: boolean;
   created_at: string;
   updated_at: string;
@@ -311,6 +313,8 @@ export interface PatchBoardBody {
   columns?: BoardColumn[];
   /** Agents staffing this board — tasks only show these agents. */
   agent_ids?: string[];
+  /** Direct-CLI aliases (`cli:<engine>`) enabled on this board. */
+  cli_target_ids?: string[];
   archived?: boolean;
   /** Jira sync config. Omit jira_api_token to keep it; send "" to clear it. */
   jira_enabled?: boolean;
@@ -370,6 +374,19 @@ export interface AgentDTO {
   enabled: boolean;
   /** Live supervisor status ("running"/"error"/...). */
   status?: string | null;
+}
+
+/**
+ * A direct CLI engine (Claude/Cursor/Codex) chattable without the LLM. Not an
+ * agent: addressed by the synthetic ``cli:<engine>`` alias in {@link id}.
+ */
+export interface CliTargetDTO {
+  /** Synthetic agent alias, e.g. `cli:claude`. */
+  id: string;
+  engine: string;
+  label: string;
+  /** Whether the engine's launch command looks installed on the host. */
+  available: boolean;
 }
 
 export type TaskRunStatus =

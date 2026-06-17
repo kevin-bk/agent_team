@@ -193,6 +193,7 @@ export function useTaskAgentRun(
     running: state.running,
     loadingHistory,
     usage: state.usage,
+    cliUsage: state.cliUsage,
     fatalError: state.fatalError,
     send,
     cancel,

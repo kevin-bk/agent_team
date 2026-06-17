@@ -25,6 +25,7 @@ import {
   RotateCcw,
   Send,
   Sparkles,
+  TerminalSquare,
   UserRound,
   X,
 } from "@/components/icons";
@@ -36,6 +37,7 @@ import {
   useAgents,
   useBoard,
   useBoardMembers,
+  useCliTargets,
   useCreateTaskComment,
   useDeleteTaskComment,
   useMe,
@@ -51,6 +53,7 @@ import {
   useUpdateTaskComment,
 } from "@/api/hooks";
 import type {
+  AgentDTO,
   AttemptDTO,
   BoardColumn,
   CommentAttachment,
@@ -183,6 +186,29 @@ export function TaskCockpit({
       (a) => a.enabled && a.mentionable && staffed.includes(a.id),
     );
   }, [agents.data, board.data]);
+  // Direct CLI engines (Claude/Cursor/Codex) chattable without the LLM. They
+  // are surfaced as synthetic agents whose id is the `cli:<engine>` alias, so
+  // the whole conversation/run pipeline below treats them like any agent.
+  const cliTargets = useCliTargets();
+  const cliAgents = useMemo<AgentDTO[]>(() => {
+    // Only CLIs explicitly enabled on the board (Board settings → Agents →
+    // Direct CLI) appear here; guard on `board.data` so we don't flash while
+    // the board is still loading.
+    if (!board.data) return [];
+    const enabled = board.data.cli_target_ids ?? [];
+    return (cliTargets.data ?? [])
+      .filter((t) => enabled.includes(t.id))
+      .map((t) => ({
+        id: t.id,
+        display_name: `${t.label} (direct)`,
+        description: "Chat directly with the CLI — no LLM orchestrator.",
+        avatar_url: null,
+        model: null,
+        mentionable: true,
+        enabled: t.available,
+        status: null,
+      }));
+  }, [cliTargets.data, board.data]);
   const runs = useTaskRuns(task.id);
   const runningAgents = useMemo(() => {
     const set = new Set<string>();
@@ -209,7 +235,11 @@ export function TaskCockpit({
     qc.invalidateQueries({ queryKey: ["task-file-tree", task.id] });
 
   const activeAgent =
-    thread === OVERVIEW ? null : mentionable.find((a) => a.id === thread);
+    thread === OVERVIEW
+      ? null
+      : (mentionable.find((a) => a.id === thread) ??
+        cliAgents.find((a) => a.id === thread));
+  const isDirectCli = !!activeAgent?.id.startsWith("cli:");
 
   const selectThread = (id: string) => {
     setThread(id);
@@ -398,6 +428,37 @@ export function TaskCockpit({
                 );
               })
             )}
+
+            {cliAgents.length > 0 && (
+              <>
+                <div className="px-2 pb-1 pt-3 text-[10.5px] font-semibold uppercase tracking-[0.06em] text-muted-foreground">
+                  Direct CLI
+                </div>
+                {cliAgents.map((a) => (
+                  <ThreadItem
+                    key={a.id}
+                    icon={
+                      <span className="relative flex h-6 w-6 items-center justify-center rounded-md bg-surface-3 text-foreground">
+                        <TerminalSquare className="h-3.5 w-3.5" />
+                        {runningAgents.has(a.id) && (
+                          <span className="absolute -right-0.5 -top-0.5 h-2 w-2 animate-pulse rounded-full bg-emerald-500 ring-2 ring-white dark:ring-surface-1" />
+                        )}
+                      </span>
+                    }
+                    label={a.display_name}
+                    sub={
+                      runningAgents.has(a.id)
+                        ? "running…"
+                        : a.enabled
+                          ? "no LLM"
+                          : "not installed"
+                    }
+                    active={thread === a.id}
+                    onClick={() => selectThread(a.id)}
+                  />
+                ))}
+              </>
+            )}
           </div>
         </aside>
 
@@ -415,18 +476,33 @@ export function TaskCockpit({
                 <span
                   className={cn(
                     "flex h-6 w-6 items-center justify-center rounded",
-                    statusColor(activeAgent.id).soft,
+                    isDirectCli
+                      ? "bg-surface-3 text-foreground"
+                      : statusColor(activeAgent.id).soft,
                   )}
                 >
-                  <Bot className="h-3.5 w-3.5" />
+                  {isDirectCli ? (
+                    <TerminalSquare className="h-3.5 w-3.5" />
+                  ) : (
+                    <Bot className="h-3.5 w-3.5" />
+                  )}
                 </span>
                 <span className="text-sm font-semibold text-foreground">
                   {activeAgent.display_name}
                 </span>
-                {activeAgent.model && (
-                  <span className="rounded-sm bg-surface-1 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
-                    {activeAgent.model}
+                {isDirectCli ? (
+                  <span
+                    title="Chats straight with the CLI over ACP — no LLM orchestrator"
+                    className="rounded-sm bg-surface-1 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground"
+                  >
+                    direct · no LLM
                   </span>
+                ) : (
+                  activeAgent.model && (
+                    <span className="rounded-sm bg-surface-1 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                      {activeAgent.model}
+                    </span>
+                  )
                 )}
                 {(viewConvId ?? activeAttempt?.conv_id) && (
                   <ConversationIdBadge
@@ -1730,7 +1806,7 @@ function Conversation({
   onOpenFile: (path: string) => void;
 }) {
   const { client } = useApi();
-  const { blocks, running, loadingHistory, fatalError, send, cancel } =
+  const { blocks, running, loadingHistory, cliUsage, fatalError, send, cancel } =
     useTaskAgentRun(taskId, agentId);
   const { typingNames, notifyTyping, stopTyping } = useTypingIndicator(
     taskId,
@@ -1780,6 +1856,13 @@ function Conversation({
 
   return (
     <>
+      {cliUsage && (
+        <div className="flex items-center gap-1.5 border-b border-border bg-surface-1/40 px-3 py-1 text-[11px] text-muted-foreground">
+          <TerminalSquare className="h-3 w-3 shrink-0" />
+          <span className="font-medium">Context</span>
+          <span className="font-mono">{cliUsage}</span>
+        </div>
+      )}
       {changedCount > 0 && (
         <div className="flex items-center gap-1 border-b border-border px-3 py-1.5">
           <ViewToggle

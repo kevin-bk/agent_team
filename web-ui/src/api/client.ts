@@ -6,6 +6,7 @@ import {
   type AttemptDTO,
   type BoardDTO,
   type BoardMemberDTO,
+  type CliTargetDTO,
   type ConversationDetail,
   type ConversationSummary,
   type CreateBoardBody,
@@ -307,6 +308,9 @@ export class ApiClient {
   // ── agents / mentions / runs (plan 16 Phase 2) ───────────────────
   listAgents() {
     return this.request<AgentDTO[]>("/api/agents");
+  }
+  listCliTargets() {
+    return this.request<CliTargetDTO[]>("/api/cli-targets");
   }
   mentionAgent(taskId: string, body: MentionBody) {
     return this.request<MentionResponse>(`/api/tasks/${taskId}/mentions`, {

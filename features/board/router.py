@@ -156,6 +156,17 @@ async def update_board(
                     content={"detail": f"unknown agent id(s): {', '.join(unknown)}"},
                 )
         board.agents_json = json.dumps(payload.agent_ids)
+    if payload.cli_target_ids is not None:
+        from agent_team.features.board.runtime.direct_acp import known_cli_aliases
+
+        known = known_cli_aliases()
+        unknown = [a for a in payload.cli_target_ids if a not in known]
+        if unknown:
+            return JSONResponse(
+                status_code=422,
+                content={"detail": f"unknown CLI target(s): {', '.join(unknown)}"},
+            )
+        board.cli_targets_json = json.dumps(payload.cli_target_ids)
     if payload.archived is not None:
         board.archived = payload.archived
     # ── Jira config ──────────────────────────────────────────────────────
@@ -715,6 +726,22 @@ async def list_agents(request: Request, db: Session = Depends(get_db)):
         }
         for row in rows
     ]
+
+
+@router.get("/cli-targets")
+async def list_cli_targets(request: Request, db: Session = Depends(get_db)):
+    """Direct CLI engines (Claude/Cursor/Codex) chattable without the LLM.
+
+    These are not agents: each is addressed by a synthetic ``cli:<engine>`` alias
+    and driven straight over ACP. ``available`` hints whether the engine's launch
+    command is installed on this host.
+    """
+    _, err = auth_or_401(db, request)
+    if err:
+        return err
+    from agent_team.features.board.runtime.direct_acp import available_targets
+
+    return available_targets()
 
 
 # ---------------------------------------------------------------------------
@@ -1287,6 +1314,13 @@ async def set_typing(
 
 def _agent_display(db: Session, agent_alias: str) -> str:
     """Resolve an agent's display name, falling back to its alias."""
+    from agent_team.features.board.runtime.direct_acp import (
+        display_name_for_alias,
+        is_direct_cli_alias,
+    )
+
+    if is_direct_cli_alias(agent_alias):
+        return display_name_for_alias(agent_alias)
     from core.agents.models import Agent
 
     row = db.query(Agent).filter(Agent.alias == agent_alias).first()

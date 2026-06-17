@@ -28,6 +28,8 @@ class BoardUpdate(BaseModel):
     columns: list[BoardColumn] | None = None
     #: Agents staffing this board — tasks only show these agents.
     agent_ids: list[str] | None = None
+    #: Direct-CLI aliases (``cli:<engine>``) enabled on this board.
+    cli_target_ids: list[str] | None = None
     archived: bool | None = None
     # ── Jira sync config (write side) ─────────────────────────────────────
     jira_enabled: bool | None = None
@@ -52,6 +54,8 @@ class BoardDTO(BaseModel):
     columns: list[BoardColumn]
     #: Agents staffing this board — tasks only show these agents.
     agent_ids: list[str] = Field(default_factory=list)
+    #: Direct-CLI aliases (``cli:<engine>``) enabled on this board.
+    cli_target_ids: list[str] = Field(default_factory=list)
     archived: bool
     task_count: int = 0
     #: The requesting user's role on this board (owner/editor/viewer).

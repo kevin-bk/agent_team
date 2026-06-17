@@ -1380,6 +1380,35 @@ def test_board_agent_staffing_round_trip(db):
     assert board.agent_ids() == []
 
 
+def test_board_cli_targets_round_trip(db):
+    """cli_target_ids: empty by default, persisted as JSON, surfaced in the DTO."""
+    board = boards_repo.create_board(
+        db, name="CLI board", description=None, columns=None, owner_id=None
+    )
+    db.commit()
+    assert board.cli_target_ids() == []
+    assert boards_repo.serialize_board(board).cli_target_ids == []
+
+    board.cli_targets_json = json.dumps(["cli:claude", "cli:codex"])
+    db.commit()
+    db.refresh(board)
+    assert board.cli_target_ids() == ["cli:claude", "cli:codex"]
+    assert boards_repo.serialize_board(board).cli_target_ids == [
+        "cli:claude",
+        "cli:codex",
+    ]
+
+    # Corrupt JSON degrades to an empty list instead of crashing.
+    board.cli_targets_json = "{not json"
+    assert board.cli_target_ids() == []
+
+
+def test_known_cli_aliases_covers_engines():
+    from agent_team.features.board.runtime.direct_acp import known_cli_aliases
+
+    assert known_cli_aliases() == {"cli:claude", "cli:cursor", "cli:codex"}
+
+
 def test_board_members_add_list_remove(db):
     from agent_team.features.board.repositories import members as members_repo
 
@@ -2378,3 +2407,156 @@ def test_git_push_tool_respects_allow_push(db, tmp_path, monkeypatch):
         capture_output=True, text=True,
     )
     assert rc.returncode == 0, "task branch should exist on the remote after push"
+
+
+# ---------------------------------------------------------------------------
+# Direct CLI (chat straight with Claude/Cursor/Codex over ACP, no LLM)
+# ---------------------------------------------------------------------------
+
+
+def test_direct_acp_alias_helpers():
+    from agent_team.features.board.runtime import direct_acp as dacp
+
+    assert dacp.is_direct_cli_alias("cli:claude")
+    assert not dacp.is_direct_cli_alias("deep_agent")
+    assert not dacp.is_direct_cli_alias(None)
+    assert dacp.engine_for_alias("cli:Cursor") == "cursor"
+    assert dacp.engine_for_alias("deep_agent") == ""
+    assert dacp.alias_for_engine("codex") == "cli:codex"
+    assert dacp.display_name_for_alias("cli:claude") == "Claude (direct)"
+    assert dacp.display_name_for_alias("deep_agent") == "deep_agent"
+
+
+def test_available_targets_lists_known_engines():
+    from agent_team.features.board.runtime.direct_acp import available_targets
+
+    targets = {t["engine"]: t for t in available_targets()}
+    assert set(targets) == {"claude", "cursor", "codex"}
+    assert targets["claude"]["id"] == "cli:claude"
+    assert targets["claude"]["label"] == "Claude"
+    assert isinstance(targets["claude"]["available"], bool)
+
+
+def test_engine_runtime_reads_env(monkeypatch):
+    from agent_team.features.board.runtime import direct_acp as dacp
+
+    monkeypatch.setenv("AI_CODE_CLAUDE_ACP_COMMAND", "/opt/claude")
+    monkeypatch.setenv("AI_CODE_CLAUDE_ACP_ARGS", "acp --flag")
+    monkeypatch.setenv("AI_CODE_CLAUDE_ACP_TIMEOUT_SECONDS", "123")
+    rt = dacp._engine_runtime("claude")
+    assert rt.command == "/opt/claude"
+    assert rt.args == ["acp", "--flag"]
+    assert rt.timeout_seconds == 123
+    assert rt.label == "Claude ACP"
+
+
+def test_direct_acp_translator_maps_progress_thinking_and_tools():
+    """Assistant text → text_delta, reasoning → thinking, tool calls → cards."""
+    from agent_team.features.board.runtime import events as ev
+    from agent_team.features.board.runtime.direct_acp import _DirectAcpTranslator
+
+    tr = _DirectAcpTranslator()
+    assert tr.on_delta({"claude_acp_progress": "Hello"}) == [ev.text_delta("Hello")]
+    assert tr.on_delta({"claude_acp_thought": "thinking"}) == [ev.thinking("thinking")]
+    assert tr.on_delta({"claude_acp_plan": "step 1"}) == [ev.thinking("step 1")]
+
+    start = tr.on_delta({"claude_acp_tool_start": "execute\x00Terminal\x00tid1"})
+    assert len(start) == 1
+    etype, data = start[0]
+    assert etype == ev.EVENT_TOOL_USE_START
+    tool_id = data["tool_id"]
+    assert data["tool_name"] == "Terminal"
+    # The raw ACP tool id is never surfaced in the frame.
+    assert "tid1" not in str(data)
+
+    done = tr.on_delta({"claude_acp_tool_progress": "tid1\x00completed\x00Terminal"})
+    assert len(done) == 1
+    etype, data = done[0]
+    assert etype == ev.EVENT_TOOL_USE_END
+    assert data["tool_id"] == tool_id
+    assert data["success"] is True and data["is_error"] is False
+
+    # The CLI's context-window gauge surfaces as a live usage frame…
+    usage = tr.on_delta({"claude_acp_usage": "45,000/200,000 tokens"})
+    assert usage == [ev.usage({"text": "45,000/200,000 tokens"})]
+    # …while unknown keys are ignored.
+    assert tr.on_delta({"claude_acp_unknown": "x"}) == []
+
+
+def test_direct_acp_translator_failed_tool_and_finalize():
+    from agent_team.features.board.runtime import events as ev
+    from agent_team.features.board.runtime.direct_acp import _DirectAcpTranslator
+
+    tr = _DirectAcpTranslator()
+    tr.on_delta({"claude_acp_tool_start": "edit\x00Patch file\x00tid9"})
+    failed = tr.on_delta({"claude_acp_tool_progress": "tid9\x00failed\x00Patch file"})
+    assert failed[0][0] == ev.EVENT_TOOL_USE_END
+    assert failed[0][1]["is_error"] is True
+
+    # An unfinished tool is closed by finalize so no card is left hanging.
+    tr.on_delta({"claude_acp_tool_start": "read\x00Read file\x00tid10"})
+    closing = tr.finalize()
+    assert [t for t, _ in closing] == [ev.EVENT_TOOL_USE_END]
+    assert tr.finalize() == []  # idempotent
+
+
+def test_cli_context_render_brief_and_repos_block():
+    """The brief carries description + notes + repos, without the git_push tool."""
+    from agent_team.features.board.runtime import cli_context
+
+    repos = [{"path": "svc", "branch": "agent/T-7", "can_push": True}]
+    notes = [
+        {"author": "alice", "created_at": "2026-06-09 22:30 UTC",
+         "body": "Use staging.", "attachments": []},
+    ]
+    brief = cli_context.render_brief(_fake_task(), notes, repos)
+    assert "# Task T-7: Build the importer" in brief
+    assert "Parse the CSV and load rows." in brief
+    assert "`svc/` (branch `agent/T-7`)" in brief
+    assert "Use staging." in brief
+    # Direct CLI has no git_push tool — the block must not mention it.
+    assert "git_push" not in brief
+
+
+def test_cli_context_write_files_creates_brief_and_pointers(tmp_path):
+    from agent_team.features.board.runtime import cli_context
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    task = _fake_task()
+    task.workspace_path = str(ws)
+    cli_context.write_context_files(str(ws), task, notes=None, repos=None)
+
+    brief = ws / ".agent-team" / "TASK.md"
+    assert brief.exists() and "# Task T-7" in brief.read_text()
+    for pointer in ("CLAUDE.md", "AGENTS.md"):
+        body = (ws / pointer).read_text()
+        assert ".agent-team/TASK.md" in body
+    rule = ws / ".cursor" / "rules" / "agent-team-task.mdc"
+    assert "alwaysApply: true" in rule.read_text()
+    assert ".agent-team/TASK.md" in rule.read_text()
+
+
+def test_cli_context_build_prompt_nudges_first_turn_and_new_notes():
+    """First turn always nudges; later turns nudge only when new notes arrived."""
+    from agent_team.features.board.runtime import cli_context
+
+    first = cli_context.build_prompt("Fix the bug", first_turn=True)
+    assert "Fix the bug" in first
+    assert ".agent-team/TASK.md" in first
+
+    # Follow-up with no new notes → sent verbatim.
+    later = cli_context.build_prompt("And now add tests", first_turn=False)
+    assert later == "And now add tests"
+    assert ".agent-team/TASK.md" not in later
+
+    # Follow-up with new notes → re-read nudge appended.
+    with_notes = cli_context.build_prompt(
+        "Keep going", first_turn=False, has_new_notes=True
+    )
+    assert "Keep going" in with_notes
+    assert "New notes" in with_notes
+    assert ".agent-team/TASK.md" in with_notes
+
+    # An empty first message still carries the nudge so the agent is grounded.
+    assert ".agent-team/TASK.md" in cli_context.build_prompt("", first_turn=True)

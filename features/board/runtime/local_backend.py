@@ -23,11 +23,16 @@ from agent_team.features.board.repositories.runs import (
     list_runs_for_conversation,
 )
 from agent_team.features.board.repositories.tasks import get_task
-from agent_team.features.board.runtime import event_store, registry
+from agent_team.features.board.runtime import cli_context, event_store, registry
 from agent_team.features.board.runtime import events as ev
 from agent_team.features.board.runtime.context import (
     build_task_context,
     prepare_workspace,
+)
+from agent_team.features.board.runtime.direct_acp import (
+    DirectCliRun,
+    engine_for_alias,
+    is_direct_cli_alias,
 )
 from agent_team.features.board.runtime.events import (
     RUN_CANCELLED,
@@ -90,12 +95,94 @@ class LocalRunBackend:
         usage = {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0}
         final_text = ""
         cancelled = False
-        cp_ctx = None
 
         await asyncio.to_thread(event_store.mark_running, run_id)
         await asyncio.to_thread(
             event_store.append_event, run_id, *ev.run_start(agent_alias=agent_alias)
         )
+        try:
+            # A ``cli:<engine>`` alias talks straight to a coding CLI over ACP;
+            # any other alias is a regular agent driven through its graph.
+            if is_direct_cli_alias(agent_alias):
+                final_text, cancelled = await self._run_direct_cli(
+                    run_id,
+                    handle,
+                    agent_alias=agent_alias,
+                    prompt=input_text,
+                    workspace_path=workspace_path,
+                    thread_id=thread_id,
+                )
+            else:
+                final_text, cancelled = await self._run_graph(
+                    run_id,
+                    handle,
+                    agent_alias=agent_alias,
+                    input_text=input_text,
+                    workspace_path=workspace_path,
+                    thread_id=thread_id,
+                    usage=usage,
+                )
+
+            if cancelled:
+                await self._finish_cancelled(run_id, thread_id, final_text, usage)
+                await _log_run_finished(
+                    task_id, actor_id, run_id, RUN_CANCELLED,
+                    board_id=board_id, agent_alias=agent_alias,
+                )
+            else:
+                await self._finish_done(run_id, final_text, usage)
+                await _log_run_finished(
+                    task_id, actor_id, run_id, RUN_DONE,
+                    board_id=board_id, agent_alias=agent_alias,
+                )
+
+        except asyncio.CancelledError:
+            usage["total_tokens"] = usage["input_tokens"] + usage["output_tokens"]
+            await self._finish_cancelled(run_id, thread_id, final_text, usage)
+            await _log_run_finished(
+                task_id, actor_id, run_id, RUN_CANCELLED,
+                board_id=board_id, agent_alias=agent_alias,
+            )
+        except Exception as exc:
+            logger.error("agent_team run %s failed", run_id, exc_info=True)
+            await asyncio.to_thread(
+                event_store.append_event,
+                run_id,
+                *ev.error(error_class=type(exc).__name__, message=str(exc)),
+            )
+            await asyncio.to_thread(
+                event_store.append_event, run_id, *ev.run_end(status=RUN_ERROR)
+            )
+            await asyncio.to_thread(
+                event_store.finalize_run, run_id, status=RUN_ERROR, error=str(exc), usage=usage
+            )
+            await _log_run_finished(
+                task_id, actor_id, run_id, RUN_ERROR,
+                board_id=board_id, agent_alias=agent_alias,
+            )
+        finally:
+            registry.unregister(run_id)
+
+    async def _run_graph(
+        self,
+        run_id: str,
+        handle: RunHandle,
+        *,
+        agent_alias: str,
+        input_text: str,
+        workspace_path: str,
+        thread_id: str,
+        usage: dict,
+    ) -> tuple[str, bool]:
+        """Drive a regular agent through its graph; returns ``(final_text, cancelled)``.
+
+        Builds the agent's full capability set, streams it token-by-token, and
+        persists each translated frame. ``usage`` is accumulated in place. The
+        checkpointer context is owned here so it is always released when the
+        graph finishes, even on cancellation.
+        """
+        cancelled = False
+        cp_ctx = None
         try:
             checkpointer, cp_ctx = await asyncio.to_thread(make_checkpointer, agent_alias)
             agent = await build_graph(
@@ -140,52 +227,48 @@ class LocalRunBackend:
                     pass
 
             usage["total_tokens"] = usage["input_tokens"] + usage["output_tokens"]
-            final_text = translator.final_text
-
-            if cancelled:
-                await self._finish_cancelled(run_id, thread_id, final_text, usage)
-                await _log_run_finished(
-                    task_id, actor_id, run_id, RUN_CANCELLED,
-                    board_id=board_id, agent_alias=agent_alias,
-                )
-            else:
-                await self._finish_done(run_id, final_text, usage)
-                await _log_run_finished(
-                    task_id, actor_id, run_id, RUN_DONE,
-                    board_id=board_id, agent_alias=agent_alias,
-                )
-
-        except asyncio.CancelledError:
-            usage["total_tokens"] = usage["input_tokens"] + usage["output_tokens"]
-            await self._finish_cancelled(run_id, thread_id, final_text, usage)
-            await _log_run_finished(
-                task_id, actor_id, run_id, RUN_CANCELLED,
-                board_id=board_id, agent_alias=agent_alias,
-            )
-        except Exception as exc:
-            logger.error("agent_team run %s failed", run_id, exc_info=True)
-            await asyncio.to_thread(
-                event_store.append_event,
-                run_id,
-                *ev.error(error_class=type(exc).__name__, message=str(exc)),
-            )
-            await asyncio.to_thread(
-                event_store.append_event, run_id, *ev.run_end(status=RUN_ERROR)
-            )
-            await asyncio.to_thread(
-                event_store.finalize_run, run_id, status=RUN_ERROR, error=str(exc), usage=usage
-            )
-            await _log_run_finished(
-                task_id, actor_id, run_id, RUN_ERROR,
-                board_id=board_id, agent_alias=agent_alias,
-            )
+            return translator.final_text, cancelled
         finally:
-            registry.unregister(run_id)
             if cp_ctx is not None:
                 try:
                     cp_ctx.__exit__(None, None, None)
                 except Exception:
                     pass
+
+    async def _run_direct_cli(
+        self,
+        run_id: str,
+        handle: RunHandle,
+        *,
+        agent_alias: str,
+        prompt: str,
+        workspace_path: str,
+        thread_id: str,
+    ) -> tuple[str, bool]:
+        """Drive a direct CLI conversation over ACP; returns ``(final_text, cancelled)``.
+
+        Streams the coding agent's progress as ``AgentEvent`` frames and persists
+        each one exactly like a graph run. Token usage stays zero — there is no
+        LLM in this path. A cross-process cancel request flips the in-memory
+        cancel event, which the ACP stream observes and acts on.
+        """
+        run = DirectCliRun(
+            engine=engine_for_alias(agent_alias),
+            prompt=prompt,
+            cwd=workspace_path,
+            thread_id=thread_id,
+        )
+        last_cancel_poll = 0.0
+        async for event_type, data in run.stream_frames(handle.cancel_event):
+            now = time.monotonic()
+            if now - last_cancel_poll >= _CANCEL_POLL_SECONDS:
+                last_cancel_poll = now
+                if await asyncio.to_thread(event_store.is_cancel_requested, run_id):
+                    handle.cancel_event.set()
+            data = await _persist_tool_output(run_id, event_type, data)
+            await asyncio.to_thread(event_store.append_event, run_id, event_type, data)
+        cancelled = run.cancelled or handle.cancel_event.is_set()
+        return run.final_text, cancelled
 
     async def _finish_done(self, run_id: str, final_text: str, usage: dict) -> None:
         if final_text:
@@ -310,17 +393,31 @@ def _load_run_context(run_id: str) -> dict | None:
             and task.updated_at is not None
             and task.updated_at > since
         )
-        return {
-            "agent_alias": run.agent_alias,
-            "thread_id": run.thread_id,
-            "input_text": build_task_context(
+        if is_direct_cli_alias(run.agent_alias):
+            # The CLI reads its context from files in the workspace
+            # (``.agent-team/TASK.md`` via the CLAUDE.md / AGENTS.md / cursor-rule
+            # pointers), refreshed with the full note history every turn. The
+            # prompt gets a light nudge to read the brief on the first turn, or to
+            # re-read it on a later turn when new notes arrived since last time
+            # (``notes`` already holds just that delta).
+            all_notes = _load_task_notes(db, run.task_id, since=None)
+            cli_context.write_context_files(task.workspace_path, task, all_notes, repos)
+            input_text = cli_context.build_prompt(
+                run.prompt or "", first_turn=full, has_new_notes=bool(notes)
+            )
+        else:
+            input_text = build_task_context(
                 task,
                 run.prompt,
                 notes=notes,
                 full=full,
                 include_description=include_description,
                 repos=repos,
-            ),
+            )
+        return {
+            "agent_alias": run.agent_alias,
+            "thread_id": run.thread_id,
+            "input_text": input_text,
             "task_id": run.task_id,
             "board_id": task.board_id,
             "workspace_path": task.workspace_path,

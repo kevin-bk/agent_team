@@ -90,6 +90,7 @@ def serialize_board(
         owner_id=board.owner_id,
         columns=[BoardColumn(key=c["key"], name=c["name"]) for c in board.columns()],
         agent_ids=board.agent_ids(),
+        cli_target_ids=board.cli_target_ids(),
         archived=board.archived,
         task_count=task_count,
         my_role=my_role,
