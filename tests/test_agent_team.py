@@ -2002,6 +2002,39 @@ def test_repo_auth_builds_token_header_and_ssh_key(tmp_path):
     assert not os.path.exists(keyfile_holder["path"])
 
 
+def test_repo_effective_url_matches_credential_transport():
+    """Token auth over an SSH URL (and vice versa) is rewritten at git-time."""
+    from agent_team.features.repos.git_service import _effective_url
+
+    # Token credential + scp-like SSH URL -> rewritten to HTTPS so the
+    # ``http.extraHeader`` Basic auth is actually used (the reported bug).
+    token_ssh = AgentTeamRepo(
+        name="a", slug="a", git_url="git@gitlab.com:chizy/chizy-chatbot.git",
+        auth_type="token", auth_secret="tok",
+    )
+    assert _effective_url(token_ssh) == "https://gitlab.com/chizy/chizy-chatbot.git"
+
+    # Token credential already on HTTPS -> unchanged.
+    token_https = AgentTeamRepo(
+        name="b", slug="b", git_url="https://gitlab.com/o/r.git",
+        auth_type="token", auth_secret="tok",
+    )
+    assert _effective_url(token_https) == "https://gitlab.com/o/r.git"
+
+    # SSH key credential + HTTPS URL -> rewritten to scp-like SSH.
+    ssh_https = AgentTeamRepo(
+        name="c", slug="c", git_url="https://gitlab.com/o/r.git",
+        auth_type="ssh", auth_secret="KEY",
+    )
+    assert _effective_url(ssh_https) == "git@gitlab.com:o/r.git"
+
+    # No credential -> never rewritten (e.g. local path clones).
+    none_local = AgentTeamRepo(
+        name="d", slug="d", git_url="/tmp/some/local/repo", auth_type="none",
+    )
+    assert _effective_url(none_local) == "/tmp/some/local/repo"
+
+
 def test_repo_sync_clone_and_task_copy(db, tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_TEAM_WORKSPACE_ROOT", str(tmp_path / "ws"))
     src = _make_source_repo(tmp_path / "src")

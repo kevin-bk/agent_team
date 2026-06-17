@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -66,6 +67,56 @@ def _run_git(
     return proc.returncode, (proc.stdout or "").strip(), (proc.stderr or "").strip()
 
 
+#: scp-like SSH remote, e.g. ``git@gitlab.com:owner/repo.git``.
+_SCP_SSH_RE = re.compile(r"^(?P<user>[^@/]+)@(?P<host>[^:/]+):(?P<path>.+)$")
+
+
+def _to_https(url: str) -> str:
+    """Best-effort convert an SSH git URL to its HTTPS form (no-op otherwise)."""
+    u = url.strip()
+    if u.startswith("ssh://"):
+        rest = u[len("ssh://") :]
+        if "@" in rest.split("/", 1)[0]:
+            rest = rest.split("@", 1)[1]
+        host_port, _, path = rest.partition("/")
+        host = host_port.split(":", 1)[0]  # drop any :port
+        return f"https://{host}/{path}" if path else u
+    m = _SCP_SSH_RE.match(u)
+    if m:
+        return f"https://{m.group('host')}/{m.group('path')}"
+    return u
+
+
+def _to_ssh(url: str) -> str:
+    """Best-effort convert an HTTP(S) git URL to scp-like SSH (no-op otherwise)."""
+    u = url.strip()
+    if u.startswith(("https://", "http://")):
+        rest = u.split("://", 1)[1]
+        if "@" in rest.split("/", 1)[0]:
+            rest = rest.split("@", 1)[1]
+        host_port, _, path = rest.partition("/")
+        host = host_port.split(":", 1)[0]  # drop any :port
+        return f"git@{host}:{path}" if path else u
+    return u
+
+
+def _effective_url(repo: AgentTeamRepo) -> str:
+    """Adapt the stored ``git_url`` transport to match the chosen credential.
+
+    Token auth only works over HTTP(S); an SSH key only over SSH. Users often
+    paste a remote in the "wrong" transport for their credential (e.g. an
+    ``git@host:...`` URL with token auth), which silently falls back to the
+    machine's ambient SSH keys. We rewrite the transport at git-time so the
+    configured credential is actually used; the stored URL is left untouched.
+    """
+    url = (repo.git_url or "").strip()
+    if repo.auth_type == AUTH_TOKEN:
+        return _to_https(url)
+    if repo.auth_type == AUTH_SSH:
+        return _to_ssh(url)
+    return url
+
+
 @contextmanager
 def _auth(repo: AgentTeamRepo) -> Iterator[tuple[list[str], dict]]:
     """Yield ``(extra_git_args, env)`` carrying credentials; clean up after."""
@@ -110,7 +161,7 @@ def _clone(repo: AgentTeamRepo, dest: Path) -> tuple[int, str, str]:
         branch = (repo.default_branch or "").strip()
         if branch:
             args += ["--branch", branch]
-        args += [repo.git_url, str(dest)]
+        args += [_effective_url(repo), str(dest)]
         return _run_git(*args, env=env, timeout=_CLONE_TIMEOUT)
 
 
@@ -140,7 +191,7 @@ def push_branch(repo: AgentTeamRepo, work_dir: str, branch: str) -> GitOpResult:
             "-C",
             work_dir,
             "push",
-            repo.git_url,
+            _effective_url(repo),
             refspec,
             env=env,
             timeout=_CLONE_TIMEOUT,
