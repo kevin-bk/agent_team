@@ -1607,6 +1607,101 @@ def test_translator_custom_mode_without_running_tool_is_ignored():
     assert frames == []
 
 
+def test_acp_progress_text_formats_tool_lines_without_raw_leak():
+    """Tool start/progress render as clean lines; raw ids/statuses never leak."""
+    from agent_team.features.board.runtime.translator import _acp_progress_text
+
+    # ``kind\x00title\x00tool_id`` -> a single ``→ title`` line; the id is hidden.
+    start = _acp_progress_text(
+        "claude_acp_tool_start", "execute\x00Terminal\x00toolu_014abc"
+    )
+    assert start == "\n\u2192 Terminal\n"
+    assert "toolu_014abc" not in start
+
+    # ``tool_id\x00status\x00title`` -> only terminal states render, with an icon.
+    done = _acp_progress_text(
+        "claude_acp_tool_progress", "toolu_014abc\x00completed\x00Terminal"
+    )
+    assert done == "  \u2713 Terminal\n"
+    running = _acp_progress_text(
+        "claude_acp_tool_progress", "toolu_014abc\x00in_progress\x00Terminal"
+    )
+    assert running == ""  # noisy in-flight pings are dropped
+
+
+def test_translator_acp_trail_survives_in_final_tool_output():
+    """The streamed sub-agent action trail is merged into the tool's output."""
+    from agent_team.features.board.runtime import events as ev
+    from agent_team.features.board.runtime.translator import StreamTranslator
+    from langchain_core.messages import AIMessage, ToolMessage
+
+    translator = StreamTranslator()
+    ns = ("agent:1",)
+
+    call = {
+        "agent": {
+            "messages": [
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "claude_acp", "args": {}, "id": "c1"}],
+                )
+            ]
+        }
+    }
+    translator.translate(call)
+
+    # Live trail: prose + a terminal tool call + completion + closing prose.
+    translator.translate((ns, "custom", {"claude_acp_progress": "Exploring repo."}))
+    translator.translate(
+        (ns, "custom", {"claude_acp_tool_start": "execute\x00Terminal\x00tid1"})
+    )
+    translator.translate(
+        (ns, "custom", {"claude_acp_tool_progress": "tid1\x00completed\x00Terminal"})
+    )
+    translator.translate((ns, "custom", {"claude_acp_progress": "All done."}))
+
+    # The result message is only the final prose (core's collector behaviour).
+    result = {
+        "tools": {
+            "messages": [
+                ToolMessage(content="All done.", name="claude_acp", tool_call_id="c1")
+            ]
+        }
+    }
+    end = translator.translate(result)
+    assert [t for t, _ in end] == [ev.EVENT_TOOL_USE_END]
+    preview = end[0][1]["output_preview"]
+    # The action trail (prose + tool steps) is preserved, not just the prose.
+    assert "Exploring repo." in preview
+    assert "\u2192 Terminal" in preview
+    assert "\u2713 Terminal" in preview
+    assert "All done." in preview
+
+
+def test_translator_non_acp_tool_output_unchanged():
+    """Tools without a progress trail keep their plain result message."""
+    from agent_team.features.board.runtime.translator import StreamTranslator
+    from langchain_core.messages import AIMessage, ToolMessage
+
+    translator = StreamTranslator()
+    call = {
+        "agent": {
+            "messages": [
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "shell", "args": {"cmd": "ls"}, "id": "x"}],
+                )
+            ]
+        }
+    }
+    translator.translate(call)
+    result = {
+        "tools": {"messages": [ToolMessage(content="a b", name="shell", tool_call_id="x")]}
+    }
+    end = translator.translate(result)
+    assert end[0][1]["output_preview"] == "a b"
+
+
 def test_thread_messages_reconstructs_user_and_assistant_turns(db):
     from agent_team.features.board.repositories import (
         conversations as conversations_repo,
@@ -2207,6 +2302,37 @@ def test_prepare_task_repos_sets_task_branch_and_identity(db, tmp_path, monkeypa
         capture_output=True, text=True,
     ).stdout.strip()
     assert email == "bot@org.com"
+
+
+def test_prepare_task_repos_reattaches_task_branch_on_existing_copy(
+    db, tmp_path, monkeypatch
+):
+    """A copy that drifted off the task branch is switched back on re-prepare."""
+    import subprocess
+    from pathlib import Path
+
+    from agent_team.features.repos.task_copy import prepare_task_repos, task_branch_name
+
+    _src, repo, task = _prepare_pushable_task(
+        db, tmp_path, monkeypatch, allow_push=True
+    )
+    prepare_task_repos(db, task)
+    copy = Path(task.workspace_path) / repo.slug
+
+    # Simulate a pre-existing copy left on another branch (e.g. created before
+    # this logic, stuck on the default branch).
+    subprocess.run(
+        ["git", "-C", str(copy), "checkout", "-B", "stray"],
+        capture_output=True, text=True,
+    )
+
+    # A subsequent prepare must put it back on the task branch.
+    prepare_task_repos(db, task)
+    branch = subprocess.run(
+        ["git", "-C", str(copy), "rev-parse", "--abbrev-ref", "HEAD"],
+        capture_output=True, text=True,
+    ).stdout.strip()
+    assert branch == task_branch_name(task)
 
 
 def test_git_push_tool_respects_allow_push(db, tmp_path, monkeypatch):

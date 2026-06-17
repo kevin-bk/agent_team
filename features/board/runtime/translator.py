@@ -196,18 +196,40 @@ def _unwrap_custom(data: Any) -> dict | None:
     return cur if isinstance(cur, dict) else None
 
 
+#: Status icons for an ACP sub-agent tool-call's terminal states. Non-terminal
+#: pings (``in_progress`` / ``pending``) are skipped to keep the trail readable.
+_ACP_STATUS_ICONS = {"completed": "\u2713", "failed": "\u2717"}
+
+
 def _acp_progress_text(key: str, value: Any) -> str:
-    """Map one AI-coding ACP custom event to a short progress line, or ""."""
+    """Map one AI-coding ACP custom event to a structured progress line, or "".
+
+    Lines are kept on their own row (leading/trailing newlines) so the sub-agent
+    trail reads as a list of actions rather than a flat run-on blob, and raw
+    encodings (tool ids, statuses) never leak into the visible text.
+    """
     if not isinstance(value, str) or not value:
         return ""
-    if key.endswith(("_progress", "_thought", "_plan")):
-        return value
+    # Order matters: ``_tool_start`` / ``_tool_progress`` must be matched before
+    # the generic ``_progress`` suffix (``claude_acp_tool_progress`` also ends in
+    # ``_progress``) or their raw ``\x00``-encoded payload leaks into the text.
     if key.endswith("_tool_start"):
         # Encoded as ``kind\x00title\x00tool_id`` (see ai_code _acp_base).
         parts = value.split("\x00")
         title = parts[1] if len(parts) > 1 else parts[0]
-        return f"\u2192 {title}\n" if title else ""
-    # ``_tool_progress`` / ``_usage`` are noisy status pings — skip them.
+        return f"\n\u2192 {title}\n" if title else ""
+    if key.endswith("_tool_progress"):
+        # Encoded as ``tool_id\x00status\x00title``. Only mark terminal states.
+        parts = value.split("\x00")
+        status = parts[1] if len(parts) > 1 else ""
+        title = parts[2] if len(parts) > 2 else ""
+        icon = _ACP_STATUS_ICONS.get(status)
+        if not icon:
+            return ""
+        return f"  {icon} {title}\n" if title else f"  {icon}\n"
+    if key.endswith(("_progress", "_thought", "_plan")):
+        return value
+    # ``_usage`` is a noisy status ping — skip it.
     return ""
 
 
@@ -218,6 +240,10 @@ class StreamTranslator:
         self._tool_counter = 0
         #: FIFO of ``(tool_id, tool_name)`` awaiting their result frame.
         self._pending_tools: list[tuple[str, str]] = []
+        #: Live progress chunks accumulated per tool id (AI-coding sub-agents).
+        #: Merged into the tool's final output so the streamed action trail is
+        #: not lost when the result frame replaces the live progress.
+        self._tool_progress: dict[str, list[str]] = {}
         #: Last full assistant snapshot seen, surfaced as the final answer.
         self.final_text = ""
 
@@ -289,18 +315,24 @@ class StreamTranslator:
         result_name = str(payload.get("tool_name") or "")
         tool_id, tool_name = self._match_pending(result_name)
         message = str(payload.get("message") or "")
-        is_error = _looks_like_error(message)
-        truncated = len(message) > _PREVIEW_LIMIT
+        # AI-coding sub-agents (Claude/Codex/Cursor ACP) stream their action
+        # trail (thoughts + ``→ tool`` lines + prose) only as live progress; the
+        # result message is just the final prose. Use the accumulated trail as
+        # the output so the tool-call steps survive after the run completes.
+        output = self._tool_progress.pop(tool_id, [])
+        output_text = "".join(output).strip() or message
+        is_error = _looks_like_error(output_text)
+        truncated = len(output_text) > _PREVIEW_LIMIT
         return ev.tool_use_end(
             tool_id=tool_id,
             tool_name=tool_name or result_name or "tool",
             success=not is_error,
             is_error=is_error,
-            output_preview=message[:_PREVIEW_LIMIT],
+            output_preview=output_text[:_PREVIEW_LIMIT],
             truncated=truncated,
             # Carried out-of-band for the backend to persist; only the full
             # output (when actually longer than the preview) is worth storing.
-            output_full=message if truncated else None,
+            output_full=output_text if truncated else None,
         )
 
     def _match_pending(self, result_name: str) -> tuple[str, str]:
@@ -329,6 +361,7 @@ class StreamTranslator:
         for key, value in payload.items():
             chunk = _acp_progress_text(str(key), value)
             if chunk:
+                self._tool_progress.setdefault(tool_id, []).append(chunk)
                 frames.append(ev.tool_use_progress(tool_id=tool_id, chunk=chunk))
         return frames
 

@@ -64,6 +64,26 @@ def _configure_copy(dest: str, repo: AgentTeamRepo) -> None:
     _run_git("-C", dest, "config", "user.email", email)
 
 
+def _ensure_work_branch(dest: str, work_branch: str) -> None:
+    """Make sure the working copy sits on its per-task branch.
+
+    Runs on every prepare (not just first clone) so copies created before this
+    logic existed — or left on the default branch — are switched onto the task
+    branch. An existing task branch is *checked out* (its history is preserved);
+    only a missing one is created from the current HEAD.
+    """
+    code, current, _ = _run_git("-C", dest, "rev-parse", "--abbrev-ref", "HEAD")
+    if code == 0 and current == work_branch:
+        return
+    exists, _, _ = _run_git(
+        "-C", dest, "rev-parse", "--verify", "--quiet", f"refs/heads/{work_branch}"
+    )
+    if exists == 0:
+        _run_git("-C", dest, "checkout", work_branch)
+    else:
+        _run_git("-C", dest, "checkout", "-B", work_branch)
+
+
 def prepare_task_repos(db: Session, task: AgentTeamTask) -> list[dict]:
     """Ensure each assigned, cloned repo has a working copy in the task folder.
 
@@ -107,9 +127,10 @@ def prepare_task_repos(db: Session, task: AgentTeamTask) -> list[dict]:
                         repo.slug,
                         berr[:200],
                     )
-            # Branch off onto a per-task working branch so the agent never
-            # commits straight onto the tracked branch.
-            _run_git("-C", str(dest), "checkout", "-B", work_branch)
+        # Ensure the per-task working branch on every run (not only on first
+        # clone) so the agent never commits straight onto the tracked branch and
+        # pre-existing copies stuck on the default branch get switched over.
+        _ensure_work_branch(str(dest), work_branch)
         _configure_copy(str(dest), repo)
         prepared.append(
             {
