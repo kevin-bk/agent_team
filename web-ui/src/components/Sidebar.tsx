@@ -29,7 +29,10 @@ export function Sidebar({
   collapsed: boolean;
 }) {
   // The repositories page is full-width and needs no contextual sidebar.
-  if (collapsed || view === "repos") return null;
+  // The board switcher sidebar is temporarily hidden (use the NavRail "Boards"
+  // button → All boards to switch boards).
+  if (collapsed || view === "repos" || view === "board") return null;
+  return null;
 
   return (
     <aside className="flex h-full w-60 shrink-0 flex-col border-r border-border bg-surface-1">
