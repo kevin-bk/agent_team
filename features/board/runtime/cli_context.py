@@ -114,10 +114,40 @@ def _render_repos_block(repos: Sequence[dict] | None) -> str:
     return "\n".join(out)
 
 
+def _render_skills_block(skills: Sequence[dict] | None) -> str:
+    """Render the available skill packs as a context block, or "".
+
+    Each entry is ``{name, description, path}`` where ``path`` points at the
+    materialised ``SKILL.md`` inside the workspace. Claude and Cursor also load
+    these natively from ``.claude/skills`` / ``.cursor/skills``; this manifest is
+    the fallback so any engine (notably Codex) can find them on demand.
+    """
+    items = [s for s in (skills or []) if s.get("name")]
+    if not items:
+        return ""
+    out = [
+        "## Available skills",
+        "",
+        "Reusable skill packs are available in this workspace. When a task matches "
+        "one, read its `SKILL.md` and follow it:",
+    ]
+    for skill in items:
+        desc = (skill.get("description") or "").strip()
+        path = (skill.get("path") or "").strip()
+        line = f"- **{skill['name']}**"
+        if desc:
+            line += f": {desc}"
+        if path:
+            line += f" — read `{path}`"
+        out.append(line)
+    return "\n".join(out)
+
+
 def render_brief(
     task: AgentTeamTask,
     notes: Sequence[dict] | None,
     repos: Sequence[dict] | None,
+    skills: Sequence[dict] | None = None,
 ) -> str:
     """Render the full task brief written to ``.agent-team/TASK.md``."""
     sections: list[str] = [f"# Task {task.human_key}: {task.title}"]
@@ -128,6 +158,10 @@ def render_brief(
     repos_block = _render_repos_block(repos)
     if repos_block:
         sections.append(repos_block)
+
+    skills_block = _render_skills_block(skills)
+    if skills_block:
+        sections.append(skills_block)
 
     notes_block = _format_notes(notes, new_only=False)
     if notes_block:
@@ -147,8 +181,13 @@ def write_context_files(
     task: AgentTeamTask,
     notes: Sequence[dict] | None,
     repos: Sequence[dict] | None,
+    skills_manifest: Sequence[dict] | None = None,
 ) -> None:
     """Write the task brief + native pointer files into the workspace.
+
+    ``skills_manifest`` (already materialised by the caller via
+    :func:`skills.materialize_skills`) is listed in the brief as a fallback for
+    engines without a native skills dir.
 
     Best-effort: a write failure is logged and swallowed so it never aborts the
     run (the CLI can still work from the prompt nudge alone).
@@ -156,7 +195,7 @@ def write_context_files(
     try:
         _write_file(
             os.path.join(workspace_path, BRIEF_REL_PATH),
-            render_brief(task, notes, repos),
+            render_brief(task, notes, repos, skills_manifest),
         )
         # Native discovery files, one per engine, at the workspace root. The
         # Cursor rule needs front matter so the agent always applies it.

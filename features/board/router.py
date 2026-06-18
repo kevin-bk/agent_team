@@ -48,6 +48,7 @@ from agent_team.features.board.schemas import (
     JiraSyncBody,
     MentionCreate,
     MentionResponse,
+    SkillPackDTO,
     TaskCreate,
     TaskMove,
     TaskUpdate,
@@ -179,6 +180,17 @@ async def update_board(
                 content={"detail": f"unknown CLI target(s): {', '.join(unknown)}"},
             )
         board.cli_targets_json = json.dumps(payload.cli_target_ids)
+    if payload.skill_ids is not None:
+        from agent_team.features.board.runtime import skills as skills_rt
+
+        known = {p["name"] for p in skills_rt.list_available_packs()}
+        unknown = [s for s in payload.skill_ids if s not in known]
+        if unknown:
+            return JSONResponse(
+                status_code=422,
+                content={"detail": f"unknown skill pack(s): {', '.join(unknown)}"},
+            )
+        board.skills_json = json.dumps(payload.skill_ids)
     if payload.archived is not None:
         board.archived = payload.archived
     # ── Jira config ──────────────────────────────────────────────────────
@@ -867,6 +879,21 @@ async def list_cli_targets(request: Request, db: Session = Depends(get_db)):
     from agent_team.features.board.runtime.direct_acp import available_targets
 
     return available_targets()
+
+
+@router.get("/skills", response_model=list[SkillPackDTO])
+async def list_skills(request: Request, db: Session = Depends(get_db)):
+    """Skill packs available to assign to a board's direct-CLI agents.
+
+    Sourced from the core ``skill_packs`` catalog (shared dir + git sources).
+    Returns an empty list when the ``skill_packs`` plugin is not installed.
+    """
+    _, err = auth_or_401(db, request)
+    if err:
+        return err
+    from agent_team.features.board.runtime import skills as skills_rt
+
+    return [SkillPackDTO(**p) for p in skills_rt.list_available_packs()]
 
 
 # ---------------------------------------------------------------------------

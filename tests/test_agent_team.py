@@ -1412,6 +1412,110 @@ def test_known_cli_aliases_covers_engines():
     assert known_cli_aliases() == {"cli:claude", "cli:cursor", "cli:codex"}
 
 
+def _seed_skill_pack(root, name: str, description: str = "A demo skill") -> None:
+    """Create a minimal valid skill pack folder under *root*/shared/<name>."""
+    pack = root / "shared" / name
+    pack.mkdir(parents=True, exist_ok=True)
+    (pack / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: {description}\n---\n\nDo the thing.\n",
+        encoding="utf-8",
+    )
+    (pack / "scripts").mkdir(exist_ok=True)
+    (pack / "scripts" / "run.sh").write_text("echo hi\n", encoding="utf-8")
+
+
+def test_board_skill_ids_round_trip(db):
+    from agent_team.features.board.repositories import boards as boards_repo
+
+    board = boards_repo.create_board(
+        db, name="Skills", description=None, columns=None, owner_id=None
+    )
+    assert board.skill_ids() == []
+    board.skills_json = json.dumps(["pdf-tools", "git-helper"])
+    db.commit()
+    dto = boards_repo.serialize_board(board, my_role="owner")
+    assert dto.skill_ids == ["pdf-tools", "git-helper"]
+
+
+def test_list_available_packs_reads_catalog(tmp_path, monkeypatch):
+    monkeypatch.setenv("SKILL_PACKS_ROOT", str(tmp_path))
+    _seed_skill_pack(tmp_path, "pdf-tools", "Work with PDFs")
+
+    from agent_team.features.board.runtime import skills as skills_rt
+
+    packs = skills_rt.list_available_packs()
+    names = {p["name"] for p in packs}
+    assert "pdf-tools" in names
+    pdf = next(p for p in packs if p["name"] == "pdf-tools")
+    assert pdf["description"] == "Work with PDFs"
+
+
+def test_materialize_skills_copies_into_native_dirs_and_is_idempotent(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("SKILL_PACKS_ROOT", str(tmp_path / "packs"))
+    _seed_skill_pack(tmp_path / "packs", "pdf-tools")
+
+    from agent_team.features.board.runtime import skills as skills_rt
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    manifest = skills_rt.materialize_skills(str(ws), ["pdf-tools", "missing-pack"])
+
+    # Only the existing pack is materialised; the unknown name is skipped.
+    assert [m["name"] for m in manifest] == ["pdf-tools"]
+    assert (ws / ".claude" / "skills" / "pdf-tools" / "SKILL.md").is_file()
+    assert (ws / ".cursor" / "skills" / "pdf-tools" / "SKILL.md").is_file()
+    assert (ws / ".claude" / "skills" / "pdf-tools" / "scripts" / "run.sh").is_file()
+    assert manifest[0]["path"] == ".claude/skills/pdf-tools/SKILL.md"
+
+    # De-selecting a skill removes it from the workspace on the next pass.
+    manifest2 = skills_rt.materialize_skills(str(ws), [])
+    assert manifest2 == []
+    assert not (ws / ".claude" / "skills").exists()
+    assert not (ws / ".cursor" / "skills").exists()
+
+
+def test_write_codex_manifest_writes_agents_md(tmp_path):
+    from agent_team.features.board.runtime import skills as skills_rt
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    manifest = [
+        {"name": "pdf-tools", "description": "Work with PDFs",
+         "path": ".claude/skills/pdf-tools/SKILL.md"}
+    ]
+    skills_rt.write_codex_manifest(str(ws), manifest)
+    agents = (ws / "AGENTS.md").read_text(encoding="utf-8")
+    assert "Available skills" in agents
+    assert "pdf-tools" in agents
+
+    # No skills → leave any existing manifest untouched (no clobber).
+    (ws / "AGENTS.md").write_text("keep me\n", encoding="utf-8")
+    skills_rt.write_codex_manifest(str(ws), [])
+    assert (ws / "AGENTS.md").read_text(encoding="utf-8") == "keep me\n"
+
+
+def test_render_brief_lists_available_skills():
+    from types import SimpleNamespace
+
+    from agent_team.features.board.runtime import cli_context
+
+    task = SimpleNamespace(
+        human_key="T-1", title="Demo", description="x", workspace_path="/ws"
+    )
+    brief = cli_context.render_brief(
+        task,
+        notes=None,
+        repos=None,
+        skills=[{"name": "pdf-tools", "description": "Work with PDFs",
+                 "path": ".claude/skills/pdf-tools/SKILL.md"}],
+    )
+    assert "## Available skills" in brief
+    assert "pdf-tools" in brief
+    assert ".claude/skills/pdf-tools/SKILL.md" in brief
+
+
 def test_csv_export_then_reimport_round_trips(db):
     """Exported rows carry human_key, so re-importing updates (not duplicates)."""
     from agent_team.features.board import csv_tasks

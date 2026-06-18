@@ -92,6 +92,9 @@ class AgentTeamBoard(Base):
     #: JSON-encoded list of direct-CLI aliases (``cli:<engine>``) enabled on this
     #: board — tasks only show these CLIs. Empty (the default) = none.
     cli_targets_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    #: JSON-encoded list of skill pack names made available to direct-CLI agents
+    #: on this board (materialised into each task workspace). Empty = no skills.
+    skills_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     # ── Jira sync (per-board, Phase 1: one-way pull) ──────────────────────
     #: Master switch — when False the board ignores all Jira config.
     jira_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -140,6 +143,14 @@ class AgentTeamBoard(Base):
         """Return the enabled direct-CLI aliases (empty = no CLI on this board)."""
         try:
             value = json.loads(self.cli_targets_json or "[]")
+        except (json.JSONDecodeError, TypeError):
+            return []
+        return [str(item) for item in value] if isinstance(value, list) else []
+
+    def skill_ids(self) -> list[str]:
+        """Return the skill pack names enabled for direct-CLI agents (empty = none)."""
+        try:
+            value = json.loads(self.skills_json or "[]")
         except (json.JSONDecodeError, TypeError):
             return []
         return [str(item) for item in value] if isinstance(value, list) else []

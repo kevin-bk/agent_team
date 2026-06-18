@@ -194,6 +194,8 @@ export interface BoardDTO {
   agent_ids?: string[];
   /** Direct-CLI aliases (`cli:<engine>`) enabled on this board. */
   cli_target_ids?: string[];
+  /** Skill pack names available to this board's direct-CLI agents. */
+  skill_ids?: string[];
   archived: boolean;
   created_at: string;
   updated_at: string;
@@ -317,6 +319,8 @@ export interface PatchBoardBody {
   agent_ids?: string[];
   /** Direct-CLI aliases (`cli:<engine>`) enabled on this board. */
   cli_target_ids?: string[];
+  /** Skill pack names available to this board's direct-CLI agents. */
+  skill_ids?: string[];
   archived?: boolean;
   /** Jira sync config. Omit jira_api_token to keep it; send "" to clear it. */
   jira_enabled?: boolean;
@@ -420,6 +424,13 @@ export interface CliTargetDTO {
   label: string;
   /** Whether the engine's launch command looks installed on the host. */
   available: boolean;
+}
+
+export interface SkillPackDTO {
+  name: string;
+  description: string;
+  version?: string | null;
+  source?: string | null;
 }
 
 // ── Autopilot (per-board auto-pickup of assigned tasks) ──────────────

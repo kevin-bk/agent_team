@@ -398,6 +398,22 @@ def _load_run_context(run_id: str) -> dict | None:
             and task.updated_at is not None
             and task.updated_at > since
         )
+        # Materialise the board's skill packs into the workspace for EVERY run
+        # (direct CLI, LLM agent, autopilot). Claude/Cursor discover the copied
+        # ``.claude`` / ``.cursor`` skill dirs natively whether the engine runs
+        # directly or is spawned by an LLM's ``claude_acp`` / ``cursor`` tool in
+        # this workspace.
+        from agent_team.features.board.runtime import skills as skills_rt
+
+        skills_manifest: list[dict] = []
+        try:
+            from agent_team.features.board.repositories import boards as boards_repo
+
+            board = boards_repo.get_board(db, task.board_id)
+            skill_ids = board.skill_ids() if board is not None else []
+            skills_manifest = skills_rt.materialize_skills(task.workspace_path, skill_ids)
+        except Exception:
+            logger.exception("agent_team: failed to materialise board skills for %s", task.id)
         if is_direct_cli_alias(run.agent_alias):
             # The CLI reads its context from files in the workspace
             # (``.agent-team/TASK.md`` via the CLAUDE.md / AGENTS.md / cursor-rule
@@ -406,11 +422,20 @@ def _load_run_context(run_id: str) -> dict | None:
             # re-read it on a later turn when new notes arrived since last time
             # (``notes`` already holds just that delta).
             all_notes = _load_task_notes(db, run.task_id, since=None)
-            cli_context.write_context_files(task.workspace_path, task, all_notes, repos)
+            cli_context.write_context_files(
+                task.workspace_path, task, all_notes, repos, skills_manifest
+            )
             input_text = cli_context.build_prompt(
                 run.prompt or "", first_turn=full, has_new_notes=bool(notes)
             )
         else:
+            # LLM run: the agent gets context via the prompt, but a coding
+            # sub-agent it spawns over ACP runs in this workspace — Codex reads
+            # ``AGENTS.md``, so advertise the materialised skills there too.
+            try:
+                skills_rt.write_codex_manifest(task.workspace_path, skills_manifest)
+            except Exception:
+                logger.exception("agent_team: failed to write Codex manifest for %s", task.id)
             input_text = build_task_context(
                 task,
                 run.prompt,

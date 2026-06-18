@@ -30,6 +30,8 @@ class BoardUpdate(BaseModel):
     agent_ids: list[str] | None = None
     #: Direct-CLI aliases (``cli:<engine>``) enabled on this board.
     cli_target_ids: list[str] | None = None
+    #: Skill pack names made available to direct-CLI agents on this board.
+    skill_ids: list[str] | None = None
     archived: bool | None = None
     # ── Jira sync config (write side) ─────────────────────────────────────
     jira_enabled: bool | None = None
@@ -56,6 +58,8 @@ class BoardDTO(BaseModel):
     agent_ids: list[str] = Field(default_factory=list)
     #: Direct-CLI aliases (``cli:<engine>``) enabled on this board.
     cli_target_ids: list[str] = Field(default_factory=list)
+    #: Skill pack names made available to direct-CLI agents on this board.
+    skill_ids: list[str] = Field(default_factory=list)
     archived: bool
     task_count: int = 0
     #: The requesting user's role on this board (owner/editor/viewer).
@@ -71,6 +75,15 @@ class BoardDTO(BaseModel):
     jira_has_token: bool = False
     created_at: str | None
     updated_at: str | None
+
+
+class SkillPackDTO(BaseModel):
+    """One entry in the skill pack catalog available to boards."""
+
+    name: str
+    description: str
+    version: str | None = None
+    source: str | None = None
 
 
 class BoardMemberDTO(BaseModel):

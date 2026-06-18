@@ -9,6 +9,7 @@ import {
   type BoardDTO,
   type BoardMemberDTO,
   type CliTargetDTO,
+  type SkillPackDTO,
   type ConversationDetail,
   type ConversationSummary,
   type CreateBoardBody,
@@ -345,6 +346,9 @@ export class ApiClient {
   }
   listCliTargets() {
     return this.request<CliTargetDTO[]>("/api/cli-targets");
+  }
+  listSkills() {
+    return this.request<SkillPackDTO[]>("/api/skills");
   }
   getAutopilot(boardId: string) {
     return this.request<AutopilotDTO>(`/api/boards/${boardId}/autopilot`);
