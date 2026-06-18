@@ -200,6 +200,12 @@ def _unwrap_custom(data: Any) -> dict | None:
 #: pings (``in_progress`` / ``pending``) are skipped to keep the trail readable.
 _ACP_STATUS_ICONS = {"completed": "\u2713", "failed": "\u2717"}
 
+#: Max chars of a sub-agent tool's command shown inline on its ``→`` line.
+_ACP_COMMAND_INLINE_LIMIT = 200
+#: Max chars of a sub-agent tool's output folded into the action trail. The
+#: whole trail is still bounded (and lazy-loaded) at the outer tool card.
+_ACP_OUTPUT_SNIPPET_LIMIT = 1500
+
 
 def _acp_progress_text(key: str, value: Any) -> str:
     """Map one AI-coding ACP custom event to a structured progress line, or "".
@@ -214,19 +220,40 @@ def _acp_progress_text(key: str, value: Any) -> str:
     # the generic ``_progress`` suffix (``claude_acp_tool_progress`` also ends in
     # ``_progress``) or their raw ``\x00``-encoded payload leaks into the text.
     if key.endswith("_tool_start"):
-        # Encoded as ``kind\x00title\x00tool_id`` (see ai_code _acp_base).
-        parts = value.split("\x00")
+        # Encoded as ``kind\x00title\x00tool_id\x00command`` (see ai_code
+        # _acp_base). The command (when present) shows what the tool ran.
+        parts = value.split("\x00", 3)
         title = parts[1] if len(parts) > 1 else parts[0]
-        return f"\n\u2192 {title}\n" if title else ""
+        command = parts[3] if len(parts) > 3 else ""
+        if not title:
+            return ""
+        if command:
+            # Collapse to one readable line beside the tool's title.
+            inline = " ".join(command.split())[:_ACP_COMMAND_INLINE_LIMIT]
+            return f"\n\u2192 {title}: {inline}\n"
+        return f"\n\u2192 {title}\n"
     if key.endswith("_tool_progress"):
-        # Encoded as ``tool_id\x00status\x00title``. Only mark terminal states.
-        parts = value.split("\x00")
+        # Encoded as ``tool_id\x00status\x00title\x00output\x00command``. Only
+        # mark terminal states; the output snippet is indented under the line.
+        parts = value.split("\x00", 4)
         status = parts[1] if len(parts) > 1 else ""
         title = parts[2] if len(parts) > 2 else ""
+        output = parts[3] if len(parts) > 3 else ""
+        command = parts[4] if len(parts) > 4 else ""
         icon = _ACP_STATUS_ICONS.get(status)
         if not icon:
             return ""
-        return f"  {icon} {title}\n" if title else f"  {icon}\n"
+        # Show the command here too: the agent may only reveal it after start.
+        label = title
+        if command:
+            inline = " ".join(command.split())[:_ACP_COMMAND_INLINE_LIMIT]
+            label = f"{title}: {inline}" if title else inline
+        head = f"  {icon} {label}" if label else f"  {icon}"
+        if output:
+            snippet = output[:_ACP_OUTPUT_SNIPPET_LIMIT]
+            body = "\n".join(f"    {line}" for line in snippet.splitlines())
+            return f"{head}\n{body}\n"
+        return head + "\n"
     if key.endswith(("_progress", "_thought", "_plan")):
         return value
     # ``_usage`` is a noisy status ping — skip it.

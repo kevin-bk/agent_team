@@ -48,6 +48,11 @@ _KEY_USAGE = "claude_acp_usage"
 #: ACP tool-call statuses that close a tool card.
 _TERMINAL_TOOL_STATUSES = frozenset({"completed", "failed"})
 
+#: Chars of a tool's output shown inline on its card. A longer result is
+#: persisted out-of-stream and revealed via the card's "show more" affordance
+#: (mirrors the LLM path's ``StreamTranslator`` preview budget).
+_OUTPUT_PREVIEW_LIMIT = 2000
+
 
 @dataclass(frozen=True)
 class _EngineSpec:
@@ -172,8 +177,10 @@ class _DirectAcpTranslator:
 
     def __init__(self) -> None:
         self._counter = 0
-        #: ACP tool-call id → ``(our tool_id, tool_name)`` for open tool cards.
-        self._open: dict[str, tuple[str, str]] = {}
+        #: ACP tool-call id → ``(our tool_id, tool_name, command)`` for open
+        #: cards. ``command`` is the latest params summary seen (it may arrive
+        #: after the call starts, so it is remembered and surfaced when known).
+        self._open: dict[str, tuple[str, str, str]] = {}
 
     def on_delta(self, delta: dict[str, object]) -> list[tuple[str, dict]]:
         frames: list[tuple[str, dict]] = []
@@ -192,7 +199,7 @@ class _DirectAcpTranslator:
                 is_error=False,
                 output_preview="",
             )
-            for tool_id, tool_name in self._open.values()
+            for tool_id, tool_name, _command in self._open.values()
         ]
         self._open.clear()
         return frames
@@ -215,48 +222,82 @@ class _DirectAcpTranslator:
         return []
 
     def _tool_start(self, value: str) -> list[tuple[str, dict]]:
-        # Encoded ``kind\x00title\x00tool_id`` (see ai_code ``_acp_base``).
-        parts = value.split("\x00")
+        # Encoded ``kind\x00title\x00tool_id\x00command`` (see ai_code _acp_base).
+        # ``maxsplit`` keeps any stray delimiter inside the trailing command.
+        parts = value.split("\x00", 3)
         kind = parts[0] if parts else ""
         title = parts[1] if len(parts) > 1 else ""
         acp_id = parts[2] if len(parts) > 2 else ""
+        command = parts[3] if len(parts) > 3 else ""
         if not (title or kind):
             return []
         self._counter += 1
         tool_id = f"c{self._counter}"
         tool_name = title or kind or "tool"
         if acp_id:
-            self._open[acp_id] = (tool_id, tool_name)
+            self._open[acp_id] = (tool_id, tool_name, command)
+        # ``command`` feeds the cockpit's input summary (shown beside the tool
+        # name) and the expandable params block.
+        tool_input: dict[str, str] = {}
+        if kind:
+            tool_input["kind"] = kind
+        if command:
+            tool_input["command"] = command
         return [
             ev.tool_use_start(
                 tool_id=tool_id,
                 tool_name=tool_name,
-                tool_input={"kind": kind} if kind else {},
+                tool_input=tool_input,
             )
         ]
 
     def _tool_progress(self, value: str) -> list[tuple[str, dict]]:
-        # Encoded ``tool_id\x00status\x00title``.
-        parts = value.split("\x00")
+        # Encoded ``tool_id\x00status\x00title\x00output\x00command``.
+        parts = value.split("\x00", 4)
         acp_id = parts[0] if parts else ""
         status = parts[1] if len(parts) > 1 else ""
         title = parts[2] if len(parts) > 2 else ""
+        output = parts[3] if len(parts) > 3 else ""
+        command = parts[4] if len(parts) > 4 else ""
         opened = self._open.get(acp_id)
         if opened is None:
             return []
-        tool_id, tool_name = opened
+        tool_id, tool_name, known_command = opened
+        # The command can arrive after the call starts (and updates are deltas),
+        # so remember the latest non-empty one and surface it when new.
+        newly_known = bool(command) and command != known_command
+        if newly_known:
+            known_command = command
+            self._open[acp_id] = (tool_id, tool_name, known_command)
+        input_update = {"command": known_command} if known_command else None
         if status in _TERMINAL_TOOL_STATUSES:
             self._open.pop(acp_id, None)
+            # The card shows ``output_preview`` inline; the full result is
+            # persisted out-of-stream and lazy-loaded when it exceeds the cap.
+            preview = output or title
+            truncated = len(preview) > _OUTPUT_PREVIEW_LIMIT
             return [
                 ev.tool_use_end(
                     tool_id=tool_id,
                     tool_name=title or tool_name,
                     success=status != "failed",
                     is_error=status == "failed",
-                    output_preview=title or "",
+                    output_preview=preview[:_OUTPUT_PREVIEW_LIMIT],
+                    truncated=truncated,
+                    output_full=preview if truncated else None,
+                    tool_input=input_update,
                 )
             ]
-        return [ev.tool_use_progress(tool_id=tool_id, chunk=title)] if title else []
+        # Non-terminal: forward progress text and a freshly-revealed command.
+        if title or newly_known:
+            return [
+                ev.tool_use_progress(
+                    tool_id=tool_id,
+                    chunk=title,
+                    tool_input=input_update if newly_known else None,
+                )
+            ]
+        return []
 
 
 class DirectCliRun:

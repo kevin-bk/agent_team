@@ -46,6 +46,8 @@ export interface ToolUseProgressEvent extends BaseEvent {
   tool_id: string;
   chunk?: string | null;
   progress?: Record<string, unknown> | null;
+  /** Params revealed after the tool started; merged into the card's input. */
+  input?: Record<string, unknown> | null;
 }
 export interface ToolUseEndEvent extends BaseEvent {
   type: "tool_use_end";
@@ -57,6 +59,8 @@ export interface ToolUseEndEvent extends BaseEvent {
   is_error: boolean;
   /** Result longer than the inline preview; full text is fetched on demand. */
   truncated?: boolean;
+  /** Final params (e.g. a command revealed mid-run); merged into the card. */
+  input?: Record<string, unknown> | null;
 }
 export interface CompactionEvent extends BaseEvent {
   type: "compaction";

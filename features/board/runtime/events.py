@@ -58,8 +58,19 @@ def tool_use_start(*, tool_id: str, tool_name: str, tool_input: dict | None) -> 
     }
 
 
-def tool_use_progress(*, tool_id: str, chunk: str) -> tuple[str, dict]:
-    return EVENT_TOOL_USE_PROGRESS, {"tool_id": tool_id, "chunk": chunk}
+def tool_use_progress(
+    *, tool_id: str, chunk: str = "", tool_input: dict | None = None
+) -> tuple[str, dict]:
+    """Live update for a running tool.
+
+    Carries a progress ``chunk`` and/or a refined ``tool_input`` — some agents
+    reveal a tool's params (e.g. the shell command) only after it starts, so the
+    card's input is updated in place when they arrive.
+    """
+    data: dict = {"tool_id": tool_id, "chunk": chunk}
+    if tool_input:
+        data["input"] = tool_input
+    return EVENT_TOOL_USE_PROGRESS, data
 
 
 def tool_use_end(
@@ -72,6 +83,7 @@ def tool_use_end(
     duration_ms: int | None = None,
     truncated: bool = False,
     output_full: str | None = None,
+    tool_input: dict | None = None,
 ) -> tuple[str, dict]:
     """Build a ``tool_use_end`` frame.
 
@@ -79,9 +91,10 @@ def tool_use_end(
     so the UI can offer a "show more" affordance. ``output_full`` carries the
     complete output for the backend to persist out-of-stream; it is popped
     before the frame is stored/streamed, so it never bloats the event store or
-    SSE (see ``local_backend``).
+    SSE (see ``local_backend``). ``tool_input`` carries the tool's final params
+    (e.g. a command revealed mid-run) to merge into the card on completion.
     """
-    return EVENT_TOOL_USE_END, {
+    data = {
         "tool_id": tool_id,
         "tool_name": tool_name,
         "success": success,
@@ -91,6 +104,9 @@ def tool_use_end(
         "truncated": truncated,
         "output_full": output_full,
     }
+    if tool_input:
+        data["input"] = tool_input
+    return EVENT_TOOL_USE_END, data
 
 
 def usage(usage_dict: dict) -> tuple[str, dict]:

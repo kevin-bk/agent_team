@@ -309,10 +309,15 @@ function applyEvent(state: RunState, ev: AgentEvent): RunState {
 
     case "tool_use_progress": {
       const idx = findTool(blocks, ev.tool_id);
-      if (idx >= 0 && ev.chunk) {
+      if (idx >= 0 && (ev.chunk || ev.input)) {
         const b = blocks[idx];
         if (b.kind === "tool") {
-          blocks[idx] = { ...b, progress: (b.progress + ev.chunk).slice(-4000) };
+          blocks[idx] = {
+            ...b,
+            progress: ev.chunk ? (b.progress + ev.chunk).slice(-4000) : b.progress,
+            // Some agents reveal a tool's params after it starts; merge them in.
+            input: ev.input ? { ...b.input, ...ev.input } : b.input,
+          };
         }
       }
       return { ...state, blocks };
@@ -329,6 +334,7 @@ function applyEvent(state: RunState, ev: AgentEvent): RunState {
             outputPreview: ev.output_preview ?? undefined,
             truncated: ev.truncated ?? false,
             durationMs: ev.duration_ms,
+            input: ev.input ? { ...b.input, ...ev.input } : b.input,
           };
         }
       }

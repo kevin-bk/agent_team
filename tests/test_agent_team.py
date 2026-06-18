@@ -1736,6 +1736,22 @@ def test_acp_progress_text_formats_tool_lines_without_raw_leak():
     assert running == ""  # noisy in-flight pings are dropped
 
 
+def test_acp_progress_text_surfaces_command_and_output():
+    """The optional 4th field (command / output) is rendered when present."""
+    from agent_team.features.board.runtime.translator import _acp_progress_text
+
+    start = _acp_progress_text(
+        "claude_acp_tool_start", "execute\x00Terminal\x00tid1\x00find . -maxdepth 3"
+    )
+    assert start == "\n\u2192 Terminal: find . -maxdepth 3\n"
+
+    done = _acp_progress_text(
+        "claude_acp_tool_progress", "tid1\x00completed\x00Terminal\x00line_a\nline_b"
+    )
+    assert "\u2713 Terminal" in done
+    assert "    line_a" in done and "    line_b" in done
+
+
 def test_translator_acp_trail_survives_in_final_tool_output():
     """The streamed sub-agent action trail is merged into the tool's output."""
     from agent_team.features.board.runtime import events as ev
@@ -2576,6 +2592,46 @@ def test_direct_acp_translator_failed_tool_and_finalize():
     closing = tr.finalize()
     assert [t for t, _ in closing] == [ev.EVENT_TOOL_USE_END]
     assert tr.finalize() == []  # idempotent
+
+
+def test_direct_acp_translator_surfaces_command_and_output():
+    """The 4th field feeds the card's command input and its output preview."""
+    from agent_team.features.board.runtime.direct_acp import _DirectAcpTranslator
+
+    tr = _DirectAcpTranslator()
+    start = tr.on_delta(
+        {"claude_acp_tool_start": "execute\x00Terminal\x00tid1\x00ls -la"}
+    )
+    _etype, data = start[0]
+    assert data["input"] == {"kind": "execute", "command": "ls -la"}
+
+    done = tr.on_delta(
+        {"claude_acp_tool_progress": "tid1\x00completed\x00Terminal\x00total 0\nfile.py"}
+    )
+    _etype, data = done[0]
+    assert data["tool_name"] == "Terminal"
+    assert data["output_preview"] == "total 0\nfile.py"
+
+
+def test_direct_acp_translator_command_revealed_after_start():
+    """A command absent at start but revealed by a later update reaches the card."""
+    from agent_team.features.board.runtime import events as ev
+    from agent_team.features.board.runtime.direct_acp import _DirectAcpTranslator
+
+    tr = _DirectAcpTranslator()
+    start = tr.on_delta({"claude_acp_tool_start": "execute\x00Terminal\x00tid1\x00"})
+    assert "command" not in start[0][1]["input"]
+
+    # An in-progress update reveals the command → a live input update.
+    mid = tr.on_delta({"claude_acp_tool_progress": "tid1\x00in_progress\x00\x00\x00ls -la"})
+    assert mid[0][0] == ev.EVENT_TOOL_USE_PROGRESS
+    assert mid[0][1]["input"] == {"command": "ls -la"}
+
+    # Completion (no command field) still carries the accumulated command.
+    done = tr.on_delta({"claude_acp_tool_progress": "tid1\x00completed\x00Terminal\x00ok\x00"})
+    assert done[0][0] == ev.EVENT_TOOL_USE_END
+    assert done[0][1]["input"] == {"command": "ls -la"}
+    assert done[0][1]["output_preview"] == "ok"
 
 
 def test_cli_context_render_brief_and_repos_block():
