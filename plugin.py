@@ -42,6 +42,7 @@ class AgentTeamPlugin(PluginBase):
     def models(self) -> list:
         from agent_team.features.board.models import (
             AgentTeamActivity,
+            AgentTeamAutopilot,
             AgentTeamBoard,
             AgentTeamBoardMember,
             AgentTeamComment,
@@ -70,6 +71,7 @@ class AgentTeamPlugin(PluginBase):
             AgentTeamRepo,
             AgentTeamBoardRepo,
             AgentTeamToolOutput,
+            AgentTeamAutopilot,
         ]
 
     def routers(self) -> list[APIRouter]:
@@ -105,6 +107,18 @@ class AgentTeamPlugin(PluginBase):
                 category="agent_team",
                 default_enabled=True,
                 create_tools=_create_git_tools,
+            ),
+            ToolFactory(
+                key="enable_agent_team_set_task_status",
+                display_name="Set Task Status",
+                description=(
+                    "Let the agent move its own task between the board's columns "
+                    "(e.g. mark it review/done/blocked). Useful with autopilot so "
+                    "the agent can advance its task itself."
+                ),
+                category="agent_team",
+                default_enabled=True,
+                create_tools=_create_status_tools,
             ),
         ]
 
@@ -157,16 +171,39 @@ class AgentTeamPlugin(PluginBase):
                 "agent_team: failed to start repo pull ticker"
             )
 
+        # Start the board autopilot ticker (auto-pick assigned tasks on a schedule).
+        try:
+            from agent_team.features.board.autopilot_scheduler import (
+                start_ticker as start_autopilot_ticker,
+            )
+
+            start_autopilot_ticker()
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "agent_team: failed to start autopilot ticker"
+            )
+
     def on_shutdown(self) -> None:
+        import logging
+
         try:
             from agent_team.features.repos.scheduler import stop_ticker
 
             stop_ticker()
         except Exception:
-            import logging
-
             logging.getLogger(__name__).exception(
                 "agent_team: failed to stop repo pull ticker"
+            )
+
+        try:
+            from agent_team.features.board.autopilot_scheduler import (
+                stop_ticker as stop_autopilot_ticker,
+            )
+
+            stop_autopilot_ticker()
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "agent_team: failed to stop autopilot ticker"
             )
 
 
@@ -180,3 +217,9 @@ def _create_git_tools(agent_alias: str, settings: dict[str, str]) -> list:
     from agent_team.features.board.runtime.git_tools import get_git_tools
 
     return get_git_tools(agent_alias, settings)
+
+
+def _create_status_tools(agent_alias: str, settings: dict[str, str]) -> list:
+    from agent_team.features.board.runtime.status_tools import get_status_tools
+
+    return get_status_tools(agent_alias, settings)

@@ -4,6 +4,8 @@ import {
   type AgentDTO,
   type AttachmentDTO,
   type AttemptDTO,
+  type AutopilotDTO,
+  type AutopilotSummaryDTO,
   type BoardDTO,
   type BoardMemberDTO,
   type CliTargetDTO,
@@ -22,6 +24,7 @@ import {
   type MentionResponse,
   type MessageDTO,
   type MoveTaskBody,
+  type PatchAutopilotBody,
   type PatchBoardBody,
   type PatchCronBody,
   type PatchTaskBody,
@@ -342,6 +345,26 @@ export class ApiClient {
   }
   listCliTargets() {
     return this.request<CliTargetDTO[]>("/api/cli-targets");
+  }
+  getAutopilot(boardId: string) {
+    return this.request<AutopilotDTO>(`/api/boards/${boardId}/autopilot`);
+  }
+  updateAutopilot(boardId: string, body: PatchAutopilotBody) {
+    return this.request<AutopilotDTO>(`/api/boards/${boardId}/autopilot`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    });
+  }
+  getAutopilotSummary(boardId: string) {
+    return this.request<AutopilotSummaryDTO>(
+      `/api/boards/${boardId}/autopilot/summary`,
+    );
+  }
+  routeAutopilot(boardId: string) {
+    return this.request<{ assigned: number }>(
+      `/api/boards/${boardId}/autopilot/route`,
+      { method: "POST" },
+    );
   }
   mentionAgent(taskId: string, body: MentionBody) {
     return this.request<MentionResponse>(`/api/tasks/${taskId}/mentions`, {

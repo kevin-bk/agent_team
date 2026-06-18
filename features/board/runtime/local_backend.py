@@ -16,8 +16,8 @@ from datetime import UTC, datetime
 from agent_team.features.board.board_events import get_board_bus
 from agent_team.features.board.models import AgentTeamRun
 from agent_team.features.board.repositories import activity as activity_repo
-from agent_team.features.board.repositories.comments import list_comments
 from agent_team.features.board.repositories import tool_outputs as tool_outputs_repo
+from agent_team.features.board.repositories.comments import list_comments
 from agent_team.features.board.repositories.runs import (
     get_run,
     list_runs_for_conversation,
@@ -61,6 +61,11 @@ class LocalRunBackend:
     """Runs agents as asyncio tasks in the current process."""
 
     async def start(self, run_id: str) -> None:
+        # Record the app's main loop so the autopilot ticker (a thread) can
+        # dispatch runs onto it via ``run_coroutine_threadsafe``.
+        from agent_team.features.board.runtime.dispatch import capture_main_loop
+
+        capture_main_loop()
         handle = registry.register(run_id)
         handle.task = asyncio.create_task(self._drive(run_id, handle))
 
@@ -469,6 +474,10 @@ async def _log_run_finished(
         kind=activity_repo.RUN_FINISHED,
         data={"run_id": run_id, "status": status},
     )
+    # Move an autopilot-triggered task on completion (no-op for other runs).
+    from agent_team.features.board.runtime import autopilot as autopilot_rt
+
+    await asyncio.to_thread(autopilot_rt.on_run_finished, run_id, status)
     if board_id:
         get_board_bus().publish(
             board_id,

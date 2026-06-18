@@ -289,6 +289,8 @@ export interface TaskDTO {
   status: string;
   position: number;
   assignee_id?: string | null;
+  /** Agent/CLI alias this task is assigned to (autopilot ownership). */
+  agent_assignee?: string | null;
   labels: string[];
   priority?: TaskPriority | null;
   jira_key?: string | null;
@@ -333,6 +335,7 @@ export interface CreateTaskBody {
   description?: string | null;
   task_type?: TaskType | null;
   assignee_id?: string | null;
+  agent_assignee?: string | null;
   labels?: string[] | null;
   priority?: TaskPriority | null;
   jira_key?: string | null;
@@ -345,6 +348,8 @@ export interface PatchTaskBody {
   task_type?: TaskType;
   status?: string;
   assignee_id?: string | null;
+  /** Agent/CLI alias to assign; send "" to clear. */
+  agent_assignee?: string | null;
   labels?: string[];
   priority?: TaskPriority | null;
   jira_key?: string | null;
@@ -415,6 +420,81 @@ export interface CliTargetDTO {
   label: string;
   /** Whether the engine's launch command looks installed on the host. */
   available: boolean;
+}
+
+// ── Autopilot (per-board auto-pickup of assigned tasks) ──────────────
+
+export type AutopilotScheduleMode = "off" | "interval" | "cron";
+
+export interface AutopilotDTO {
+  board_id: string;
+  enabled: boolean;
+  schedule_mode: AutopilotScheduleMode;
+  interval_seconds: number;
+  cron?: string | null;
+  timezone: string;
+  /** Board column *keys* (not labels). */
+  source_status: string;
+  working_status: string;
+  done_status: string;
+  error_status: string;
+  board_concurrency: number;
+  default_agent_concurrency: number;
+  /** Map `{agent_alias: max_in_flight}` overriding the default. */
+  agent_concurrency: Record<string, number>;
+  error_cooldown_seconds: number;
+  max_attempts: number;
+  prompt_template?: string | null;
+  routing_rules: RoutingRule[];
+  next_run_at?: string | null;
+  last_run_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface RoutingRule {
+  labels: string[];
+  priorities: string[];
+  agents: string[];
+}
+
+export interface AutopilotRecentItem {
+  task_id: string;
+  human_key: string;
+  title: string;
+  status: string;
+  agent: string;
+  run_status: string;
+  at?: string | null;
+}
+
+export interface AutopilotSummaryDTO {
+  enabled: boolean;
+  schedule_mode: AutopilotScheduleMode;
+  next_run_at?: string | null;
+  last_run_at?: string | null;
+  in_flight: number;
+  board_concurrency: number;
+  runs_today: number;
+  recent: AutopilotRecentItem[];
+}
+
+export interface PatchAutopilotBody {
+  enabled?: boolean;
+  schedule_mode?: AutopilotScheduleMode;
+  interval_seconds?: number;
+  cron?: string | null;
+  timezone?: string;
+  source_status?: string;
+  working_status?: string;
+  done_status?: string;
+  error_status?: string;
+  board_concurrency?: number;
+  default_agent_concurrency?: number;
+  agent_concurrency?: Record<string, number>;
+  error_cooldown_seconds?: number;
+  max_attempts?: number;
+  prompt_template?: string | null;
+  routing_rules?: RoutingRule[];
 }
 
 export type TaskRunStatus =
@@ -545,6 +625,10 @@ export interface TaskActivityDTO {
     from?: string | null;
     to?: string | null;
     status?: string | null;
+    /** Autopilot activity: the agent alias that picked the task. */
+    agent_id?: string | null;
+    /** Autopilot activity: the terminal run status that triggered the move. */
+    run_status?: string | null;
   };
   created_at: string;
 }

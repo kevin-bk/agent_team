@@ -108,6 +108,8 @@ class TaskCreate(BaseModel):
     status: str | None = Field(default=None, max_length=64)
     task_type: str | None = Field(default=None, max_length=32)
     assignee_id: str | None = Field(default=None, max_length=36)
+    #: Agent/CLI alias this task is assigned to (autopilot ownership).
+    agent_assignee: str | None = Field(default=None, max_length=255)
     labels: list[str] | None = None
     priority: str | None = Field(default=None, max_length=16)
 
@@ -118,6 +120,8 @@ class TaskUpdate(BaseModel):
     status: str | None = Field(default=None, max_length=64)
     task_type: str | None = Field(default=None, max_length=32)
     assignee_id: str | None = Field(default=None, max_length=36)
+    #: Agent/CLI alias this task is assigned to. Send "" to clear it.
+    agent_assignee: str | None = Field(default=None, max_length=255)
     labels: list[str] | None = None
     priority: str | None = Field(default=None, max_length=16)
     archived: bool | None = None
@@ -137,6 +141,8 @@ class TaskDTO(BaseModel):
     status: str
     position: float
     assignee_id: str | None
+    #: Agent/CLI alias this task is assigned to (null = none).
+    agent_assignee: str | None = None
     labels: list[str]
     priority: str | None
     task_type: str = "task"
@@ -319,3 +325,89 @@ class MentionResponse(BaseModel):
     conversation_id: str
     #: SSE endpoint the client opens to stream this run's trajectory.
     stream_url: str
+
+
+class RoutingRule(BaseModel):
+    """One auto-assign rule: match conditions → a group of agents to rotate."""
+
+    #: Task matches if it carries at least one of these labels (empty = any).
+    labels: list[str] = Field(default_factory=list)
+    #: Task matches if its priority is in this list (empty = any).
+    priorities: list[str] = Field(default_factory=list)
+    #: Agent aliases to round-robin within when this rule wins.
+    agents: list[str] = Field(default_factory=list)
+
+
+class AutopilotUpdate(BaseModel):
+    """Patch a board's autopilot config (every field optional)."""
+
+    enabled: bool | None = None
+    #: Replace the ordered routing rules (manual "Auto-assign" only).
+    routing_rules: list[RoutingRule] | None = None
+    schedule_mode: Literal["off", "interval", "cron"] | None = None
+    interval_seconds: int | None = Field(default=None, ge=60, le=604800)
+    cron: str | None = Field(default=None, max_length=128)
+    timezone: str | None = Field(default=None, max_length=64)
+    #: Board column *keys* (validated against the board's columns on save).
+    source_status: str | None = Field(default=None, max_length=64)
+    working_status: str | None = Field(default=None, max_length=64)
+    done_status: str | None = Field(default=None, max_length=64)
+    error_status: str | None = Field(default=None, max_length=64)
+    board_concurrency: int | None = Field(default=None, ge=1, le=50)
+    default_agent_concurrency: int | None = Field(default=None, ge=1, le=20)
+    #: Map ``{agent_alias: max_in_flight}`` overriding ``default_agent_concurrency``.
+    agent_concurrency: dict[str, int] | None = None
+    error_cooldown_seconds: int | None = Field(default=None, ge=0, le=604800)
+    max_attempts: int | None = Field(default=None, ge=1, le=20)
+    prompt_template: str | None = Field(default=None, max_length=20000)
+
+
+class AutopilotDTO(BaseModel):
+    board_id: str
+    enabled: bool = False
+    schedule_mode: str = "off"
+    interval_seconds: int = 3600
+    cron: str | None = None
+    timezone: str = "UTC"
+    source_status: str = "todo"
+    working_status: str = "in_progress"
+    done_status: str = "review"
+    error_status: str = "todo"
+    board_concurrency: int = 2
+    default_agent_concurrency: int = 1
+    agent_concurrency: dict[str, int] = Field(default_factory=dict)
+    error_cooldown_seconds: int = 3600
+    max_attempts: int = 3
+    prompt_template: str | None = None
+    routing_rules: list[RoutingRule] = Field(default_factory=list)
+    #: Next scheduled scan (ISO-8601) and the last time the ticker ran.
+    next_run_at: str | None = None
+    last_run_at: str | None = None
+    updated_at: str | None = None
+
+
+class AutopilotRecentItem(BaseModel):
+    """One recent autopilot run, for the board status panel."""
+
+    task_id: str
+    human_key: str
+    title: str
+    status: str
+    agent: str
+    run_status: str
+    at: str | None = None
+
+
+class AutopilotSummaryDTO(BaseModel):
+    """Live, read-only autopilot status for a board (the status panel)."""
+
+    enabled: bool = False
+    schedule_mode: str = "off"
+    next_run_at: str | None = None
+    last_run_at: str | None = None
+    #: Non-terminal autopilot runs in flight right now, and the board cap.
+    in_flight: int = 0
+    board_concurrency: int = 2
+    #: Autopilot runs started since 00:00 UTC today.
+    runs_today: int = 0
+    recent: list[AutopilotRecentItem] = Field(default_factory=list)

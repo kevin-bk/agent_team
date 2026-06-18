@@ -49,6 +49,15 @@ DEFAULT_BOARD_COLUMNS: list[dict[str, str]] = [
     {"key": "done", "name": "Done"},
 ]
 
+#: Allowed values for ``AgentTeamAutopilot.schedule_mode``.
+AUTOPILOT_SCHEDULE_OFF = "off"
+AUTOPILOT_SCHEDULE_INTERVAL = "interval"
+AUTOPILOT_SCHEDULE_CRON = "cron"
+
+#: Clamp for autopilot interval schedules (60s .. 7 days).
+AUTOPILOT_MIN_INTERVAL_SECONDS = 60
+AUTOPILOT_MAX_INTERVAL_SECONDS = 604800
+
 
 class AgentTeamKeySeq(Base):
     """Monotonic counter for human-facing keys (e.g. ``T-142``).
@@ -201,6 +210,19 @@ class AgentTeamTask(Base):
     assignee_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    #: Agent (or direct-CLI) alias this task is assigned to, e.g. an agent id or
+    #: ``cli:claude``. Distinct from ``assignee_id`` (a human user): the board
+    #: autopilot only auto-picks tasks whose ``agent_assignee`` is set, and routes
+    #: each to that agent. Null = no agent owns it (autopilot ignores it).
+    agent_assignee: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    #: Autopilot back-off cursor: when set and in the future, the autopilot skips
+    #: this task (set after a failed auto-run so it isn't retried immediately).
+    autopilot_resume_after: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    #: Count of consecutive failed auto-runs; cleared on any human status change.
+    #: Once it hits the autopilot's ``max_attempts`` the task is left alone.
+    autopilot_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     #: JSON-encoded list of label strings.
     labels_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     priority: Mapped[str | None] = mapped_column(String(16), nullable=True)
@@ -426,3 +448,137 @@ class AgentTeamToolOutput(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False, default="")
     is_error: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class AgentTeamAutopilot(Base):
+    """Per-board auto-pilot: on a schedule, claim assigned tasks and run them.
+
+    One row per board (``board_id`` is the primary key). When ``enabled`` and a
+    schedule is set, a background ticker periodically scans the board's
+    ``source_status`` column for tasks that carry an ``agent_assignee``, claims
+    each by moving it to ``working_status``, and starts an agent run. On
+    completion the run's task is moved to ``done_status`` (success) or
+    ``error_status`` (failure). All status fields hold a board *column key*
+    (stable across column renames), not a display label.
+    """
+
+    __tablename__ = "plugin_agent_team_autopilot"
+
+    board_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("plugin_agent_team_board.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    # ── schedule ──────────────────────────────────────────────────────────
+    #: One of ``off`` / ``interval`` / ``cron``.
+    schedule_mode: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=AUTOPILOT_SCHEDULE_OFF
+    )
+    interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=3600)
+    cron: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="UTC")
+
+    # ── status mapping (board column *keys*) ──────────────────────────────
+    source_status: Mapped[str] = mapped_column(String(64), nullable=False, default="todo")
+    working_status: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="in_progress"
+    )
+    done_status: Mapped[str] = mapped_column(String(64), nullable=False, default="review")
+    error_status: Mapped[str] = mapped_column(String(64), nullable=False, default="todo")
+
+    # ── concurrency (two layers) ──────────────────────────────────────────
+    #: Max autopilot runs in flight across the whole board.
+    board_concurrency: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
+    #: Per-agent cap applied when no explicit override exists in
+    #: ``agent_concurrency_json``.
+    default_agent_concurrency: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    #: JSON object ``{agent_alias: max_in_flight}`` overriding the default.
+    agent_concurrency_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+
+    # ── failure handling ──────────────────────────────────────────────────
+    #: Seconds to back off a task after a failed auto-run before retrying.
+    error_cooldown_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=3600)
+    #: After this many consecutive failures the task is left alone (no retry).
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+
+    #: Optional instruction seeded into each auto-run's first prompt. Empty falls
+    #: back to a built-in default that points the agent at ``.agent-team/TASK.md``.
+    prompt_template: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # ── routing (manual "auto-assign" trigger only — never runs on the tick) ──
+    #: Ordered rules ``[{labels, priorities, agents}]``. First rule whose
+    #: conditions match an unassigned source-column task wins; its ``agents`` list
+    #: is round-robined within the rule. Applied only when a user clicks
+    #: "Auto-assign", never automatically by the scheduler.
+    routing_rules_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    #: Per-rule round-robin cursor ``{rule_index: next_offset}``.
+    routing_rr_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+
+    # ── scheduler cursor ──────────────────────────────────────────────────
+    next_run_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+    def agent_concurrency(self) -> dict[str, int]:
+        """Return the decoded per-agent concurrency overrides (empty on error)."""
+        try:
+            value = json.loads(self.agent_concurrency_json or "{}")
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        if not isinstance(value, dict):
+            return {}
+        out: dict[str, int] = {}
+        for alias, cap in value.items():
+            try:
+                out[str(alias)] = max(0, int(cap))
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    def concurrency_for(self, agent_alias: str) -> int:
+        """Effective in-flight cap for one agent (override else the default)."""
+        return self.agent_concurrency().get(agent_alias, self.default_agent_concurrency)
+
+    def routing_rules(self) -> list[dict]:
+        """Return the decoded routing rules (each ``{labels, priorities, agents}``)."""
+        try:
+            value = json.loads(self.routing_rules_json or "[]")
+        except (json.JSONDecodeError, TypeError):
+            return []
+        if not isinstance(value, list):
+            return []
+        out: list[dict] = []
+        for rule in value:
+            if not isinstance(rule, dict):
+                continue
+            out.append(
+                {
+                    "labels": [str(x) for x in (rule.get("labels") or [])],
+                    "priorities": [str(x) for x in (rule.get("priorities") or [])],
+                    "agents": [str(x) for x in (rule.get("agents") or [])],
+                }
+            )
+        return out
+
+    def routing_rr(self) -> dict[str, int]:
+        """Return the decoded per-rule round-robin cursors (empty on error)."""
+        try:
+            value = json.loads(self.routing_rr_json or "{}")
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        if not isinstance(value, dict):
+            return {}
+        out: dict[str, int] = {}
+        for key, idx in value.items():
+            try:
+                out[str(key)] = int(idx)
+            except (TypeError, ValueError):
+                continue
+        return out

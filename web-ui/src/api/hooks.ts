@@ -11,6 +11,7 @@ import type {
   CreateCronBody,
   CreateTaskBody,
   MoveTaskBody,
+  PatchAutopilotBody,
   PatchBoardBody,
   PatchCronBody,
   PatchTaskBody,
@@ -36,6 +37,8 @@ export const qk = {
   boardMembers: (id: string) => ["board-members", id] as const,
   agents: ["agents"] as const,
   cliTargets: ["cli-targets"] as const,
+  autopilot: (id: string) => ["autopilot", id] as const,
+  autopilotSummary: (id: string) => ["autopilot-summary", id] as const,
   taskRuns: (taskId: string, agentId?: string) =>
     ["task-runs", taskId, agentId ?? "_all"] as const,
   runStats: (boardId: string, days: number, agentId?: string) =>
@@ -232,6 +235,51 @@ export function useUpdateBoard(boardId: string) {
       qc.invalidateQueries({ queryKey: qk.boards });
       qc.invalidateQueries({ queryKey: qk.board(boardId) });
     },
+  });
+}
+
+export function useAutopilot(boardId: string | undefined) {
+  const { client } = useApi();
+  return useQuery({
+    queryKey: qk.autopilot(boardId ?? "_"),
+    queryFn: () => client.getAutopilot(boardId as string),
+    enabled: !!boardId,
+  });
+}
+
+export function useUpdateAutopilot(boardId: string) {
+  const { client } = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: PatchAutopilotBody) =>
+      client.updateAutopilot(boardId, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.autopilot(boardId) });
+      qc.invalidateQueries({ queryKey: qk.autopilotSummary(boardId) });
+    },
+  });
+}
+
+export function useRouteAutopilot(boardId: string) {
+  const { client } = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => client.routeAutopilot(boardId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.boardTasks(boardId) });
+      qc.invalidateQueries({ queryKey: qk.autopilotSummary(boardId) });
+    },
+  });
+}
+
+export function useAutopilotSummary(boardId: string | undefined) {
+  const { client } = useApi();
+  return useQuery({
+    queryKey: qk.autopilotSummary(boardId ?? "_"),
+    queryFn: () => client.getAutopilotSummary(boardId as string),
+    enabled: !!boardId,
+    // Cheap, frequently-changing status — keep it fresh while the panel is open.
+    refetchInterval: 15_000,
   });
 }
 

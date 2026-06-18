@@ -1,9 +1,12 @@
-import { Trash2 } from "@/components/icons";
+import { Bot, TerminalSquare, Trash2 } from "@/components/icons";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
+  useAgents,
   useArchiveTask,
+  useBoard,
   useBoardMembers,
+  useCliTargets,
   useCreateTask,
   usePatchTask,
 } from "@/api/hooks";
@@ -43,6 +46,7 @@ interface FormState {
   priority: string;
   labels: string;
   assignee_id: string;
+  agent_assignee: string;
   jira_key: string;
   jira_url: string;
 }
@@ -56,6 +60,7 @@ function toForm(task: TaskDTO | null, fallbackStatus: string): FormState {
     priority: task?.priority ?? "",
     labels: (task?.labels ?? []).join(", "),
     assignee_id: task?.assignee_id ?? "",
+    agent_assignee: task?.agent_assignee ?? "",
     jira_key: task?.jira_key ?? "",
     jira_url: task?.jira_url ?? "",
   };
@@ -102,6 +107,36 @@ export function TaskDialog({
     [members.data],
   );
 
+  // Agent assignee options: only agents/CLIs staffed on this board. Used by the
+  // board autopilot, which auto-picks tasks assigned to an agent and runs them.
+  const board = useBoard(open ? boardId : undefined);
+  const agents = useAgents();
+  const cliTargets = useCliTargets();
+  const agentOptions = useMemo(() => {
+    const enabledAgents = new Set(board.data?.agent_ids ?? []);
+    const enabledClis = new Set(board.data?.cli_target_ids ?? []);
+    const opts: { value: string; label: string; icon: React.ReactNode }[] = [
+      { value: "", label: "Unassigned", icon: <Bot className="h-4 w-4 opacity-40" /> },
+    ];
+    for (const a of agents.data ?? []) {
+      if (enabledAgents.has(a.id))
+        opts.push({
+          value: a.id,
+          label: a.display_name,
+          icon: <Bot className="h-4 w-4" />,
+        });
+    }
+    for (const t of cliTargets.data ?? []) {
+      if (enabledClis.has(t.id))
+        opts.push({
+          value: t.id,
+          label: `${t.label} (direct)`,
+          icon: <TerminalSquare className="h-4 w-4" />,
+        });
+    }
+    return opts;
+  }, [board.data, agents.data, cliTargets.data]);
+
   // Re-seed the form whenever the dialog opens for a different task/column.
   useEffect(() => {
     if (open) setForm(toForm(task, defaultStatus));
@@ -130,6 +165,7 @@ export function TaskDialog({
             task_type: form.task_type,
             status: form.status,
             assignee_id: form.assignee_id.trim() || null,
+            agent_assignee: form.agent_assignee.trim() || null,
             labels,
             priority,
             jira_key: form.jira_key.trim() || null,
@@ -145,6 +181,7 @@ export function TaskDialog({
           status: form.status,
           description: form.description.trim() || null,
           assignee_id: form.assignee_id.trim() || null,
+          agent_assignee: form.agent_assignee.trim() || null,
           labels,
           priority,
           jira_key: form.jira_key.trim() || null,
@@ -275,13 +312,27 @@ export function TaskDialog({
             </Field>
           </div>
 
-          <Field label="Labels" hint="Separate multiple labels with commas.">
-            <Input
-              value={form.labels}
-              placeholder="frontend, urgent"
-              onChange={(e) => set("labels", e.target.value)}
-            />
-          </Field>
+          <div className="grid grid-cols-2 gap-4">
+            <Field
+              label="Agent"
+              hint="The agent that owns this task. Board autopilot only auto-runs tasks with an agent assigned."
+            >
+              <SelectMenu
+                value={form.agent_assignee}
+                onChange={(v) => set("agent_assignee", v)}
+                placeholder="Unassigned"
+                options={agentOptions}
+              />
+            </Field>
+
+            <Field label="Labels" hint="Separate multiple labels with commas.">
+              <Input
+                value={form.labels}
+                placeholder="frontend, urgent"
+                onChange={(e) => set("labels", e.target.value)}
+              />
+            </Field>
+          </div>
 
           <div className="grid grid-cols-2 gap-4">
             <Field label="Jira key">

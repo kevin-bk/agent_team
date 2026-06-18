@@ -6,6 +6,7 @@ import {
   Columns3,
   Download,
   FileText,
+  Gauge,
   GitBranch,
   List,
   Plus,
@@ -17,15 +18,24 @@ import {
 import { type ReactNode, useCallback, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useApi } from "@/api/ApiProvider";
-import { useBoard, useBoardMembers, useBoardTasks, useMoveTask } from "@/api/hooks";
+import {
+  useAutopilot,
+  useBoard,
+  useBoardMembers,
+  useBoardTasks,
+  useMoveTask,
+} from "@/api/hooks";
 import type { BoardMemberDTO, TaskDTO } from "@/api/types";
 import { BoardImportDialog } from "./BoardImportDialog";
 import { AvatarGroup, Breadcrumbs, JiraIcon } from "@/components/jira";
 import { Button } from "@/components/ui/button";
+import { useConfirm } from "@/components/ConfirmDialog";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { BoardEventsProvider } from "./BoardEventsContext";
 import { BoardAgentsDialog } from "./BoardAgentsDialog";
+import { BoardAutopilotDialog } from "./BoardAutopilotDialog";
 import { BoardReposDialog } from "./BoardReposDialog";
 import { BoardJiraDialog } from "./BoardJiraDialog";
 import { BoardJiraSyncDialog } from "./BoardJiraSyncDialog";
@@ -74,6 +84,7 @@ function BoardViewInner({
   onCloseTask,
 }: BoardViewProps) {
   const board = useBoard(boardId);
+  const autopilot = useAutopilot(boardId);
   const tasksQuery = useBoardTasks(boardId);
   const move = useMoveTask(boardId);
 
@@ -84,6 +95,7 @@ function BoardViewInner({
   const [membersOpen, setMembersOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [agentsOpen, setAgentsOpen] = useState(false);
+  const [autopilotOpen, setAutopilotOpen] = useState(false);
   const [reposOpen, setReposOpen] = useState(false);
   const [jiraOpen, setJiraOpen] = useState(false);
   const [jiraSyncOpen, setJiraSyncOpen] = useState(false);
@@ -91,8 +103,16 @@ function BoardViewInner({
   const [exporting, setExporting] = useState(false);
   const [query, setQuery] = useState("");
   const { client } = useApi();
+  const confirm = useConfirm();
 
   const onExport = useCallback(async () => {
+    const ok = await confirm({
+      title: "Export tasks to CSV?",
+      description:
+        "This downloads every task on this board (title, status, priority, labels, assignee and more) as a CSV file.",
+      confirmLabel: "Export",
+    });
+    if (!ok) return;
     setExporting(true);
     try {
       const csv = await client.exportBoardTasksCsv(boardId);
@@ -108,7 +128,7 @@ function BoardViewInner({
     } finally {
       setExporting(false);
     }
-  }, [client, boardId, board.data?.slug]);
+  }, [client, boardId, board.data?.slug, confirm]);
 
   const tasks = useMemo(() => tasksQuery.data ?? [], [tasksQuery.data]);
   const visibleTasks = useMemo(
@@ -236,6 +256,21 @@ function BoardViewInner({
             {canEdit && (
               <Button
                 variant="ghost"
+                aria-label="Board autopilot"
+                onClick={() => setAutopilotOpen(true)}
+              >
+                <Gauge className="h-4 w-4" /> Autopilot
+                {autopilot.data?.enabled && (
+                  <span
+                    className="ml-0.5 h-2 w-2 rounded-full bg-emerald-500"
+                    title="Autopilot is on"
+                  />
+                )}
+              </Button>
+            )}
+            {canEdit && (
+              <Button
+                variant="ghost"
                 aria-label="Board repositories"
                 onClick={() => setReposOpen(true)}
               >
@@ -257,7 +292,12 @@ function BoardViewInner({
               onClick={onExport}
               disabled={exporting}
             >
-              <Download className="h-4 w-4" /> Export
+              {exporting ? (
+                <Spinner className="h-4 w-4" />
+              ) : (
+                <Download className="h-4 w-4" />
+              )}
+              {exporting ? "Exporting…" : "Export"}
             </Button>
             {canEdit && (
               <Button
@@ -331,6 +371,12 @@ function BoardViewInner({
         board={board.data}
         open={agentsOpen}
         onClose={() => setAgentsOpen(false)}
+      />
+
+      <BoardAutopilotDialog
+        board={board.data}
+        open={autopilotOpen}
+        onClose={() => setAutopilotOpen(false)}
       />
 
       <BoardReposDialog

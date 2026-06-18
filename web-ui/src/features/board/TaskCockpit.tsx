@@ -14,6 +14,7 @@ import {
   FileDiff,
   FileText,
   FolderGit2,
+  Gauge,
   History,
   MessagesSquare,
   PanelRightClose,
@@ -1719,6 +1720,22 @@ const ACTIVITY_STYLE: Record<
     icon: Archive,
     tone: "bg-rose-100 text-rose-600 dark:bg-rose-500/15",
   },
+  autopilot_picked: {
+    icon: Gauge,
+    tone: "bg-indigo-100 text-indigo-600 dark:bg-indigo-500/15",
+  },
+  autopilot_transitioned: {
+    icon: Gauge,
+    tone: "bg-indigo-100 text-indigo-600 dark:bg-indigo-500/15",
+  },
+  autopilot_assigned: {
+    icon: Gauge,
+    tone: "bg-indigo-100 text-indigo-600 dark:bg-indigo-500/15",
+  },
+  agent_status_changed: {
+    icon: Bot,
+    tone: "bg-emerald-100 text-emerald-600 dark:bg-emerald-500/15",
+  },
 };
 
 function ActivityItem({
@@ -1730,7 +1747,13 @@ function ActivityItem({
   nameOf: (id?: string | null) => string;
   statusOf: (key?: string | null) => string;
 }) {
-  const actor = activity.actor_name || activity.actor_id || "Someone";
+  // Autopilot/agent activity has no human actor; label it accordingly.
+  const isAutopilot = activity.kind.startsWith("autopilot_");
+  const actor = isAutopilot
+    ? "Autopilot"
+    : activity.kind === "agent_status_changed"
+      ? "Agent"
+      : activity.actor_name || activity.actor_id || "Someone";
   const style = ACTIVITY_STYLE[activity.kind] ?? {
     icon: CircleDot,
     tone: "bg-surface-3 text-muted-foreground",
@@ -1768,6 +1791,43 @@ function ActivityItem({
       break;
     case "archived":
       detail = "archived this task";
+      break;
+    case "autopilot_picked":
+      detail = (
+        <>
+          picked up this task for{" "}
+          <b className="font-medium text-foreground">{nameOf(d.agent_id)}</b>{" "}
+          <ArrowRight className="inline h-3 w-3 -translate-y-px text-muted-foreground" />{" "}
+          <b className="font-medium text-foreground">{statusOf(d.to)}</b>
+        </>
+      );
+      break;
+    case "autopilot_transitioned":
+      detail = (
+        <>
+          moved this task to{" "}
+          <b className="font-medium text-foreground">{statusOf(d.to)}</b>
+          {d.run_status ? ` (run ${d.run_status})` : ""}
+        </>
+      );
+      break;
+    case "autopilot_assigned":
+      detail = (
+        <>
+          assigned this task to{" "}
+          <b className="font-medium text-foreground">{nameOf(d.agent_id)}</b>
+        </>
+      );
+      break;
+    case "agent_status_changed":
+      detail = (
+        <>
+          changed status{" "}
+          <b className="font-medium text-foreground">{statusOf(d.from)}</b>{" "}
+          <ArrowRight className="inline h-3 w-3 -translate-y-px text-muted-foreground" />{" "}
+          <b className="font-medium text-foreground">{statusOf(d.to)}</b>
+        </>
+      );
       break;
     default:
       detail = activity.kind.replace(/_/g, " ");

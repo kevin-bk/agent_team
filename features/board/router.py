@@ -18,6 +18,7 @@ from agent_team.features.board.jira import service as jira_service
 from agent_team.features.board.jira.client import JiraError
 from agent_team.features.board.jira.sync import build_task_changes
 from agent_team.features.board.repositories import activity as activity_repo
+from agent_team.features.board.repositories import autopilot as autopilot_repo
 from agent_team.features.board.repositories import boards as boards_repo
 from agent_team.features.board.repositories import comments as comments_repo
 from agent_team.features.board.repositories import conversations as conversations_repo
@@ -26,11 +27,14 @@ from agent_team.features.board.repositories import messages as messages_repo
 from agent_team.features.board.repositories import runs as runs_repo
 from agent_team.features.board.repositories import tasks as tasks_repo
 from agent_team.features.board.repositories import tool_outputs as tool_outputs_repo
-from agent_team.features.board.runtime import event_store
+from agent_team.features.board.runtime import event_store, run_service
 from agent_team.features.board.runtime.backend import get_run_backend
 from agent_team.features.board.runtime.events import TERMINAL_RUN_STATUSES
 from agent_team.features.board.schemas import (
     AddMemberBody,
+    AutopilotRecentItem,
+    AutopilotSummaryDTO,
+    AutopilotUpdate,
     BoardCreate,
     BoardUpdate,
     CommentCreate,
@@ -76,6 +80,11 @@ async def list_boards(request: Request, db: Session = Depends(get_db)):
     user, err = auth_or_401(db, request)
     if err:
         return err
+    # Capture the app's main loop here (a high-traffic async endpoint) so the
+    # autopilot ticker thread can dispatch runs onto it shortly after boot.
+    from agent_team.features.board.runtime.dispatch import capture_main_loop
+
+    capture_main_loop()
     boards = boards_repo.list_boards(db)
     counts = boards_repo.task_counts_by_board(db, [b.id for b in boards])
     is_admin = _is_admin(user)
@@ -238,6 +247,7 @@ def _create_task(db: Session, *, board, payload: TaskCreate, actor_id: str):
         labels=payload.labels,
         priority=payload.priority,
         task_type=payload.task_type or "task",
+        agent_assignee=payload.agent_assignee,
         created_by=actor_id,
     )
     activity_repo.record(
@@ -322,6 +332,10 @@ async def update_task(
     if payload.status is not None:
         _set("status", payload.status, task.status)
         task.status = payload.status
+        # A human re-triaging the task clears any autopilot back-off so it can be
+        # auto-picked again (e.g. moving a failed task back to the source column).
+        task.autopilot_attempts = 0
+        task.autopilot_resume_after = None
     if payload.task_type is not None:
         _set("task_type", payload.task_type, task.task_type)
         task.task_type = payload.task_type
@@ -329,6 +343,13 @@ async def update_task(
         new_assignee = payload.assignee_id or None
         _set("assignee_id", new_assignee, task.assignee_id)
         task.assignee_id = new_assignee
+    if "agent_assignee" in payload.model_fields_set:
+        # Explicit "" clears the agent owner; clearing also lifts any back-off.
+        new_agent = (payload.agent_assignee or "").strip() or None
+        _set("agent_assignee", new_agent, task.agent_assignee)
+        task.agent_assignee = new_agent
+        task.autopilot_attempts = 0
+        task.autopilot_resume_after = None
     if payload.labels is not None:
         task.labels_json = json.dumps(list(payload.labels))
     if "priority" in payload.model_fields_set:
@@ -613,6 +634,9 @@ async def move_task(
     task.status = payload.status
     task.position = payload.position
     if previous_status != payload.status:
+        # A human moving the card clears autopilot back-off (re-eligible to pick).
+        task.autopilot_attempts = 0
+        task.autopilot_resume_after = None
         activity_repo.record(
             db,
             task_id=task.id,
@@ -846,6 +870,179 @@ async def list_cli_targets(request: Request, db: Session = Depends(get_db)):
 
 
 # ---------------------------------------------------------------------------
+# Autopilot: per-board auto-pickup of assigned tasks on a schedule
+# ---------------------------------------------------------------------------
+
+
+@router.get("/boards/{board_id}/autopilot")
+async def get_autopilot(board_id: str, request: Request, db: Session = Depends(get_db)):
+    """Return the board's autopilot config (a disabled default if never set)."""
+    _, err = auth_or_401(db, request)
+    if err:
+        return err
+    board = boards_repo.get_board(db, board_id)
+    if board is None:
+        return not_found("Board not found")
+    row = autopilot_repo.get_or_create(db, board_id)
+    db.commit()
+    return autopilot_repo.serialize(row)
+
+
+@router.put("/boards/{board_id}/autopilot")
+async def update_autopilot(
+    board_id: str,
+    payload: AutopilotUpdate,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Patch the board's autopilot config and reseed the schedule cursor."""
+    _, err = auth_or_401(db, request)
+    if err:
+        return err
+    board = boards_repo.get_board(db, board_id)
+    if board is None:
+        return not_found("Board not found")
+
+    row = autopilot_repo.get_or_create(db, board_id)
+    column_keys = {c["key"] for c in board.columns()}
+
+    # Status fields reference stable column *keys*; reject unknown ones so the
+    # config can never point at a column that does not exist on this board.
+    for field in ("source_status", "working_status", "done_status", "error_status"):
+        value = getattr(payload, field)
+        if value is not None and value not in column_keys:
+            return JSONResponse(
+                status_code=422,
+                content={"detail": f"{field} '{value}' is not a column on this board"},
+            )
+
+    if payload.schedule_mode is not None:
+        row.schedule_mode = payload.schedule_mode
+    if payload.interval_seconds is not None:
+        row.interval_seconds = payload.interval_seconds
+    if payload.cron is not None:
+        row.cron = payload.cron.strip() or None
+    if payload.timezone is not None:
+        row.timezone = payload.timezone
+    for field in ("source_status", "working_status", "done_status", "error_status"):
+        value = getattr(payload, field)
+        if value is not None:
+            setattr(row, field, value)
+    if payload.board_concurrency is not None:
+        row.board_concurrency = payload.board_concurrency
+    if payload.default_agent_concurrency is not None:
+        row.default_agent_concurrency = payload.default_agent_concurrency
+    if payload.agent_concurrency is not None:
+        autopilot_repo.set_agent_concurrency(row, payload.agent_concurrency)
+    if payload.error_cooldown_seconds is not None:
+        row.error_cooldown_seconds = payload.error_cooldown_seconds
+    if payload.max_attempts is not None:
+        row.max_attempts = payload.max_attempts
+    if "prompt_template" in payload.model_fields_set:
+        row.prompt_template = (payload.prompt_template or "").strip() or None
+    if payload.routing_rules is not None:
+        autopilot_repo.set_routing_rules(row, payload.routing_rules)
+    if payload.enabled is not None:
+        row.enabled = payload.enabled
+
+    # Cron validity check (interval is already clamped by the schema).
+    from agent_team.features.board.runtime import autopilot as autopilot_rt
+
+    if row.enabled and row.schedule_mode == "cron" and not autopilot_rt.is_valid_cron(row.cron):
+        return JSONResponse(
+            status_code=422,
+            content={"detail": "A valid cron expression is required for cron schedules"},
+        )
+
+    # Reseed the cursor whenever the config changes: enabled + scheduled → next
+    # due time; otherwise clear it so the ticker skips this board.
+    row.next_run_at = autopilot_rt.compute_next_run_at(row) if row.enabled else None
+    db.commit()
+    db.refresh(row)
+    return autopilot_repo.serialize(row)
+
+
+@router.post("/boards/{board_id}/autopilot/route")
+async def autopilot_route(
+    board_id: str, request: Request, db: Session = Depends(get_db)
+):
+    """Apply routing rules once: auto-assign agents to unassigned source tasks."""
+    _, err = auth_or_401(db, request)
+    if err:
+        return err
+    board = boards_repo.get_board(db, board_id)
+    if board is None:
+        return not_found("Board not found")
+
+    from agent_team.features.board.runtime import autopilot as autopilot_rt
+
+    assigned = autopilot_rt.route_now(db, board_id)
+    db.commit()
+    return {"assigned": assigned}
+
+
+@router.get("/boards/{board_id}/autopilot/summary")
+async def autopilot_summary(
+    board_id: str, request: Request, db: Session = Depends(get_db)
+):
+    """Live, read-only autopilot status for the board status panel."""
+    _, err = auth_or_401(db, request)
+    if err:
+        return err
+    board = boards_repo.get_board(db, board_id)
+    if board is None:
+        return not_found("Board not found")
+
+    from datetime import UTC, datetime
+
+    from agent_team.features.board.models import AgentTeamRun, AgentTeamTask
+
+    row = autopilot_repo.get_or_create(db, board_id)
+    db.commit()
+
+    day_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    auto_runs = (
+        db.query(AgentTeamRun)
+        .join(AgentTeamTask, AgentTeamRun.task_id == AgentTeamTask.id)
+        .filter(
+            AgentTeamTask.board_id == board_id,
+            AgentTeamRun.trigger == "autopilot",
+        )
+    )
+    in_flight = auto_runs.filter(
+        AgentTeamRun.status.notin_(tuple(TERMINAL_RUN_STATUSES))
+    ).count()
+    runs_today = auto_runs.filter(AgentTeamRun.created_at >= day_start).count()
+
+    recent_rows = (
+        auto_runs.order_by(AgentTeamRun.created_at.desc()).limit(8).all()
+    )
+    recent = [
+        AutopilotRecentItem(
+            task_id=r.task_id,
+            human_key=t.human_key if (t := tasks_repo.get_task(db, r.task_id)) else "",
+            title=t.title if t else "",
+            status=t.status if t else "",
+            agent=r.agent_alias,
+            run_status=r.status,
+            at=r.created_at.isoformat() if r.created_at else None,
+        )
+        for r in recent_rows
+    ]
+
+    return AutopilotSummaryDTO(
+        enabled=row.enabled,
+        schedule_mode=row.schedule_mode,
+        next_run_at=row.next_run_at.isoformat() if row.next_run_at else None,
+        last_run_at=row.last_run_at.isoformat() if row.last_run_at else None,
+        in_flight=in_flight,
+        board_concurrency=row.board_concurrency,
+        runs_today=runs_today,
+        recent=recent,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Runs: mention an agent, list/inspect runs, stream and cancel
 # ---------------------------------------------------------------------------
 
@@ -877,18 +1074,14 @@ async def create_mention(
     if task is None:
         return not_found("Task not found")
 
-    conversation = conversations_repo.get_or_create_active_conversation(
-        db, task_id=task_id, agent_alias=payload.agent_id
-    )
     prompt = _prompt_with_attachments(task, payload.body, payload.attachment_ids)
-    run = runs_repo.create_run(
+    run, _conversation = run_service.create_run_for_task(
         db,
         task_id=task_id,
-        conversation=conversation,
         agent_alias=payload.agent_id,
+        prompt=prompt,
         trigger="mention",
         actor_id=user.id,
-        prompt=prompt,
     )
     activity_repo.record(
         db,

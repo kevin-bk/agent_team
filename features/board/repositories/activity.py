@@ -26,6 +26,14 @@ COMMENT_ADDED = "comment_added"
 MENTION_CREATED = "mention_created"
 RUN_FINISHED = "run_finished"
 JIRA_SYNCED = "jira_synced"
+#: Autopilot picked up a task and started an auto-run.
+AUTOPILOT_PICKED = "autopilot_picked"
+#: Autopilot moved a task on run completion (success/failure transition).
+AUTOPILOT_TRANSITIONED = "autopilot_transitioned"
+#: An agent moved its own task via the ``set_task_status`` tool.
+AGENT_STATUS_CHANGED = "agent_status_changed"
+#: Routing rules auto-assigned an agent to a task (manual "Auto-assign" action).
+AUTOPILOT_ASSIGNED = "autopilot_assigned"
 
 
 def record(

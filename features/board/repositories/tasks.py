@@ -63,6 +63,7 @@ def create_task(
     priority: str | None,
     created_by: str | None,
     task_type: str = "task",
+    agent_assignee: str | None = None,
 ) -> AgentTeamTask:
     human_key = next_human_key(db, TASK_KEY_PREFIX)
     board_slug = (
@@ -78,6 +79,7 @@ def create_task(
         status=status,
         position=_next_position(db, board_id=board_id, status=status),
         assignee_id=assignee_id,
+        agent_assignee=(agent_assignee or None),
         labels_json=json.dumps(list(labels or [])),
         priority=priority,
         workspace_path=workspace_path_for(board_slug, human_key),
@@ -98,6 +100,7 @@ def serialize_task(task: AgentTeamTask) -> TaskDTO:
         status=task.status,
         position=task.position,
         assignee_id=task.assignee_id,
+        agent_assignee=task.agent_assignee,
         labels=task.labels(),
         priority=task.priority,
         task_type=task.task_type,

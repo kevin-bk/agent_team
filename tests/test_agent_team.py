@@ -8,6 +8,7 @@ import pytest
 from agent_team.features.board.keys import next_human_key, slugify
 from agent_team.features.board.models import (
     AgentTeamActivity,
+    AgentTeamAutopilot,
     AgentTeamBoard,
     AgentTeamBoardMember,
     AgentTeamComment,
@@ -40,6 +41,7 @@ _PLUGIN_MODELS = (
     AgentTeamRepo,
     AgentTeamBoardRepo,
     AgentTeamToolOutput,
+    AgentTeamAutopilot,
 )
 
 
@@ -105,6 +107,7 @@ def test_plugin_meta_models_and_menu():
         "plugin_agent_team_repo",
         "plugin_agent_team_board_repo",
         "plugin_agent_team_tool_output",
+        "plugin_agent_team_autopilot",
     ]
     menu = plugin.menu_items()
     assert len(menu) == 1
@@ -2503,6 +2506,62 @@ def test_git_push_tool_respects_allow_push(db, tmp_path, monkeypatch):
     assert rc.returncode == 0, "task branch should exist on the remote after push"
 
 
+def test_set_task_status_tool_moves_within_board(db, monkeypatch):
+    """The agent tool moves its task by column key/name and rejects unknowns."""
+    from agent_team.features.board.repositories import activity as activity_repo
+    from agent_team.features.board.runtime.status_tools import get_status_tools
+
+    from plugins.standard_tools.tools.workspace_override import (
+        reset_workspace_override,
+        set_workspace_override,
+    )
+
+    board = boards_repo.create_board(  # columns: pending/todo/in_progress/review/done
+        db, name="Auto", description=None, columns=None, owner_id=None
+    )
+    db.flush()
+    task = tasks_repo.create_task(
+        db, board_id=board.id, title="t", description=None, status="in_progress",
+        assignee_id=None, labels=None, priority=None, created_by=None,
+    )
+    db.commit()
+
+    token = set_workspace_override(task.workspace_path)
+    try:
+        tools = {t.name: t for t in get_status_tools("agent:a", {})}
+        set_status = tools["set_task_status"]
+
+        # By display name (case-insensitive).
+        out = set_status.invoke({"status": "Review"})
+        assert "moved" in out.lower()
+        db.expire_all()
+        assert tasks_repo.get_task(db, task.id).status == "review"
+
+        # Already there → no-op message.
+        assert "already" in set_status.invoke({"status": "review"}).lower()
+
+        # Unknown column → rejected, status unchanged.
+        out = set_status.invoke({"status": "nope"})
+        assert "unknown column" in out.lower()
+        db.expire_all()
+        assert tasks_repo.get_task(db, task.id).status == "review"
+    finally:
+        reset_workspace_override(token)
+
+    kinds = [a.kind for a in activity_repo.list_activity(db, task.id)]
+    assert activity_repo.AGENT_STATUS_CHANGED in kinds
+
+
+def test_set_task_status_tool_registered_on_plugin():
+    from agent_team.plugin import AgentTeamPlugin
+
+    factories = {f.key: f for f in AgentTeamPlugin().tool_factories()}
+    factory = factories["enable_agent_team_set_task_status"]
+    assert factory.default_enabled is True
+    tools = factory.create_tools("agent:a", {})
+    assert [t.name for t in tools] == ["set_task_status"]
+
+
 # ---------------------------------------------------------------------------
 # Direct CLI (chat straight with Claude/Cursor/Codex over ACP, no LLM)
 # ---------------------------------------------------------------------------
@@ -2694,3 +2753,338 @@ def test_cli_context_build_prompt_nudges_first_turn_and_new_notes():
 
     # An empty first message still carries the nudge so the agent is grounded.
     assert ".agent-team/TASK.md" in cli_context.build_prompt("", first_turn=True)
+
+
+# ---------------------------------------------------------------------------
+# Board autopilot
+# ---------------------------------------------------------------------------
+
+
+def _make_autopilot(db, board_id, **overrides):
+    from agent_team.features.board.repositories import autopilot as autopilot_repo
+
+    row = autopilot_repo.get_or_create(db, board_id)
+    for key, value in overrides.items():
+        setattr(row, key, value)
+    db.flush()
+    return row
+
+
+def test_autopilot_schedule_math():
+    """Interval mode clamps to the allowed window; off mode/invalid cron → None."""
+    from datetime import UTC, datetime
+
+    from agent_team.features.board.models import (
+        AUTOPILOT_MAX_INTERVAL_SECONDS,
+        AUTOPILOT_MIN_INTERVAL_SECONDS,
+        AUTOPILOT_SCHEDULE_CRON,
+        AUTOPILOT_SCHEDULE_INTERVAL,
+        AUTOPILOT_SCHEDULE_OFF,
+        AgentTeamAutopilot,
+    )
+    from agent_team.features.board.runtime import autopilot as ap
+
+    base = datetime(2026, 1, 1, tzinfo=UTC)
+
+    # Below the floor clamps up; above the ceiling clamps down.
+    tiny = AgentTeamAutopilot(
+        board_id="b", schedule_mode=AUTOPILOT_SCHEDULE_INTERVAL, interval_seconds=1
+    )
+    nxt = ap.compute_next_run_at(tiny, base=base)
+    assert (nxt - base).total_seconds() == AUTOPILOT_MIN_INTERVAL_SECONDS
+
+    huge = AgentTeamAutopilot(
+        board_id="b",
+        schedule_mode=AUTOPILOT_SCHEDULE_INTERVAL,
+        interval_seconds=AUTOPILOT_MAX_INTERVAL_SECONDS * 10,
+    )
+    nxt = ap.compute_next_run_at(huge, base=base)
+    assert (nxt - base).total_seconds() == AUTOPILOT_MAX_INTERVAL_SECONDS
+
+    off = AgentTeamAutopilot(board_id="b", schedule_mode=AUTOPILOT_SCHEDULE_OFF)
+    assert ap.compute_next_run_at(off, base=base) is None
+
+    # Cron: invalid → None, valid → a strictly future instant.
+    bad = AgentTeamAutopilot(
+        board_id="b", schedule_mode=AUTOPILOT_SCHEDULE_CRON, cron="not a cron"
+    )
+    assert ap.compute_next_run_at(bad, base=base) is None
+    assert ap.is_valid_cron("*/5 * * * *") is True
+    assert ap.is_valid_cron("nope") is False
+    good = AgentTeamAutopilot(
+        board_id="b", schedule_mode=AUTOPILOT_SCHEDULE_CRON, cron="*/5 * * * *"
+    )
+    assert ap.compute_next_run_at(good, base=base) > base
+
+
+def test_autopilot_concurrency_for_overrides_default():
+    """Per-agent override wins; unknown agents fall back to the default cap."""
+    row = AgentTeamAutopilot(board_id="b", default_agent_concurrency=1)
+    row.agent_concurrency_json = json.dumps({"cli:claude": 3})
+    assert row.concurrency_for("cli:claude") == 3
+    assert row.concurrency_for("agent:other") == 1
+
+
+def test_autopilot_process_board_claims_by_status_and_concurrency(db, monkeypatch):
+    """A due board claims only assigned, source-status tasks within both caps."""
+    from datetime import UTC, datetime
+
+    from agent_team.features.board.runtime import autopilot as ap
+    from agent_team.features.board.runtime import dispatch
+
+    started_ids: list[str] = []
+    monkeypatch.setattr(
+        dispatch, "dispatch_start", lambda run_id: (started_ids.append(run_id), True)[1]
+    )
+
+    board = boards_repo.create_board(
+        db, name="Auto", description=None, columns=None, owner_id=None
+    )
+    board.agents_json = json.dumps(["agent:a", "agent:b"])
+    db.flush()
+
+    def mk(agent, status="todo", **kw):
+        t = tasks_repo.create_task(
+            db, board_id=board.id, title="t", description=None, status=status,
+            assignee_id=None, labels=None, priority=None, created_by=None,
+            agent_assignee=agent, **kw,
+        )
+        db.flush()
+        return t
+
+    # Eligible: two for agent:a, one for agent:b.
+    mk("agent:a")
+    mk("agent:a")
+    mk("agent:b")
+    # Ignored: not assigned, wrong column, or assigned to a non-staffed agent.
+    mk(None)
+    mk("agent:a", status="in_progress")
+    mk("agent:ghost")
+    db.commit()
+
+    row = _make_autopilot(
+        db, board.id, enabled=True, board_concurrency=5, default_agent_concurrency=1
+    )
+    db.commit()
+
+    started = ap._process_board(db, row, datetime.now(UTC))
+
+    # Per-agent cap of 1 means only one task per agent is claimed this tick.
+    assert started == 2
+    assert len(started_ids) == 2
+    working = [
+        t for t in tasks_repo.list_tasks(db, board_id=board.id)
+        if t.status == "in_progress"
+    ]
+    # One newly-claimed per agent + the pre-existing in_progress task = 3.
+    assert len(working) == 3
+    runs = db.query(AgentTeamRun).all()
+    assert len(runs) == 2
+    assert {r.trigger for r in runs} == {"autopilot"}
+
+
+def test_autopilot_board_concurrency_caps_total(db, monkeypatch):
+    """The board-wide cap limits total claims regardless of per-agent room."""
+    from datetime import UTC, datetime
+
+    from agent_team.features.board.runtime import autopilot as ap
+    from agent_team.features.board.runtime import dispatch
+
+    monkeypatch.setattr(dispatch, "dispatch_start", lambda run_id: True)
+
+    board = boards_repo.create_board(
+        db, name="Auto", description=None, columns=None, owner_id=None
+    )
+    board.agents_json = json.dumps(["agent:a", "agent:b", "agent:c"])
+    db.flush()
+    for agent in ("agent:a", "agent:b", "agent:c"):
+        tasks_repo.create_task(
+            db, board_id=board.id, title="t", description=None, status="todo",
+            assignee_id=None, labels=None, priority=None, created_by=None,
+            agent_assignee=agent,
+        )
+        db.flush()
+    db.commit()
+
+    row = _make_autopilot(
+        db, board.id, enabled=True, board_concurrency=1, default_agent_concurrency=5
+    )
+    db.commit()
+
+    started = ap._process_board(db, row, datetime.now(UTC))
+    assert started == 1
+
+
+def test_autopilot_route_now_assigns_by_rule_and_round_robin(db):
+    """Routing fills unassigned source tasks: first match wins, group rotates."""
+    from agent_team.features.board.repositories import autopilot as autopilot_repo
+    from agent_team.features.board.runtime import autopilot as ap
+
+    board = boards_repo.create_board(
+        db, name="Auto", description=None, columns=None, owner_id=None
+    )
+    board.agents_json = json.dumps(["agent:a", "agent:b", "agent:fe"])
+    db.flush()
+
+    def mk(labels=None, priority=None, agent=None):
+        t = tasks_repo.create_task(
+            db, board_id=board.id, title="t", description=None, status="todo",
+            assignee_id=None, labels=labels, priority=priority, created_by=None,
+            agent_assignee=agent,
+        )
+        db.flush()
+        return t
+
+    # Rule 0: label "frontend" → agent:fe. Rule 1 (catch-all) → rotate a,b.
+    row = _make_autopilot(db, board.id, source_status="todo")
+    autopilot_repo.set_routing_rules(
+        row,
+        [
+            {"labels": ["frontend"], "priorities": [], "agents": ["agent:fe"]},
+            {"labels": [], "priorities": [], "agents": ["agent:a", "agent:b"]},
+        ],
+    )
+    fe = mk(labels=["frontend"])
+    t1 = mk()
+    t2 = mk()
+    t3 = mk()
+    already = mk(agent="agent:a")  # has an agent → untouched
+    db.commit()
+
+    assigned = ap.route_now(db, board.id)
+    db.commit()
+    db.expire_all()
+
+    assert assigned == 4
+    assert tasks_repo.get_task(db, fe.id).agent_assignee == "agent:fe"
+    # Catch-all rotates a, b, a across the three plain tasks (by position order).
+    rotation = [
+        tasks_repo.get_task(db, t.id).agent_assignee for t in (t1, t2, t3)
+    ]
+    assert rotation == ["agent:a", "agent:b", "agent:a"]
+    assert tasks_repo.get_task(db, already.id).agent_assignee == "agent:a"
+
+    # Re-running assigns nothing (no unassigned source tasks left).
+    assert ap.route_now(db, board.id) == 0
+
+
+def test_autopilot_route_now_skips_unstaffed_agents(db):
+    """A matching rule whose agents aren't staffed is skipped (falls through)."""
+    from agent_team.features.board.repositories import autopilot as autopilot_repo
+    from agent_team.features.board.runtime import autopilot as ap
+
+    board = boards_repo.create_board(
+        db, name="Auto", description=None, columns=None, owner_id=None
+    )
+    board.agents_json = json.dumps(["agent:b"])
+    db.flush()
+    row = _make_autopilot(db, board.id, source_status="todo")
+    autopilot_repo.set_routing_rules(
+        row,
+        [
+            {"labels": [], "priorities": [], "agents": ["agent:ghost"]},
+            {"labels": [], "priorities": [], "agents": ["agent:b"]},
+        ],
+    )
+    task = tasks_repo.create_task(
+        db, board_id=board.id, title="t", description=None, status="todo",
+        assignee_id=None, labels=None, priority=None, created_by=None,
+    )
+    db.commit()
+
+    assert ap.route_now(db, board.id) == 1
+    db.expire_all()
+    assert tasks_repo.get_task(db, task.id).agent_assignee == "agent:b"
+
+
+def _autopilot_session_local(db, monkeypatch):
+    """Point ``autopilot.SessionLocal`` at the test engine (shared connection)."""
+    from agent_team.features.board.runtime import autopilot as ap
+    from sqlalchemy.orm import sessionmaker
+
+    factory = sessionmaker(
+        bind=db.get_bind(), autoflush=False, autocommit=False, future=True
+    )
+    monkeypatch.setattr(ap, "SessionLocal", factory)
+
+
+@pytest.mark.parametrize(
+    "run_status,expected_status",
+    [("done", "review"), ("error", "todo"), ("cancelled", "todo")],
+)
+def test_autopilot_on_run_finished_transitions(
+    db, monkeypatch, run_status, expected_status
+):
+    """A finished autopilot run moves its task per the board's status mapping."""
+    from agent_team.features.board.repositories import conversations as conv_repo
+    from agent_team.features.board.repositories import runs as runs_repo
+    from agent_team.features.board.runtime import autopilot as ap
+
+    _autopilot_session_local(db, monkeypatch)
+
+    board = boards_repo.create_board(
+        db, name="Auto", description=None, columns=None, owner_id=None
+    )
+    db.flush()
+    task = tasks_repo.create_task(
+        db, board_id=board.id, title="t", description=None, status="in_progress",
+        assignee_id=None, labels=None, priority=None, created_by=None,
+        agent_assignee="agent:a",
+    )
+    db.flush()
+    conv = conv_repo.get_or_create_active_conversation(
+        db, task_id=task.id, agent_alias="agent:a"
+    )
+    run = runs_repo.create_run(
+        db, task_id=task.id, conversation=conv, agent_alias="agent:a",
+        trigger="autopilot", actor_id=None, prompt="go",
+    )
+    _make_autopilot(
+        db, board.id, source_status="todo", working_status="in_progress",
+        done_status="review", error_status="todo", error_cooldown_seconds=60,
+    )
+    db.commit()
+
+    ap.on_run_finished(run.id, run_status)
+
+    db.expire_all()
+    moved = tasks_repo.get_task(db, task.id)
+    assert moved.status == expected_status
+    if run_status == "error":
+        assert moved.autopilot_attempts == 1
+        assert moved.autopilot_resume_after is not None
+    elif run_status == "done":
+        assert moved.autopilot_attempts == 0
+
+
+def test_autopilot_on_run_finished_ignores_non_autopilot(db, monkeypatch):
+    """A manually-triggered run never moves the task via the autopilot hook."""
+    from agent_team.features.board.repositories import conversations as conv_repo
+    from agent_team.features.board.repositories import runs as runs_repo
+    from agent_team.features.board.runtime import autopilot as ap
+
+    _autopilot_session_local(db, monkeypatch)
+
+    board = boards_repo.create_board(
+        db, name="Auto", description=None, columns=None, owner_id=None
+    )
+    db.flush()
+    task = tasks_repo.create_task(
+        db, board_id=board.id, title="t", description=None, status="in_progress",
+        assignee_id=None, labels=None, priority=None, created_by=None,
+    )
+    db.flush()
+    conv = conv_repo.get_or_create_active_conversation(
+        db, task_id=task.id, agent_alias="agent:a"
+    )
+    run = runs_repo.create_run(
+        db, task_id=task.id, conversation=conv, agent_alias="agent:a",
+        trigger="mention", actor_id="u1", prompt="go",
+    )
+    _make_autopilot(db, board.id, working_status="in_progress", done_status="review")
+    db.commit()
+
+    ap.on_run_finished(run.id, "done")
+
+    db.expire_all()
+    assert tasks_repo.get_task(db, task.id).status == "in_progress"

@@ -8,7 +8,7 @@ import {
   type Edge,
   extractClosestEdge,
 } from "@atlaskit/pragmatic-drag-and-drop-hitbox/closest-edge";
-import { Pencil } from "@/components/icons";
+import { Bot, Pencil } from "@/components/icons";
 import { useEffect, useRef, useState } from "react";
 import type { BoardMemberDTO, TaskDTO } from "@/api/types";
 import { IssueTypeIcon, JiraAvatar, taskIssueType } from "@/components/jira";
@@ -149,6 +149,14 @@ export function TaskCard({
             </span>
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
+            {task.agent_assignee && (
+              <span
+                className="inline-flex items-center gap-0.5 rounded-sm bg-primary/10 px-1 py-px text-[10px] font-semibold uppercase tracking-[0.04em] text-primary"
+                title={`Agent: ${task.agent_assignee} · eligible for autopilot`}
+              >
+                <Bot className="h-3 w-3" /> auto
+              </span>
+            )}
             <PriorityIcon priority={task.priority} className="h-4 w-4" />
             {assignee && (
               <JiraAvatar
