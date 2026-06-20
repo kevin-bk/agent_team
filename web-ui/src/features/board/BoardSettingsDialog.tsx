@@ -188,7 +188,7 @@ export function BoardSettingsDialog({
             </span>
             <Textarea
               value={starterPrompt}
-              placeholder="e.g. Read TASK.md and the revenge-youtube skill, then write the full script…"
+              placeholder="e.g. Read TASK.md and the code-master skill, then refactor…"
               rows={4}
               onChange={(e) => setStarterPrompt(e.target.value)}
             />
