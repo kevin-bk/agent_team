@@ -28,8 +28,6 @@ import {
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
-import { Textarea } from "@/components/ui/textarea";
-
 /**
  * Configure a board's autopilot: on a schedule, the autopilot scans the source
  * column for tasks that carry an agent assignee and runs them, moving each
@@ -89,7 +87,6 @@ export function BoardAutopilotDialog({
         agent_concurrency: { ...(d.agent_concurrency ?? {}) },
         error_cooldown_seconds: d.error_cooldown_seconds,
         max_attempts: d.max_attempts,
-        prompt_template: d.prompt_template ?? "",
         routing_rules: (d.routing_rules ?? []).map((r) => ({ ...r })),
       });
     }
@@ -509,14 +506,12 @@ export function BoardAutopilotDialog({
               )}
             </Section>
 
-            <Field label="Prompt (optional — seeds each auto-run)">
-              <Textarea
-                value={form.prompt_template ?? ""}
-                onChange={(e) => set("prompt_template", e.target.value)}
-                rows={2}
-                placeholder="Leave empty to use the default (work on the task; read .agent-team/TASK.md)."
-              />
-            </Field>
+            <p className="text-[12px] text-muted-foreground">
+              Auto-runs are seeded with the board's{" "}
+              <span className="font-medium text-foreground">Starter prompt</span>{" "}
+              (Board settings). Leave it empty to use the default (work on the
+              task; read <code>.agent-team/TASK.md</code>).
+            </p>
 
             {query.data?.next_run_at && form.enabled && (
               <span className="text-[12px] text-muted-foreground">

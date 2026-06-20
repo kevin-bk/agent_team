@@ -237,11 +237,19 @@ def _claim_and_start(
         kind=activity_repo.AUTOPILOT_PICKED,
         data={"agent_id": agent, "from": row.source_status, "to": row.working_status},
     )
+    # Seed the auto-run with the board's shared Starter prompt; fall back to the
+    # legacy per-autopilot template (for boards configured before unification),
+    # then to the built-in default.
+    seed_prompt = (
+        (getattr(board, "starter_prompt", "") or "").strip()
+        or row.prompt_template
+        or _DEFAULT_PROMPT
+    )
     run, _conv = run_service.create_run_for_task(
         db,
         task_id=task.id,
         agent_alias=agent,
-        prompt=row.prompt_template or _DEFAULT_PROMPT,
+        prompt=seed_prompt,
         trigger="autopilot",
         actor_id=None,
     )

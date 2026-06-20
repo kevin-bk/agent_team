@@ -182,9 +182,10 @@ export function BoardSettingsDialog({
               Starter prompt
             </span>
             <span className="text-[12.5px] text-muted-foreground/80">
-              Optional. When set, a task's chat shows a one-click button to send
-              this as the first message of a new conversation — handy for
-              direct-CLI tasks that all start the same way.
+              Optional. Used as the kickoff message for this board's work: a task
+              chat shows a one-click button to send it as the first message, and
+              autopilot seeds each auto-run with it. Handy for direct-CLI tasks
+              that all start the same way.
             </span>
             <Textarea
               value={starterPrompt}
