@@ -95,6 +95,10 @@ class AgentTeamBoard(Base):
     #: JSON-encoded list of skill pack names made available to direct-CLI agents
     #: on this board (materialised into each task workspace). Empty = no skills.
     skills_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    #: Optional reusable "starter" chat message for this board. When set, a task's
+    #: chat shows a one-click button to send it as the first message of a new
+    #: conversation (handy for direct-CLI tasks that all start the same way).
+    starter_prompt: Mapped[str] = mapped_column(Text, nullable=False, default="")
     # ── Jira sync (per-board, Phase 1: one-way pull) ──────────────────────
     #: Master switch — when False the board ignores all Jira config.
     jira_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

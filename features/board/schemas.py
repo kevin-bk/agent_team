@@ -32,6 +32,8 @@ class BoardUpdate(BaseModel):
     cli_target_ids: list[str] | None = None
     #: Skill pack names made available to direct-CLI agents on this board.
     skill_ids: list[str] | None = None
+    #: Reusable starter chat message offered as a one-click first message.
+    starter_prompt: str | None = None
     archived: bool | None = None
     # ── Jira sync config (write side) ─────────────────────────────────────
     jira_enabled: bool | None = None
@@ -60,6 +62,8 @@ class BoardDTO(BaseModel):
     cli_target_ids: list[str] = Field(default_factory=list)
     #: Skill pack names made available to direct-CLI agents on this board.
     skill_ids: list[str] = Field(default_factory=list)
+    #: Reusable starter chat message offered as a one-click first message.
+    starter_prompt: str = ""
     archived: bool
     task_count: int = 0
     #: The requesting user's role on this board (owner/editor/viewer).

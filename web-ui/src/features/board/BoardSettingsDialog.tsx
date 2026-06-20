@@ -53,6 +53,7 @@ export function BoardSettingsDialog({
   const [name, setName] = useState(board.name);
   const [description, setDescription] = useState(board.description ?? "");
   const [columns, setColumns] = useState<BoardColumn[]>(board.columns);
+  const [starterPrompt, setStarterPrompt] = useState(board.starter_prompt ?? "");
 
   // Reset the draft whenever the dialog (re)opens for a board.
   useEffect(() => {
@@ -60,6 +61,7 @@ export function BoardSettingsDialog({
       setName(board.name);
       setDescription(board.description ?? "");
       setColumns(board.columns);
+      setStarterPrompt(board.starter_prompt ?? "");
     }
   }, [open, board]);
 
@@ -117,6 +119,7 @@ export function BoardSettingsDialog({
         name: trimmedName,
         description: description.trim() || null,
         columns: cleaned,
+        starter_prompt: starterPrompt.trim(),
       });
       toast.success("Board updated");
       onClose();
@@ -171,6 +174,23 @@ export function BoardSettingsDialog({
               value={description}
               placeholder="Optional"
               onChange={(e) => setDescription(e.target.value)}
+            />
+          </label>
+
+          <label className="grid gap-1.5">
+            <span className="text-[13px] font-medium text-muted-foreground">
+              Starter prompt
+            </span>
+            <span className="text-[12.5px] text-muted-foreground/80">
+              Optional. When set, a task's chat shows a one-click button to send
+              this as the first message of a new conversation — handy for
+              direct-CLI tasks that all start the same way.
+            </span>
+            <Textarea
+              value={starterPrompt}
+              placeholder="e.g. Read TASK.md and the revenge-youtube skill, then write the full script…"
+              rows={4}
+              onChange={(e) => setStarterPrompt(e.target.value)}
             />
           </label>
 

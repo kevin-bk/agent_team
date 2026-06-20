@@ -563,6 +563,7 @@ export function TaskCockpit({
                   agentName={activeAgent.display_name}
                   canEdit={canEdit}
                   workspaceRoot={task.workspace_path}
+                  starterPrompt={board.data?.starter_prompt ?? ""}
                   onOpenFile={setFilePath}
                 />
               ) : (
@@ -1880,6 +1881,7 @@ function Conversation({
   agentName,
   canEdit,
   workspaceRoot,
+  starterPrompt,
   onOpenFile,
 }: {
   taskId: string;
@@ -1887,6 +1889,7 @@ function Conversation({
   agentName: string;
   canEdit: boolean;
   workspaceRoot: string;
+  starterPrompt: string;
   onOpenFile: (path: string) => void;
 }) {
   const { client } = useApi();
@@ -1974,11 +1977,32 @@ function Conversation({
               Loading conversation…
             </div>
           ) : blocks.length === 0 && !running ? (
-            <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-muted-foreground">
+            <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-sm text-muted-foreground">
               <span className="flex h-12 w-12 items-center justify-center rounded-lg bg-primary/10 text-primary">
                 <Bot className="h-6 w-6" />
               </span>
               Message {`@${agentName}`} to get started.
+              {canEdit && starterPrompt.trim() && (
+                <div className="mt-2 flex flex-col items-center gap-2">
+                  <Button
+                    size="sm"
+                    onClick={() => {
+                      void send(starterPrompt.trim(), []);
+                      stopTyping();
+                    }}
+                  >
+                    <Sparkles className="h-3.5 w-3.5" />
+                    Send starter prompt
+                  </Button>
+                  <button
+                    type="button"
+                    onClick={() => setDraft(starterPrompt.trim())}
+                    className="text-[12px] text-muted-foreground underline-offset-2 hover:text-primary hover:underline"
+                  >
+                    Edit first
+                  </button>
+                </div>
+              )}
             </div>
           ) : (
             <Timeline

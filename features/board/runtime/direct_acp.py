@@ -121,13 +121,17 @@ def _env(key: str, default: str = "") -> str:
     return (os.environ.get(key) or default).strip()
 
 
+# Hard-coded turn timeout for agent-team direct-CLI runs. Long-form jobs (e.g. a
+# 90-minute revenge-youtube script) routinely run well past the ai_code default
+# (and past ``_safe_timeout``'s 900s cap), so we pin a generous 3-hour ceiling
+# here and bypass that cap. Session-create stays short (spawning npx is fast).
+_DIRECT_ACP_TURN_TIMEOUT_SECONDS = 3 * 60 * 60  # 3 hours
+
+
 def _engine_runtime(engine: str) -> _EngineRuntime:
-    """Resolve an engine's command/args/timeout from env (defaults as fallback)."""
-    from plugins.ai_code.tools._acp_base import (
-        _DEFAULT_CREATE_TIMEOUT_SECONDS,
-        _DEFAULT_TIMEOUT_SECONDS,
-    )
-    from plugins.ai_code.tools.cli_tools import _safe_timeout, _split_args
+    """Resolve an engine's command/args from env; turn timeout is hard-pinned to 3h."""
+    from plugins.ai_code.tools._acp_base import _DEFAULT_CREATE_TIMEOUT_SECONDS
+    from plugins.ai_code.tools.cli_tools import _split_args
 
     spec = _ENGINES[engine]
     up = engine.upper()
@@ -135,10 +139,7 @@ def _engine_runtime(engine: str) -> _EngineRuntime:
         label=f"{spec.label} ACP",
         command=_env(f"AI_CODE_{up}_ACP_COMMAND", spec.command),
         args=_split_args(_env(f"AI_CODE_{up}_ACP_ARGS", spec.args)),
-        timeout_seconds=_safe_timeout(
-            _env(f"AI_CODE_{up}_ACP_TIMEOUT_SECONDS", str(_DEFAULT_TIMEOUT_SECONDS)),
-            default=_DEFAULT_TIMEOUT_SECONDS,
-        ),
+        timeout_seconds=_DIRECT_ACP_TURN_TIMEOUT_SECONDS,
         create_timeout_seconds=_DEFAULT_CREATE_TIMEOUT_SECONDS,
     )
 

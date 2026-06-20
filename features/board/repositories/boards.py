@@ -92,6 +92,7 @@ def serialize_board(
         agent_ids=board.agent_ids(),
         cli_target_ids=board.cli_target_ids(),
         skill_ids=board.skill_ids(),
+        starter_prompt=board.starter_prompt or "",
         archived=board.archived,
         task_count=task_count,
         my_role=my_role,

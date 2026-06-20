@@ -196,6 +196,8 @@ export interface BoardDTO {
   cli_target_ids?: string[];
   /** Skill pack names available to this board's direct-CLI agents. */
   skill_ids?: string[];
+  /** Reusable starter chat message offered as a one-click first message. */
+  starter_prompt?: string;
   archived: boolean;
   created_at: string;
   updated_at: string;
@@ -321,6 +323,8 @@ export interface PatchBoardBody {
   cli_target_ids?: string[];
   /** Skill pack names available to this board's direct-CLI agents. */
   skill_ids?: string[];
+  /** Reusable starter chat message offered as a one-click first message. */
+  starter_prompt?: string;
   archived?: boolean;
   /** Jira sync config. Omit jira_api_token to keep it; send "" to clear it. */
   jira_enabled?: boolean;

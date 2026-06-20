@@ -191,6 +191,8 @@ async def update_board(
                 content={"detail": f"unknown skill pack(s): {', '.join(unknown)}"},
             )
         board.skills_json = json.dumps(payload.skill_ids)
+    if payload.starter_prompt is not None:
+        board.starter_prompt = payload.starter_prompt.strip()
     if payload.archived is not None:
         board.archived = payload.archived
     # ── Jira config ──────────────────────────────────────────────────────
