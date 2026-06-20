@@ -28,19 +28,27 @@ _STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
 def _build_loop_capture_app():
-    """A tiny mounted app whose lifespan captures the process event loop.
+    """A tiny mounted app whose lifespan captures the loop and starts autopilot.
 
     ``plugin.on_startup`` runs in ``create_app`` *before* the event loop exists,
-    so it cannot record the loop the autopilot ticker (a background thread) must
-    dispatch runs onto. The core lifespan, however, awaits each mounted app's
-    lifespan *inside* the running loop. Mounting this no-route app therefore
-    captures the loop at startup in every worker — so autopilot runs reliably
-    overnight and across restarts, with no browser ever hitting a board
-    endpoint first.
+    and — critically — under ``uvicorn --workers`` / PM2 multi-instance it can
+    run in a process that never serves the ASGI app (so its loop is never
+    captured). The core lifespan, by contrast, is entered *inside* the running
+    loop of an actual serving worker (see ``startup_mounted_apps``).
+
+    By both capturing the loop *and* starting the autopilot ticker here, the
+    ticker is guaranteed to live in the same process whose loop we captured, so
+    ``dispatch_start`` can always hand runs to a live loop. The ticker's own
+    ``fcntl`` lock still ensures only one worker actually runs it. The repo-pull
+    ticker stays in ``on_startup`` because it does pure-sync work and never
+    touches the loop.
     """
+    import logging as _logging
     from contextlib import asynccontextmanager
 
     from fastapi import FastAPI
+
+    log = _logging.getLogger(__name__)
 
     @asynccontextmanager
     async def _lifespan(_app: FastAPI):
@@ -49,8 +57,26 @@ def _build_loop_capture_app():
 
             capture_main_loop()
         except Exception:  # noqa: BLE001 — never block app startup on this
-            pass
-        yield
+            log.exception("agent_team: failed to capture main loop")
+        try:
+            from agent_team.features.board.autopilot_scheduler import (
+                start_ticker as start_autopilot_ticker,
+            )
+
+            start_autopilot_ticker()
+        except Exception:  # noqa: BLE001
+            log.exception("agent_team: failed to start autopilot ticker")
+        try:
+            yield
+        finally:
+            try:
+                from agent_team.features.board.autopilot_scheduler import (
+                    stop_ticker as stop_autopilot_ticker,
+                )
+
+                stop_autopilot_ticker()
+            except Exception:  # noqa: BLE001
+                pass
 
     return FastAPI(lifespan=_lifespan)
 
@@ -209,17 +235,13 @@ class AgentTeamPlugin(PluginBase):
                 "agent_team: failed to start repo pull ticker"
             )
 
-        # Start the board autopilot ticker (auto-pick assigned tasks on a schedule).
-        try:
-            from agent_team.features.board.autopilot_scheduler import (
-                start_ticker as start_autopilot_ticker,
-            )
-
-            start_autopilot_ticker()
-        except Exception:
-            logging.getLogger(__name__).exception(
-                "agent_team: failed to start autopilot ticker"
-            )
+        # NOTE: the board autopilot ticker is intentionally NOT started here.
+        # ``on_startup`` runs at ``create_app`` time (before the event loop) and,
+        # under ``uvicorn --workers``/PM2, possibly in a process that never serves
+        # the app — so its captured loop would be missing and runs could never be
+        # dispatched. It is started from the loop-capture app's lifespan instead
+        # (see ``_build_loop_capture_app``), guaranteeing the ticker and the
+        # captured loop share a process.
 
     def on_shutdown(self) -> None:
         import logging
