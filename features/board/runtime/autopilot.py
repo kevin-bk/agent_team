@@ -55,6 +55,10 @@ from core.database.base import SessionLocal
 
 logger = logging.getLogger(__name__)
 
+#: One-shot guard so the "main loop not captured" warning is logged at most once
+#: per process instead of on every (30s) tick.
+_WARNED_NO_LOOP = False
+
 #: Seed user message for an auto-run when the board sets no custom template. The
 #: per-agent context (LLM system prompt, or the CLI's ``.agent-team/TASK.md``) is
 #: built by the normal run pipeline, so this only needs to kick the work off.
@@ -118,10 +122,15 @@ def run_tick() -> int:
     # Runs execute on the app's main loop; if it isn't captured yet we can't
     # start anything, so defer without claiming (tasks stay in their column).
     if not dispatch.main_loop_ready():
-        logger.warning(
-            "autopilot: tick deferred — app main loop not captured yet "
-            "(no async board request has run in this worker)"
-        )
+        # Warn once per process to flag a misconfiguration without spamming every
+        # tick; under normal startup the loop is captured before the first tick.
+        global _WARNED_NO_LOOP
+        if not _WARNED_NO_LOOP:
+            logger.warning(
+                "autopilot: tick deferred — app main loop not captured yet "
+                "(ticker not running in a serving worker?)"
+            )
+            _WARNED_NO_LOOP = True
         return 0
 
     db = SessionLocal()
@@ -137,7 +146,7 @@ def run_tick() -> int:
             .all()
         )
         if due:
-            logger.info("autopilot: tick — %d board(s) due", len(due))
+            logger.debug("autopilot: tick — %d board(s) due", len(due))
         started = 0
         for row in due:
             # Advance the schedule cursor first so a slow/failing board can't be
@@ -193,7 +202,7 @@ def _process_board(db: Session, row: AgentTeamAutopilot, now: datetime) -> int:
     inflight = _inflight_by_agent(db, row.board_id)
     board_slots = row.board_concurrency - sum(inflight.values())
     if board_slots <= 0:
-        logger.info(
+        logger.debug(
             "autopilot: board %s due but no board slots (concurrency=%d, inflight=%d)",
             row.board_id,
             row.board_concurrency,
@@ -217,7 +226,7 @@ def _process_board(db: Session, row: AgentTeamAutopilot, now: datetime) -> int:
         .order_by(AgentTeamTask.position.asc())
         .all()
     )
-    logger.info(
+    logger.debug(
         "autopilot: board %s due — source=%s slots=%d candidates=%d staffed=%s",
         row.board_id,
         row.source_status,
@@ -237,7 +246,7 @@ def _process_board(db: Session, row: AgentTeamAutopilot, now: datetime) -> int:
             )
             .scalar()
         )
-        logger.info(
+        logger.debug(
             "autopilot: board %s — 0 candidates (%s task(s) in source column; "
             "they need agent_assignee set to a staffed agent/CLI and not be in "
             "back-off or over max_attempts)",
@@ -253,7 +262,7 @@ def _process_board(db: Session, row: AgentTeamAutopilot, now: datetime) -> int:
         agent = (task.agent_assignee or "").strip()
         # Only run agents actually staffed/enabled on this board.
         if not agent or agent not in staffed:
-            logger.info(
+            logger.debug(
                 "autopilot: skip task %s — assignee %r not staffed on board "
                 "(staffed=%s)",
                 task.id,
@@ -264,7 +273,7 @@ def _process_board(db: Session, row: AgentTeamAutopilot, now: datetime) -> int:
         cap = row.concurrency_for(agent)
         used = inflight.get(agent, 0) + claimed_per_agent.get(agent, 0)
         if used >= cap:
-            logger.info(
+            logger.debug(
                 "autopilot: skip task %s — agent %s at cap (used=%d cap=%d)",
                 task.id,
                 agent,
