@@ -27,6 +27,34 @@ SPA_MOUNT_PATH = "/agent-team"
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
+def _build_loop_capture_app():
+    """A tiny mounted app whose lifespan captures the process event loop.
+
+    ``plugin.on_startup`` runs in ``create_app`` *before* the event loop exists,
+    so it cannot record the loop the autopilot ticker (a background thread) must
+    dispatch runs onto. The core lifespan, however, awaits each mounted app's
+    lifespan *inside* the running loop. Mounting this no-route app therefore
+    captures the loop at startup in every worker — so autopilot runs reliably
+    overnight and across restarts, with no browser ever hitting a board
+    endpoint first.
+    """
+    from contextlib import asynccontextmanager
+
+    from fastapi import FastAPI
+
+    @asynccontextmanager
+    async def _lifespan(_app: FastAPI):
+        try:
+            from agent_team.features.board.runtime.dispatch import capture_main_loop
+
+            capture_main_loop()
+        except Exception:  # noqa: BLE001 — never block app startup on this
+            pass
+        yield
+
+    return FastAPI(lifespan=_lifespan)
+
+
 class AgentTeamPlugin(PluginBase):
     def meta(self) -> PluginMeta:
         return PluginMeta(
@@ -123,9 +151,19 @@ class AgentTeamPlugin(PluginBase):
         ]
 
     def asgi_apps(self) -> list[PluginAsgiApp]:
+        # Always mount the loop-capture app (even without the SPA build) so the
+        # autopilot ticker can dispatch runs without depending on a board
+        # endpoint being hit first.
+        apps = [
+            PluginAsgiApp(
+                path="/_agent_team_internal",
+                app=_build_loop_capture_app(),
+                name="agent_team_internal",
+            )
+        ]
         if not _STATIC_DIR.is_dir():
-            return []
-        return [
+            return apps
+        return apps + [
             PluginAsgiApp(
                 path=SPA_MOUNT_PATH,
                 app=SPAStaticFiles(directory=str(_STATIC_DIR), html=True),

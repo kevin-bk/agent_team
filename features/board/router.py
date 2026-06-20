@@ -906,6 +906,11 @@ async def list_skills(request: Request, db: Session = Depends(get_db)):
 @router.get("/boards/{board_id}/autopilot")
 async def get_autopilot(board_id: str, request: Request, db: Session = Depends(get_db)):
     """Return the board's autopilot config (a disabled default if never set)."""
+    # Polled by the autopilot dialog/panel — a reliable place to capture the
+    # app's main loop so the ticker thread can dispatch runs.
+    from agent_team.features.board.runtime.dispatch import capture_main_loop
+
+    capture_main_loop()
     _, err = auth_or_401(db, request)
     if err:
         return err
@@ -1015,6 +1020,11 @@ async def autopilot_summary(
     board_id: str, request: Request, db: Session = Depends(get_db)
 ):
     """Live, read-only autopilot status for the board status panel."""
+    # Polled live by the status panel — capture the app's main loop so the
+    # ticker thread can dispatch runs even if `GET /boards` was never hit.
+    from agent_team.features.board.runtime.dispatch import capture_main_loop
+
+    capture_main_loop()
     _, err = auth_or_401(db, request)
     if err:
         return err
@@ -1445,6 +1455,13 @@ async def list_activity(task_id: str, request: Request, db: Session = Depends(ge
 
 @router.get("/boards/{board_id}/stream")
 async def stream_board(board_id: str, request: Request):
+    # Capture the app's main loop here too: this SSE handler runs whenever a
+    # board is viewed (even when the board *list* endpoint is never hit, e.g.
+    # deep-linking or a hidden board list), so the autopilot ticker thread can
+    # dispatch runs without depending on `GET /boards` being called first.
+    from agent_team.features.board.runtime.dispatch import capture_main_loop
+
+    capture_main_loop()
     db = SessionLocal()
     try:
         _, err = auth_or_401(db, request)
