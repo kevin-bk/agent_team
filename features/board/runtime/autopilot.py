@@ -118,6 +118,10 @@ def run_tick() -> int:
     # Runs execute on the app's main loop; if it isn't captured yet we can't
     # start anything, so defer without claiming (tasks stay in their column).
     if not dispatch.main_loop_ready():
+        logger.warning(
+            "autopilot: tick deferred — app main loop not captured yet "
+            "(no async board request has run in this worker)"
+        )
         return 0
 
     db = SessionLocal()
@@ -132,6 +136,8 @@ def run_tick() -> int:
             )
             .all()
         )
+        if due:
+            logger.info("autopilot: tick — %d board(s) due", len(due))
         started = 0
         for row in due:
             # Advance the schedule cursor first so a slow/failing board can't be
@@ -187,6 +193,12 @@ def _process_board(db: Session, row: AgentTeamAutopilot, now: datetime) -> int:
     inflight = _inflight_by_agent(db, row.board_id)
     board_slots = row.board_concurrency - sum(inflight.values())
     if board_slots <= 0:
+        logger.info(
+            "autopilot: board %s due but no board slots (concurrency=%d, inflight=%d)",
+            row.board_id,
+            row.board_concurrency,
+            sum(inflight.values()),
+        )
         return 0
 
     candidates = (
@@ -205,6 +217,33 @@ def _process_board(db: Session, row: AgentTeamAutopilot, now: datetime) -> int:
         .order_by(AgentTeamTask.position.asc())
         .all()
     )
+    logger.info(
+        "autopilot: board %s due — source=%s slots=%d candidates=%d staffed=%s",
+        row.board_id,
+        row.source_status,
+        board_slots,
+        len(candidates),
+        sorted(staffed),
+    )
+    if not candidates:
+        # Help diagnose the common "nothing happens" case: are there tasks in
+        # the source column at all, just lacking an eligible assignee?
+        in_source = (
+            db.query(func.count(AgentTeamTask.id))
+            .filter(
+                AgentTeamTask.board_id == row.board_id,
+                AgentTeamTask.archived.is_(False),
+                AgentTeamTask.status == row.source_status,
+            )
+            .scalar()
+        )
+        logger.info(
+            "autopilot: board %s — 0 candidates (%s task(s) in source column; "
+            "they need agent_assignee set to a staffed agent/CLI and not be in "
+            "back-off or over max_attempts)",
+            row.board_id,
+            in_source,
+        )
 
     started = 0
     claimed_per_agent: dict[str, int] = {}
@@ -214,12 +253,32 @@ def _process_board(db: Session, row: AgentTeamAutopilot, now: datetime) -> int:
         agent = (task.agent_assignee or "").strip()
         # Only run agents actually staffed/enabled on this board.
         if not agent or agent not in staffed:
+            logger.info(
+                "autopilot: skip task %s — assignee %r not staffed on board "
+                "(staffed=%s)",
+                task.id,
+                agent,
+                sorted(staffed),
+            )
             continue
         cap = row.concurrency_for(agent)
         used = inflight.get(agent, 0) + claimed_per_agent.get(agent, 0)
         if used >= cap:
+            logger.info(
+                "autopilot: skip task %s — agent %s at cap (used=%d cap=%d)",
+                task.id,
+                agent,
+                used,
+                cap,
+            )
             continue
         if _claim_and_start(db, row, board, task, agent):
+            logger.info(
+                "autopilot: claimed task %s for %s -> %s",
+                task.id,
+                agent,
+                row.working_status,
+            )
             started += 1
             claimed_per_agent[agent] = claimed_per_agent.get(agent, 0) + 1
     return started
