@@ -83,11 +83,11 @@ def _format_repos(repos: Sequence[dict] | None) -> str:
         out.append(f"- `{repo['path']}/`{suffix}")
     if has_wiki:
         out.append(
-            "A repo marked **board wiki** is this board's knowledge base. Read it "
-            "before working (start at its `index.md`) and follow its `board-wiki` "
-            "skill. When you learn something worth keeping, add/update wiki pages "
-            "and commit them on your task branch — they are reviewed and merged "
-            "like any other change."
+            "A repo marked **board wiki** is this board's knowledge base. Read its "
+            "`index.md` before working and follow the wiki's own conventions (and "
+            "the `board-wiki` skill). When you learn something worth keeping, "
+            "add/update pages in the wiki's existing structure and commit them on "
+            "your task branch — they are reviewed and merged like any other change."
         )
     if pushable:
         out.append(

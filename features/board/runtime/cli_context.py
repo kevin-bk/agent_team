@@ -113,10 +113,10 @@ def _render_repos_block(repos: Sequence[dict] | None) -> str:
     out.append("")
     if has_wiki:
         out.append(
-            "A repo marked **board wiki** is this board's knowledge base. Read it "
-            "before working (start at its `index.md`) and follow its `board-wiki` "
-            "skill. Record new knowledge as wiki pages and commit them on your "
-            "task branch."
+            "A repo marked **board wiki** is this board's knowledge base. Read its "
+            "`index.md` before working and follow the wiki's own conventions (and "
+            "the `board-wiki` skill). Record new knowledge in the wiki's existing "
+            "structure and commit it on your task branch."
         )
         out.append("")
     out.append(

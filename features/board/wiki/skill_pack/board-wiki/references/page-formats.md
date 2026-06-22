@@ -1,10 +1,15 @@
-# Wiki page formats
+# Wiki page formats — starter shapes (fallback only)
 
-Keep pages short, interlinked, and honest about what is known vs. inferred.
-Pages live under `pages/` in the wiki repo; add or edit them and commit on your
-task branch. Use whichever shape fits; all share the same front matter.
+These are **starter shapes for an empty wiki**. If the wiki already has pages,
+**match its existing structure instead** — copy the heading layout, status /
+"last updated" line, naming, and cross-reference style of the surrounding docs.
+A real wiki documents its own conventions in `index.md`; that always wins over
+the templates below.
 
-## Front matter (all pages)
+Whatever the shape: keep pages short, interlinked, and honest about what is
+known vs. inferred. Add or edit pages and commit on your task branch.
+
+## Front matter (starter pages only)
 
 ```markdown
 ---
@@ -73,7 +78,8 @@ State it, and mark it as an **inference** unless a decision was actually made.
 ## Updating an existing page
 
 If your knowledge changes an existing page, **edit that page in place** (don't
-create a near-duplicate): update its `## Facts` / `## Open questions`, bump
-`updated:`, and add the task key to `sources:`. If the new knowledge contradicts
-what the page said, change it and state the contradiction explicitly in your
-commit message so the reviewer sees it.
+create a near-duplicate) and follow that page's own format: update its facts /
+open-questions sections, bump whatever "updated" / "last updated" marker it uses,
+and add your task key to its sources. If the new knowledge contradicts what the
+page said, change it and state the contradiction explicitly in your commit
+message so the reviewer sees it.

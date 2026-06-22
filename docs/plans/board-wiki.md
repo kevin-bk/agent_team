@@ -45,22 +45,41 @@ free:
 |---|---|
 | **raw/** (immutable sources) | task descriptions, notes/attachments, Jira import, run outputs |
 | **wiki/** (LLM-owned, interlinked md) | a board repo marked `is_wiki`, checked out per task on the task branch |
-| **schema** (how to operate the wiki) | the bundled **`board-wiki` skill pack** (read first, page formats, commit-on-task-branch, conventions) |
+| **schema** (how to operate the wiki) | the bundled **`board-wiki` skill pack** — *discover-first*: read the wiki's own `index.md`, follow its conventions; commit-on-task-branch |
 
-### Wiki repo layout (conventional, agent-bootstrapped)
+### Discover-first: the wiki documents itself; the skill defers to it
 
-The agent creates these on first use if missing (no backend seeding):
+A mature wiki defines its own conventions inside the repo — its `index.md` is the
+router/catalog **and** usually describes how pages are structured, the status
+legend, anchor/cross-reference rules, splitting rules, and which file is its log.
+A real-world example in this monorepo is `coding/chizy-knowledge-base-agent/chizy-knowledge/`:
+flat doc files at the root, a self-documenting `index.md`, per-section anchors,
+and `_verification-queue.md` / `_open-followups.md` as its lint/changelog — none
+of which match a hardcoded "pages/ + log.md + front-matter" template.
 
-- `index.md` — catalog: every page + a one-line summary.
-- `log.md` — append-only changelog (`## [YYYY-MM-DD] kind | title`).
+So the skill is **idea-file style** (per Karpathy): it does **not** impose a
+layout. The agent **reads `index.md` first and follows whatever conventions the
+wiki already uses**. A fixed template would fight a real wiki's structure.
+
+### Default layout (fallback — only for an empty wiki)
+
+When the wiki has no `index.md` yet, the agent bootstraps a simple layout and
+grows from there (no backend seeding):
+
+- `index.md` — catalog: every page + a one-line summary + a note on organization.
 - `pages/` — entity / concept / summary / comparison / decision pages.
+- a log file (e.g. `log.md`) — append-only, one line per change.
+
+Once the wiki has its own shape, that shape wins over this default.
 
 ### Operations
 
-- **Query** — agent reads the wiki repo's `index.md`, drills into `pages/`, uses
-  + cites them. At this scale `index.md` + grep is enough (no vector DB).
-- **Ingest/contribute** — agent adds/updates `pages/` + `index.md` + `log.md`,
-  commits on its task branch. Human reviews + merges into the default branch.
+- **Query** — agent reads the wiki's `index.md`, follows it to the 1–4 relevant
+  pages, uses + cites them. At this scale `index.md` + its links/grep is enough
+  (no vector DB).
+- **Ingest/contribute** — agent adds/updates pages **in the wiki's existing
+  structure**, updates `index.md` (+ the wiki's log if it has one), commits on its
+  task branch. Human reviews + merges into the default branch.
 - **Lint** (future) — a scheduled autopilot job opens a branch with health-check
   fixes (contradictions, stale claims, orphans) for human review.
 
@@ -81,7 +100,7 @@ public vs. private knowledge); the skill names which repo is the wiki.
 ```sql
 -- migrate: skip_if_table_missing plugin_agent_team_board_repo
 -- migrate: skip_if_column_exists plugin_agent_team_board_repo is_wiki
-ALTER TABLE plugin_agent_team_board_repo ADD COLUMN is_wiki BOOLEAN NOT NULL DEFAULT 0;
+ALTER TABLE plugin_agent_team_board_repo ADD COLUMN is_wiki BOOLEAN NOT NULL DEFAULT FALSE;
 ```
 
 `AgentTeamBoardRepo.is_wiki: Mapped[bool]` (default `False`). Surfaced through
@@ -100,9 +119,11 @@ label the wiki repo and add a one-paragraph instruction.
 
 ### Skill pack `features/board/wiki/skill_pack/board-wiki/`
 
-`SKILL.md` (read-first, page formats, commit-on-task-branch, publish via
-`git_push`/human merge) + `references/page-formats.md`. `wiki/service.py` only
-ships `materialize_wiki_skill`.
+`SKILL.md` (discover-first: read `index.md`, follow the wiki's own conventions;
+commit-on-task-branch; publish via `git_push`/human merge) +
+`references/page-formats.md` (starter shapes, **fallback only** — match the
+wiki's existing format when it has one). `wiki/service.py` only ships
+`materialize_wiki_skill`.
 
 ### Frontend
 
@@ -134,7 +155,9 @@ ships `materialize_wiki_skill`.
 - No repo marked wiki → zero behaviour change (skill not materialised).
 - The agent commits wiki pages on its task branch only (mirrors `git_tools`,
   which refuses the default branch).
-- Wiki repo bootstrapping (`index.md`/`log.md`/`pages/`) is done by the agent via
-  the skill, not the backend, so we never auto-commit into a user's repo.
+- For an existing wiki, the agent follows the repo's own conventions (read
+  `index.md` first); the `index.md`/`log.md`/`pages/` template is only bootstrapped
+  by the agent for an **empty** wiki — never by the backend, so we never auto-commit
+  into a user's repo.
 - A repo can be a wiki on one board and a plain code repo on another (the flag is
   per assignment, not per repo).
