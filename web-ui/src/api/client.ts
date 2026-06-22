@@ -605,6 +605,7 @@ export class ApiClient {
     repoId: string,
     branchOverride?: string | null,
     allowPush?: boolean,
+    isWiki?: boolean,
   ) {
     return this.request<BoardRepoDTO>(`/api/boards/${boardId}/repos`, {
       method: "POST",
@@ -612,6 +613,7 @@ export class ApiClient {
         repo_id: repoId,
         branch_override: branchOverride ?? null,
         ...(allowPush === undefined ? {} : { allow_push: allowPush }),
+        ...(isWiki === undefined ? {} : { is_wiki: isWiki }),
       }),
     });
   }

@@ -414,6 +414,22 @@ def _load_run_context(run_id: str) -> dict | None:
             skills_manifest = skills_rt.materialize_skills(task.workspace_path, skill_ids)
         except Exception:
             logger.exception("agent_team: failed to materialise board skills for %s", task.id)
+        # Board Wiki: when a checked-out repo is marked as the board's wiki,
+        # advertise the bundled ``board-wiki`` skill pack so both LLM and direct
+        # CLI agents know how to read it and contribute pages on their task
+        # branch. Runs after skill materialisation (which clears the skill dirs)
+        # so it is additive; the repos context block names which repo is the wiki.
+        if any(r.get("is_wiki") for r in repos):
+            try:
+                from agent_team.features.board.wiki import service as wiki_rt
+
+                wiki_row = wiki_rt.materialize_wiki_skill(task.workspace_path)
+                if wiki_row:
+                    skills_manifest = [*skills_manifest, wiki_row]
+            except Exception:
+                logger.exception(
+                    "agent_team: failed to materialise board wiki skill for %s", task.id
+                )
         if is_direct_cli_alias(run.agent_alias):
             # The CLI reads its context from files in the workspace
             # (``.agent-team/TASK.md`` via the CLAUDE.md / AGENTS.md / cursor-rule

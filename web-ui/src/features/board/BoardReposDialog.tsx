@@ -58,6 +58,17 @@ export function BoardReposDialog({
       toast.error(err instanceof Error ? err.message : "Failed to update");
     }
   };
+  const doSetWiki = async (
+    repoId: string,
+    branchOverride: string | null,
+    isWiki: boolean,
+  ) => {
+    try {
+      await assign.mutateAsync({ repoId, branchOverride, isWiki });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to update");
+    }
+  };
 
   return (
     <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
@@ -82,9 +93,24 @@ export function BoardReposDialog({
                 {assigned.length === 0 ? (
                   <Empty>No repositories assigned yet.</Empty>
                 ) : (
-                  assigned.map(({ repo, branch_override, allow_push }) => (
+                  assigned.map(({ repo, branch_override, allow_push, is_wiki }) => (
                     <Row key={repo.id}>
                       <RepoLabel name={repo.name} url={repo.git_url} branch={branch_override || repo.default_branch} />
+                      <label
+                        className="flex shrink-0 items-center gap-1.5 text-[12px] text-muted-foreground"
+                        title="Use this repo as the board's wiki (knowledge base)"
+                      >
+                        <input
+                          type="checkbox"
+                          className="h-3.5 w-3.5 accent-[var(--primary)]"
+                          checked={is_wiki}
+                          disabled={busy}
+                          onChange={(e) =>
+                            doSetWiki(repo.id, branch_override, e.target.checked)
+                          }
+                        />
+                        Wiki
+                      </label>
                       <label
                         className="flex shrink-0 items-center gap-1.5 text-[12px] text-muted-foreground"
                         title={

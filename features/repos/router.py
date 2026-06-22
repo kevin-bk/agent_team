@@ -221,8 +221,8 @@ async def list_board_repos(
     if berr:
         return berr
     assigned = [
-        repos_repo.serialize_board_repo(db, repo, branch, allow_push)
-        for repo, branch, allow_push in repos_repo.repos_for_board(db, board_id)
+        repos_repo.serialize_board_repo(db, repo, branch, allow_push, is_wiki)
+        for repo, branch, allow_push, is_wiki in repos_repo.repos_for_board(db, board_id)
     ]
     assigned_ids = {bri.repo.id for bri in assigned}
     available = [
@@ -255,9 +255,10 @@ async def assign_board_repo(
         repo_id=repo.id,
         branch_override=payload.branch_override,
         allow_push=payload.allow_push,
+        is_wiki=payload.is_wiki,
     )
     return repos_repo.serialize_board_repo(
-        db, repo, assignment.branch_override, assignment.allow_push
+        db, repo, assignment.branch_override, assignment.allow_push, assignment.is_wiki
     )
 
 

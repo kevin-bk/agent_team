@@ -746,12 +746,14 @@ export function useBoardRepoMutations(boardId: string) {
         repoId: string;
         branchOverride?: string | null;
         allowPush?: boolean;
+        isWiki?: boolean;
       }) =>
         client.assignBoardRepo(
           boardId,
           vars.repoId,
           vars.branchOverride,
           vars.allowPush,
+          vars.isWiki,
         ),
       onSuccess: invalidate,
     }),

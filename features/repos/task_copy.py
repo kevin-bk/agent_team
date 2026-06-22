@@ -93,7 +93,7 @@ def prepare_task_repos(db: Session, task: AgentTeamTask) -> list[dict]:
     """
     prepared: list[dict] = []
     work_branch = task_branch_name(task)
-    for repo, branch_override, bp_allow_push in repos_for_board(db, task.board_id):
+    for repo, branch_override, bp_allow_push, is_wiki in repos_for_board(db, task.board_id):
         canonical = canonical_path(repo.owner_id, repo.slug)
         if not (canonical / ".git").exists():
             logger.info(
@@ -140,6 +140,8 @@ def prepare_task_repos(db: Session, task: AgentTeamTask) -> list[dict]:
                 "base_branch": base_branch or None,
                 # Effective push = admin master gate AND this board's opt-in.
                 "can_push": bool(repo.allow_push and bp_allow_push),
+                # Marks the board's knowledge base so the run can advertise it.
+                "is_wiki": bool(is_wiki),
             }
         )
     return prepared
@@ -148,7 +150,7 @@ def prepare_task_repos(db: Session, task: AgentTeamTask) -> list[dict]:
 def cleanup_task_repos(db: Session, task: AgentTeamTask) -> int:
     """Remove per-repo working copies from a task folder. Returns count removed."""
     removed = 0
-    for repo, _branch, _allow in repos_for_board(db, task.board_id):
+    for repo, _branch, _allow, _is_wiki in repos_for_board(db, task.board_id):
         dest = task_copy_path(task.workspace_path, repo.slug)
         if dest.exists():
             shutil.rmtree(dest, ignore_errors=True)
@@ -177,9 +179,14 @@ def prepare_task_repos_by_id(task_id: str) -> list[dict]:
 def list_task_repo_dirs(db: Session, task: AgentTeamTask) -> list[dict]:
     """Return ``{slug, path, present}`` for assigned repos (for the cockpit)."""
     out: list[dict] = []
-    for repo, _branch, _allow in repos_for_board(db, task.board_id):
+    for repo, _branch, _allow, is_wiki in repos_for_board(db, task.board_id):
         dest = task_copy_path(task.workspace_path, repo.slug)
         out.append(
-            {"slug": repo.slug, "path": repo.slug, "present": (dest / ".git").exists()}
+            {
+                "slug": repo.slug,
+                "path": repo.slug,
+                "present": (dest / ".git").exists(),
+                "is_wiki": bool(is_wiki),
+            }
         )
     return out

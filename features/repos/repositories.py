@@ -155,17 +155,19 @@ def list_assignments(db: Session, board_id: str) -> list[AgentTeamBoardRepo]:
 
 def repos_for_board(
     db: Session, board_id: str
-) -> list[tuple[AgentTeamRepo, str | None, bool]]:
-    """Return ``(repo, branch_override, allow_push)`` for each assigned repo.
+) -> list[tuple[AgentTeamRepo, str | None, bool, bool]]:
+    """Return ``(repo, branch_override, allow_push, is_wiki)`` per assigned repo.
 
     ``allow_push`` is this board's per-assignment opt-in; the *effective* push
     permission also requires ``repo.allow_push`` (the admin master gate).
+    ``is_wiki`` marks the repo as the board's knowledge base.
     """
     rows = (
         db.query(
             AgentTeamRepo,
             AgentTeamBoardRepo.branch_override,
             AgentTeamBoardRepo.allow_push,
+            AgentTeamBoardRepo.is_wiki,
         )
         .join(AgentTeamBoardRepo, AgentTeamBoardRepo.repo_id == AgentTeamRepo.id)
         .filter(AgentTeamBoardRepo.board_id == board_id)
@@ -173,7 +175,10 @@ def repos_for_board(
         .order_by(AgentTeamBoardRepo.created_at.asc())
         .all()
     )
-    return [(repo, branch, bool(allow)) for repo, branch, allow in rows]
+    return [
+        (repo, branch, bool(allow), bool(is_wiki))
+        for repo, branch, allow, is_wiki in rows
+    ]
 
 
 def get_assignment(
@@ -196,12 +201,15 @@ def assign_repo(
     repo_id: str,
     branch_override: str | None = None,
     allow_push: bool | None = None,
+    is_wiki: bool | None = None,
 ) -> AgentTeamBoardRepo:
     existing = get_assignment(db, board_id, repo_id)
     if existing is not None:
         existing.branch_override = branch_override or None
         if allow_push is not None:
             existing.allow_push = bool(allow_push)
+        if is_wiki is not None:
+            existing.is_wiki = bool(is_wiki)
         db.commit()
         db.refresh(existing)
         return existing
@@ -210,6 +218,7 @@ def assign_repo(
         repo_id=repo_id,
         branch_override=branch_override or None,
         allow_push=bool(allow_push),
+        is_wiki=bool(is_wiki),
     )
     db.add(row)
     db.commit()
@@ -267,9 +276,11 @@ def serialize_board_repo(
     repo: AgentTeamRepo,
     branch_override: str | None,
     allow_push: bool = False,
+    is_wiki: bool = False,
 ) -> BoardRepoDTO:
     return BoardRepoDTO(
         repo=serialize_repo(db, repo),
         branch_override=branch_override,
         allow_push=bool(allow_push),
+        is_wiki=bool(is_wiki),
     )

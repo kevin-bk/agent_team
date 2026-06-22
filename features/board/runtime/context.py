@@ -70,13 +70,25 @@ def _format_repos(repos: Sequence[dict] | None) -> str:
         "commit your work there, do not switch to the default branch:"
     ]
     pushable = False
+    has_wiki = False
     for repo in items:
         branch = (repo.get("branch") or "").strip()
         suffix = f" (branch {branch})" if branch else ""
+        if repo.get("is_wiki"):
+            suffix += " — board wiki (knowledge base)"
+            has_wiki = True
         if repo.get("can_push"):
             suffix += " — push enabled"
             pushable = True
         out.append(f"- `{repo['path']}/`{suffix}")
+    if has_wiki:
+        out.append(
+            "A repo marked **board wiki** is this board's knowledge base. Read it "
+            "before working (start at its `index.md`) and follow its `board-wiki` "
+            "skill. When you learn something worth keeping, add/update wiki pages "
+            "and commit them on your task branch — they are reviewed and merged "
+            "like any other change."
+        )
     if pushable:
         out.append(
             "To publish commits to a repo's remote, use the `git_push` tool "

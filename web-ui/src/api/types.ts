@@ -720,6 +720,8 @@ export interface BoardRepoDTO {
   branch_override: string | null;
   /** This board's push opt-in (effective push also needs repo.allow_push). */
   allow_push: boolean;
+  /** Whether this repo is the board's wiki (knowledge base). */
+  is_wiki: boolean;
 }
 
 export interface BoardReposResponse {

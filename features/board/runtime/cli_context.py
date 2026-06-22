@@ -102,11 +102,23 @@ def _render_repos_block(repos: Sequence[dict] | None) -> str:
         "its own task branch — commit your work there and do not switch to the "
         "default branch:",
     ]
+    has_wiki = False
     for repo in items:
         branch = (repo.get("branch") or "").strip()
         suffix = f" (branch `{branch}`)" if branch else ""
+        if repo.get("is_wiki"):
+            suffix += " — **board wiki** (knowledge base)"
+            has_wiki = True
         out.append(f"- `{repo['path']}/`{suffix}")
     out.append("")
+    if has_wiki:
+        out.append(
+            "A repo marked **board wiki** is this board's knowledge base. Read it "
+            "before working (start at its `index.md`) and follow its `board-wiki` "
+            "skill. Record new knowledge as wiki pages and commit them on your "
+            "task branch."
+        )
+        out.append("")
     out.append(
         "Commits stay in this local clone; publishing to the remote is handled "
         "outside this chat."

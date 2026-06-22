@@ -2275,6 +2275,98 @@ def test_repo_assign_and_repos_for_board(db):
     assert repos_repo.repos_for_board(db, board.id) == []
 
 
+# ---------------------------------------------------------------------------
+# Board Wiki (a board repo marked is_wiki)
+# ---------------------------------------------------------------------------
+
+
+def test_board_repo_is_wiki_round_trip(db):
+    """is_wiki: off by default, persisted on assign, surfaced via tuple + DTO."""
+    from agent_team.features.repos import repositories as repos_repo
+    from agent_team.features.repos.schemas import RepoCreate
+
+    board = boards_repo.create_board(
+        db, name="B", description=None, columns=None, owner_id="owner1"
+    )
+    db.commit()
+    repo = repos_repo.create_repo(
+        db, owner_id="owner1", payload=RepoCreate(name="KB", git_url="https://x/kb.git")
+    )
+
+    repos_repo.assign_repo(db, board_id=board.id, repo_id=repo.id)
+    assert repos_repo.repos_for_board(db, board.id)[0][3] is False  # is_wiki
+
+    # Toggling is_wiki persists without re-creating the assignment row.
+    repos_repo.assign_repo(db, board_id=board.id, repo_id=repo.id, is_wiki=True)
+    repo_t, _branch, _allow, is_wiki = repos_repo.repos_for_board(db, board.id)[0]
+    assert repo_t.id == repo.id and is_wiki is True
+
+    dto = repos_repo.serialize_board_repo(db, repo, None, False, True)
+    assert dto.is_wiki is True
+
+
+def test_prepare_task_repos_marks_wiki(db, tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENT_TEAM_WORKSPACE_ROOT", str(tmp_path / "ws"))
+    src = _make_source_repo(tmp_path / "src")
+
+    from agent_team.features.repos import git_service
+    from agent_team.features.repos import repositories as repos_repo
+    from agent_team.features.repos.schemas import RepoCreate
+    from agent_team.features.repos.task_copy import prepare_task_repos
+
+    repo = repos_repo.create_repo(
+        db, owner_id="owner1", payload=RepoCreate(name="KB", git_url=str(src))
+    )
+    assert git_service.sync_repo_by_id(repo.id).ok
+    db.expire_all()
+
+    board = boards_repo.create_board(
+        db, name="B", description=None, columns=None, owner_id="owner1"
+    )
+    db.commit()
+    repos_repo.assign_repo(db, board_id=board.id, repo_id=repo.id, is_wiki=True)
+    task = tasks_repo.create_task(
+        db, board_id=board.id, title="T", description=None, status="todo",
+        assignee_id=None, labels=None, priority=None, created_by=None,
+    )
+    db.commit()
+
+    prepared = prepare_task_repos(db, task)
+    assert prepared and prepared[0]["is_wiki"] is True
+
+
+def test_repos_context_blocks_label_the_wiki(db):
+    from agent_team.features.board.runtime.cli_context import _render_repos_block
+    from agent_team.features.board.runtime.context import build_task_context
+
+    task = _make_task(db)
+    repos = [
+        {"slug": "kb", "path": "kb", "branch": "agent/t-1", "is_wiki": True},
+        {"slug": "app", "path": "app", "branch": "agent/t-1"},
+    ]
+    llm = build_task_context(task, "Go.", repos=repos, full=True)
+    assert "board wiki" in llm
+    assert "board-wiki" in llm  # points the agent at the skill
+
+    cli = _render_repos_block(repos)
+    assert "board wiki" in cli
+    assert "`kb/`" in cli
+
+
+def test_materialize_wiki_skill_copies_into_native_dirs(tmp_path):
+    from agent_team.features.board.wiki import service as wiki_rt
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    row = wiki_rt.materialize_wiki_skill(str(ws))
+
+    assert row is not None
+    assert row["name"] == "board-wiki"
+    assert row["path"] == ".claude/skills/board-wiki/SKILL.md"
+    assert (ws / ".claude" / "skills" / "board-wiki" / "SKILL.md").is_file()
+    assert (ws / ".cursor" / "skills" / "board-wiki" / "SKILL.md").is_file()
+
+
 def test_repo_schedule_sets_next_pull(db):
     from agent_team.features.repos import repositories as repos_repo
     from agent_team.features.repos.schemas import RepoCreate

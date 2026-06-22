@@ -82,6 +82,8 @@ class AssignRepoRequest(BaseModel):
     branch_override: str | None = Field(default=None, max_length=255)
     #: Per-board push opt-in. Effective push still needs the repo's master gate.
     allow_push: bool | None = None
+    #: Mark this repo as the board's wiki (knowledge base).
+    is_wiki: bool | None = None
 
 
 class BoardRepoDTO(BaseModel):
@@ -91,6 +93,8 @@ class BoardRepoDTO(BaseModel):
     branch_override: str | None = None
     #: This board's push opt-in for the repo (set by board owner/editor).
     allow_push: bool = False
+    #: Whether this repo is the board's wiki (knowledge base).
+    is_wiki: bool = False
 
 
 class RepoStatusDTO(BaseModel):

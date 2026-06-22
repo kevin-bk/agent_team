@@ -153,4 +153,9 @@ class AgentTeamBoardRepo(Base):
     #: Per-board push opt-in (set by a board owner/editor). Effective push also
     #: requires the repo's own ``allow_push`` master gate (admin-controlled).
     allow_push: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    #: When True this repo is the board's **wiki** (knowledge base): agents are
+    #: told to read it before working and to contribute pages on their task
+    #: branch (reviewed/merged like any other change). A board can mark more than
+    #: one repo as a wiki, though one is recommended.
+    is_wiki: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

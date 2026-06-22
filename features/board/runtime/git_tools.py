@@ -111,7 +111,7 @@ def get_git_tools(agent_alias: str, settings: dict[str, str]) -> list[Any]:
             match = next(
                 (
                     (r, br, allow)
-                    for r, br, allow in repos_for_board(db, task.board_id)
+                    for r, br, allow, _is_wiki in repos_for_board(db, task.board_id)
                     if r.slug == slug
                 ),
                 None,
