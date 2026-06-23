@@ -10,22 +10,32 @@ other tasks. No credentials are involved (the source is local).
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
+import shlex
 import shutil
+import stat
 import subprocess
+import sys
+from pathlib import Path
 
 from sqlalchemy.orm import Session
 
 from agent_team.features.board.models import AgentTeamTask
-from agent_team.features.repos.models import AgentTeamRepo
+from agent_team.features.repos.models import AUTH_SSH, AUTH_TOKEN, AgentTeamRepo
 from agent_team.features.repos.paths import canonical_path, task_copy_path
 from agent_team.features.repos.repositories import repos_for_board
 
 logger = logging.getLogger(__name__)
 
 _GIT_TIMEOUT = 300.0
+
+#: Name of the per-task-copy remote that points at the **real** git host (origin
+#: stays the local canonical clone for cheap fetches). ``remote.pushDefault`` is
+#: set to this so a plain ``git push`` reaches the host, not the local mirror.
+_HOST_REMOTE = "host"
 
 #: Fallback commit identity when a repo configures none.
 _DEFAULT_COMMITTER_NAME = "Agent Team"
@@ -84,6 +94,102 @@ def _ensure_work_branch(dest: str, work_branch: str) -> None:
         _run_git("-C", dest, "checkout", "-B", work_branch)
 
 
+#: git credential helper bundled with the plugin (token auth, live DB lookup).
+_CRED_HELPER_PY = Path(__file__).resolve().parent / "git_cred_helper.py"
+
+
+def _pre_push_hook_body(protected: list[str]) -> str:
+    """A `pre-push` hook that refuses pushes to protected (default) branches.
+
+    Runs for **every** ``git push`` (direct-CLI agent or LLM), so the task-branch
+    -only rule is enforced locally regardless of who pushes — the local half of
+    the human merge gate. The protected list always includes the common defaults
+    as a safety net even when the tracked branch is unknown.
+    """
+    refs = " ".join(f"refs/heads/{b}" for b in dict.fromkeys([*protected, "main", "master"]) if b)
+    return (
+        "#!/bin/sh\n"
+        "# Managed by agent_team: agents push their task branch, never the default.\n"
+        f'protected="{refs}"\n'
+        "while read -r local_ref local_sha remote_ref remote_sha; do\n"
+        '  for p in $protected; do\n'
+        '    if [ "$remote_ref" = "$p" ]; then\n'
+        '      echo "agent-team: refusing to push to protected branch '
+        '${remote_ref#refs/heads/}; push your task branch instead." >&2\n'
+        "      exit 1\n"
+        "    fi\n"
+        "  done\n"
+        "done\n"
+        "exit 0\n"
+    )
+
+
+def _install_pre_push_hook(dest: Path, protected: list[str]) -> None:
+    hooks_dir = dest / ".git" / "hooks"
+    try:
+        hooks_dir.mkdir(parents=True, exist_ok=True)
+        hook = hooks_dir / "pre-push"
+        hook.write_text(_pre_push_hook_body(protected), encoding="utf-8")
+        hook.chmod(0o755)
+    except OSError:
+        logger.warning("task: failed to install pre-push hook in %s", dest, exc_info=True)
+
+
+def _configure_push_to_host(dest: Path, repo: AgentTeamRepo, task: AgentTeamTask) -> None:
+    """Point the copy's push at the real remote with on-demand credentials.
+
+    Keeps ``origin`` as the local canonical clone (cheap fetches) and adds a
+    ``host`` remote at the real URL set as ``remote.pushDefault`` so a plain
+    ``git push`` lands on the host. For token auth the secret is fetched live by
+    the bundled credential helper (never stored in the workspace); for SSH a key
+    file is materialised in ``.git`` (kept out of the work tree). Best-effort:
+    failures only mean push falls back to the (gated) ``git_push`` tool.
+    """
+    from agent_team.features.repos import git_service
+
+    dest_s = str(dest)
+    try:
+        url = git_service._effective_url(repo)
+        if not url:
+            return
+        _run_git("-C", dest_s, "remote", "remove", _HOST_REMOTE)  # idempotent (ignore error)
+        code, _out, err = _run_git("-C", dest_s, "remote", "add", _HOST_REMOTE, url)
+        if code != 0:
+            logger.warning("task %s: add host remote for %s failed: %s",
+                           task.human_key, repo.slug, err[:200])
+            return
+        _run_git("-C", dest_s, "config", "remote.pushDefault", _HOST_REMOTE)
+        _run_git("-C", dest_s, "config", "push.autoSetupRemote", "true")
+
+        git_dir = dest / ".git"
+        if repo.auth_type == AUTH_TOKEN:
+            cred_file = git_dir / "at_cred.json"
+            cred_file.write_text(
+                json.dumps({"task_id": task.id, "repo_id": repo.id}), encoding="utf-8"
+            )
+            cred_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
+            helper = (
+                f"!{shlex.quote(sys.executable)} {shlex.quote(str(_CRED_HELPER_PY))} "
+                f"--cred-file {shlex.quote(str(cred_file))}"
+            )
+            _run_git("-C", dest_s, "config", "credential.helper", helper)
+        elif repo.auth_type == AUTH_SSH and (repo.auth_secret or "").strip():
+            # SSH cannot use a credential helper; the key must be a file. Keep it
+            # inside .git (never committed) with 0600 perms.
+            key = git_dir / "at_ssh_key"
+            secret = repo.auth_secret.strip()
+            key.write_text(secret if secret.endswith("\n") else secret + "\n", encoding="utf-8")
+            key.chmod(stat.S_IRUSR | stat.S_IWUSR)
+            _run_git(
+                "-C", dest_s, "config", "core.sshCommand",
+                f"ssh -i {shlex.quote(str(key))} "
+                "-o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes",
+            )
+    except OSError:
+        logger.warning("task %s: configure push-to-host for %s failed",
+                       task.human_key, repo.slug, exc_info=True)
+
+
 def prepare_task_repos(db: Session, task: AgentTeamTask) -> list[dict]:
     """Ensure each assigned, cloned repo has a working copy in the task folder.
 
@@ -132,6 +238,10 @@ def prepare_task_repos(db: Session, task: AgentTeamTask) -> list[dict]:
         # pre-existing copies stuck on the default branch get switched over.
         _ensure_work_branch(str(dest), work_branch)
         _configure_copy(str(dest), repo)
+        # Wire a plain ``git push`` to reach the real host (gated), and block the
+        # default branch locally. Runs every prepare so it self-heals/idempotent.
+        _configure_push_to_host(dest, repo, task)
+        _install_pre_push_hook(dest, [base_branch] if base_branch else [])
         prepared.append(
             {
                 "slug": repo.slug,

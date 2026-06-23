@@ -65,8 +65,9 @@ discovered fact, a comparison):
 
 - LLM agents: use the `git_push` tool to publish your task branch (it pushes
   with managed credentials). A human reviews the diff and merges it.
-- Direct-CLI agents: commit locally; publishing the branch is handled outside
-  this chat. A human reviews and merges.
+- Direct-CLI agents: a plain `git push` publishes your task branch straight to
+  the remote (credentials are managed for you; you can only push your task
+  branch, never the default branch). A human reviews and merges.
 
 Either way the human merge is the gate — never assume your change is published
 until it lands on the wiki's default branch.

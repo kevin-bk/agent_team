@@ -2367,6 +2367,130 @@ def test_materialize_wiki_skill_copies_into_native_dirs(tmp_path):
     assert (ws / ".cursor" / "skills" / "board-wiki" / "SKILL.md").is_file()
 
 
+# ---------------------------------------------------------------------------
+# CLI push straight to host (credential helper + pre-push hook)
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_push_credentials_respects_allow_push(db):
+    """The credential helper only yields a token when push is actually allowed."""
+    from agent_team.features.repos import repositories as repos_repo
+    from agent_team.features.repos.git_cred_helper import resolve_credentials
+    from agent_team.features.repos.schemas import RepoCreate
+
+    board = boards_repo.create_board(
+        db, name="B", description=None, columns=None, owner_id="o"
+    )
+    db.commit()
+    repo = repos_repo.create_repo(
+        db,
+        owner_id="o",
+        payload=RepoCreate(
+            name="KB", git_url="https://x/kb.git", auth_type="token",
+            auth_username="u", auth_secret="tok", allow_push=True,
+        ),
+    )
+    repos_repo.assign_repo(db, board_id=board.id, repo_id=repo.id, allow_push=True)
+    task = tasks_repo.create_task(
+        db, board_id=board.id, title="T", description=None, status="todo",
+        assignee_id=None, labels=None, priority=None, created_by=None,
+    )
+    db.commit()
+
+    assert resolve_credentials(db, task_id=task.id, repo_id=repo.id) == ("u", "tok")
+
+    # Board opt-in off → no credential.
+    repos_repo.assign_repo(db, board_id=board.id, repo_id=repo.id, allow_push=False)
+    assert resolve_credentials(db, task_id=task.id, repo_id=repo.id) is None
+
+    # Board opt-in back on, but repo master gate off → still no credential.
+    repos_repo.assign_repo(db, board_id=board.id, repo_id=repo.id, allow_push=True)
+    repo.allow_push = False
+    db.commit()
+    assert resolve_credentials(db, task_id=task.id, repo_id=repo.id) is None
+
+
+def test_prepare_task_repos_wires_push_to_host(db, tmp_path, monkeypatch):
+    """Task copy gets origin=canonical for fetch + host remote as pushDefault."""
+    import os
+    import subprocess
+    from pathlib import Path
+
+    from agent_team.features.repos.paths import task_copy_path
+    from agent_team.features.repos.task_copy import prepare_task_repos
+
+    src, repo, task = _prepare_pushable_task(db, tmp_path, monkeypatch, allow_push=True)
+    prepare_task_repos(db, task)
+    copy = task_copy_path(task.workspace_path, repo.slug)
+
+    def _cfg(key: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(copy), "config", key], capture_output=True, text=True
+        ).stdout.strip()
+
+    assert _cfg("remote.pushDefault") == "host"
+    assert _cfg("remote.host.url") == str(src)  # effective URL (auth none = as-is)
+    hook = Path(copy) / ".git" / "hooks" / "pre-push"
+    assert hook.is_file() and os.access(hook, os.X_OK)
+    assert "refs/heads/" in hook.read_text()
+
+
+def test_configure_push_to_host_sets_credential_helper_for_token(db, tmp_path):
+    """Token repos get a credential helper + a 0600 non-secret cred file."""
+    import json
+    import stat as _stat
+    import subprocess
+
+    from agent_team.features.repos import repositories as repos_repo
+    from agent_team.features.repos.schemas import RepoCreate
+    from agent_team.features.repos.task_copy import _configure_push_to_host
+
+    dest = tmp_path / "copy"
+    dest.mkdir()
+    subprocess.run(["git", "init", "-q", str(dest)], check=True)
+
+    board = boards_repo.create_board(
+        db, name="B", description=None, columns=None, owner_id="o"
+    )
+    db.commit()
+    repo = repos_repo.create_repo(
+        db,
+        owner_id="o",
+        payload=RepoCreate(
+            name="KB", git_url="https://x/kb.git", auth_type="token", auth_secret="tok"
+        ),
+    )
+    task = tasks_repo.create_task(
+        db, board_id=board.id, title="T", description=None, status="todo",
+        assignee_id=None, labels=None, priority=None, created_by=None,
+    )
+    db.commit()
+
+    _configure_push_to_host(dest, repo, task)
+
+    helper = subprocess.run(
+        ["git", "-C", str(dest), "config", "credential.helper"],
+        capture_output=True, text=True,
+    ).stdout.strip()
+    assert "git_cred_helper.py" in helper
+    cred = dest / ".git" / "at_cred.json"
+    assert cred.is_file()
+    data = json.loads(cred.read_text())
+    assert data["task_id"] == task.id and data["repo_id"] == repo.id
+    # 0600: not readable/writable by group or other.
+    assert _stat.S_IMODE(cred.stat().st_mode) & 0o077 == 0
+
+
+def test_pre_push_hook_blocks_default_branch():
+    from agent_team.features.repos.task_copy import _pre_push_hook_body
+
+    body = _pre_push_hook_body(["develop"])
+    assert "refs/heads/develop" in body
+    assert "refs/heads/main" in body  # safety-net defaults always included
+    assert "refs/heads/master" in body
+    assert "refusing to push to protected branch" in body
+
+
 def test_repo_schedule_sets_next_pull(db):
     from agent_team.features.repos import repositories as repos_repo
     from agent_team.features.repos.schemas import RepoCreate

@@ -86,10 +86,10 @@ def build_prompt(
 def _render_repos_block(repos: Sequence[dict] | None) -> str:
     """Render the checked-out repos for a CLI agent, or "".
 
-    Unlike the LLM block this does **not** mention the ``git_push`` tool: a direct
-    CLI has no such tool. It runs git itself, but the working copy's ``origin``
-    points at a local mirror, so commits stay local and publishing to the real
-    remote is handled outside this conversation.
+    A direct CLI has no ``git_push`` tool, but its working copy is wired so a
+    plain ``git push`` reaches the **real remote** on the task branch (managed
+    credentials, default branch blocked) for push-enabled repos; non-pushable
+    repos can only be committed locally.
     """
     items = [r for r in (repos or []) if r.get("path")]
     if not items:
@@ -103,12 +103,16 @@ def _render_repos_block(repos: Sequence[dict] | None) -> str:
         "default branch:",
     ]
     has_wiki = False
+    has_push = False
     for repo in items:
         branch = (repo.get("branch") or "").strip()
         suffix = f" (branch `{branch}`)" if branch else ""
         if repo.get("is_wiki"):
             suffix += " — **board wiki** (knowledge base)"
             has_wiki = True
+        if repo.get("can_push"):
+            suffix += " — push enabled"
+            has_push = True
         out.append(f"- `{repo['path']}/`{suffix}")
     out.append("")
     if has_wiki:
@@ -119,10 +123,15 @@ def _render_repos_block(repos: Sequence[dict] | None) -> str:
             "structure and commit it on your task branch."
         )
         out.append("")
-    out.append(
-        "Commits stay in this local clone; publishing to the remote is handled "
-        "outside this chat."
-    )
+    if has_push:
+        out.append(
+            "For repos marked **push enabled**, a plain `git push` publishes your "
+            "task branch to the remote (credentials are managed for you; you can "
+            "only push your task branch, never the default branch). A human reviews "
+            "and merges. Other repos: commits stay in this local clone."
+        )
+    else:
+        out.append("Commits stay in this local clone (no remote push for these repos).")
     return "\n".join(out)
 
 

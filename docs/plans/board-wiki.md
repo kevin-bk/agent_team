@@ -150,6 +150,29 @@ wiki's existing format when it has one). `wiki/service.py` only ships
 - `materialize_wiki_skill` lands `board-wiki/SKILL.md` in `.claude/skills` and
   `.cursor/skills` and returns a manifest row.
 
+## Publishing — both engines reach the host (Cách B)
+
+So a human can review/merge a wiki contribution as a normal PR, the work must
+reach the **real remote**, not the local mirror. The per-task copy is wired in
+`task_copy.prepare_task_repos` so a plain `git push` reaches the host for
+push-enabled repos:
+
+- `origin` stays the local canonical clone (cheap fetches); a `host` remote at
+  the real URL is set as `remote.pushDefault`, so `git push` targets the host.
+- **Token auth:** a bundled git credential helper (`git_cred_helper.py`) fetches
+  the token live from the DB at push time **only if** the repo's `allow_push`
+  master gate AND the board opt-in are on — the secret is never written into the
+  workspace. **SSH auth:** the key is materialised inside `.git` (0600, never
+  committed; ssh has no credential-helper callback).
+- A **pre-push hook** in every copy refuses pushes to the default branch, so any
+  `git push` (CLI or LLM) can only publish the task branch — the local half of
+  the merge gate.
+
+Result: **direct-CLI agents publish with a plain `git push`**; **LLM agents** use
+either plain `git push` or the explicit `git_push` tool. Honest caveat: the helper
+runs inside the workspace, so it raises the bar (token off-disk, gate + branch
+protection preserved) but does not sandbox a determined agent.
+
 ## Edge cases / notes
 
 - No repo marked wiki → zero behaviour change (skill not materialised).
