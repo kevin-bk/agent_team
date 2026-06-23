@@ -174,7 +174,16 @@ def _configure_push_to_host(dest: Path, repo: AgentTeamRepo, task: AgentTeamTask
                 f"!{shlex.quote(sys.executable)} {shlex.quote(str(_CRED_HELPER_PY))} "
                 f"--cred-file {shlex.quote(str(cred_file))}"
             )
-            _run_git("-C", dest_s, "config", "credential.helper", helper)
+            # Make our helper authoritative. Git accumulates credential helpers
+            # across system/global/local config and queries them in order, so an
+            # inherited helper (e.g. macOS ``osxkeychain``) can answer *first* with
+            # a stale/read-only token and shadow ours — that surfaces as a push
+            # 403 even though our DB token has write access. Resetting the list
+            # with an empty value discards inherited helpers for this copy, then we
+            # add ours as the only one.
+            _run_git("-C", dest_s, "config", "--unset-all", "credential.helper")
+            _run_git("-C", dest_s, "config", "credential.helper", "")
+            _run_git("-C", dest_s, "config", "--add", "credential.helper", helper)
         elif repo.auth_type == AUTH_SSH and (repo.auth_secret or "").strip():
             # SSH cannot use a credential helper; the key must be a file. Keep it
             # inside .git (never committed) with 0600 perms.
