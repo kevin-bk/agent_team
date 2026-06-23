@@ -1955,6 +1955,7 @@ function Conversation({
     loadingHistory,
     cliUsage,
     totalTokens,
+    runTiming,
     fatalError,
     send,
     cancel,
@@ -2068,6 +2069,7 @@ function Conversation({
               running={running}
               onOpenFile={onOpenFile}
               agentName={agentName}
+              runTiming={runTiming}
             />
           )}
           {fatalError && (

@@ -1,6 +1,7 @@
 import {
   AlertTriangle,
   Brain,
+  Clock,
   Download,
   FileText,
   GitBranch,
@@ -14,24 +15,77 @@ import { AuthedImage } from "@/components/AuthedImage";
 import { Badge } from "@/components/ui/badge";
 import { Markdown } from "@/components/Markdown";
 import { Spinner } from "@/components/ui/spinner";
-import { formatBytes, formatTokens } from "@/lib/format";
+import {
+  formatBytes,
+  formatDuration,
+  formatTimestamp,
+  formatTokens,
+} from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { TODO_TOOL } from "./plan";
 import { ToolCard } from "./ToolCard";
 import type { Block, Sender, UserAttachment } from "./types";
 import { useSmoothText } from "./useSmoothText";
 
+/** Per-run wall-clock timing, keyed by run id (see ``useTaskAgentRun``). */
+export type RunTimingMap = Record<
+  string,
+  { startedAtMs: number | null; endedAtMs: number | null }
+>;
+
+/** A user message or one agent run, used to bracket a turn with time + duration. */
+interface Turn {
+  key: string;
+  kind: "user" | "agent";
+  runId: string | null;
+  blocks: Block[];
+}
+
+function blockRunId(b: Block): string | null {
+  if (b.kind === "assistant" || b.kind === "thinking" || b.kind === "tool") {
+    return b.runId ?? null;
+  }
+  return null;
+}
+
+/**
+ * Group the flat block list into turns: each user message is its own turn, and
+ * a contiguous run of agent blocks (assistant / thinking / tool / subagent…)
+ * collapses into one agent turn so we can show a single start time and a single
+ * duration around it.
+ */
+function groupTurns(blocks: Block[]): Turn[] {
+  const turns: Turn[] = [];
+  for (const b of blocks) {
+    if (b.kind === "user") {
+      turns.push({ key: b.id, kind: "user", runId: null, blocks: [b] });
+      continue;
+    }
+    const prev = turns[turns.length - 1];
+    if (prev && prev.kind === "agent") {
+      prev.blocks.push(b);
+      if (prev.runId === null) prev.runId = blockRunId(b);
+    } else {
+      turns.push({ key: b.id, kind: "agent", runId: blockRunId(b), blocks: [b] });
+    }
+  }
+  return turns;
+}
+
 export function Timeline({
   blocks,
   running,
   onOpenFile,
   agentName,
+  runTiming,
 }: {
   blocks: Block[];
   running: boolean;
   onOpenFile?: (path: string) => void;
   /** Display name shown above assistant messages (defaults to "deep-agent"). */
   agentName?: string;
+  /** Per-run timing, used to show how long each agent turn took. */
+  runTiming?: RunTimingMap;
 }) {
   const endRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -44,23 +98,67 @@ export function Timeline({
   const streamingText =
     running && lastBlock?.kind === "assistant" && lastBlock.text.trim().length > 0;
 
+  const turns = useMemo(() => groupTurns(blocks), [blocks]);
+
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 px-4 py-6">
-      {blocks.map((b) => (
-        <BlockView
-          key={b.id}
-          block={b}
-          onOpenFile={onOpenFile}
-          streaming={streamingText && b.id === lastBlock.id}
-          agentName={agentName}
-        />
-      ))}
+      {turns.map((turn) => {
+        const startedAtMs = turn.blocks[0]?.createdAtMs;
+        const timing = turn.runId ? runTiming?.[turn.runId] : undefined;
+        const durationMs =
+          timing?.startedAtMs && timing?.endedAtMs
+            ? timing.endedAtMs - timing.startedAtMs
+            : null;
+        return (
+          <div key={turn.key} className="flex flex-col gap-4">
+            {startedAtMs ? (
+              <TurnTimestamp ms={startedAtMs} align={turn.kind} />
+            ) : null}
+            {turn.blocks.map((b) => (
+              <BlockView
+                key={b.id}
+                block={b}
+                onOpenFile={onOpenFile}
+                streaming={streamingText && b.id === lastBlock.id}
+                agentName={agentName}
+              />
+            ))}
+            {turn.kind === "agent" && durationMs != null ? (
+              <TurnDuration ms={durationMs} />
+            ) : null}
+          </div>
+        );
+      })}
       {running && !streamingText && (
         <div className="flex items-center gap-2 pl-11 text-sm text-muted-foreground">
           <Spinner /> thinking…
         </div>
       )}
       <div ref={endRef} />
+    </div>
+  );
+}
+
+/** Subtle send-time shown at the start of a turn (right for user, left for agent). */
+function TurnTimestamp({ ms, align }: { ms: number; align: "user" | "agent" }) {
+  return (
+    <div
+      className={cn(
+        "text-[11px] text-muted-foreground/80",
+        align === "user" ? "text-right" : "pl-11",
+      )}
+    >
+      {formatTimestamp(ms)}
+    </div>
+  );
+}
+
+/** "Completed in 1m 23s" footer at the end of an agent turn. */
+function TurnDuration({ ms }: { ms: number }) {
+  return (
+    <div className="flex items-center gap-1 pl-11 text-[11px] text-muted-foreground/80">
+      <Clock className="h-3 w-3 shrink-0" />
+      <span>Completed in {formatDuration(ms)}</span>
     </div>
   );
 }

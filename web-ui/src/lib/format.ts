@@ -34,6 +34,24 @@ export function formatBytes(n: number | null | undefined): string {
   return `${v.toFixed(v < 10 && i > 0 ? 1 : 0)} ${units[i]}`;
 }
 
+/** Compact message timestamp, e.g. "Jun 23, 14:05" (omits year when current). */
+export function formatTimestamp(ms: number | null | undefined): string {
+  if (!ms) return "";
+  try {
+    const d = new Date(ms);
+    const sameYear = d.getFullYear() === new Date().getFullYear();
+    return d.toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      year: sameYear ? undefined : "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return "";
+  }
+}
+
 export function formatDuration(ms: number | null | undefined): string {
   if (!ms || ms < 0) return "";
   if (ms < 1000) return `${ms}ms`;

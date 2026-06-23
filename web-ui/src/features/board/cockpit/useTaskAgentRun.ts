@@ -46,6 +46,29 @@ function persistedUsageFromRuns(runs: TaskRunDTO[]): PersistedUsage {
   return { gauge, total };
 }
 
+/** Per-run wall-clock timing, keyed by run id, for the turn-duration footer. */
+export interface RunTiming {
+  /** When the run was created — i.e. when the user sent the message (epoch ms). */
+  startedAtMs: number | null;
+  /** When the run finished (epoch ms), or null while still running. */
+  endedAtMs: number | null;
+}
+
+export type RunTimingMap = Record<string, RunTiming>;
+
+function runTimingFromRuns(runs: TaskRunDTO[]): RunTimingMap {
+  const map: RunTimingMap = {};
+  for (const run of runs) {
+    const start = run.created_at ? Date.parse(run.created_at) : NaN;
+    const end = run.ended_at ? Date.parse(run.ended_at) : NaN;
+    map[run.id] = {
+      startedAtMs: Number.isFinite(start) ? start : null,
+      endedAtMs: Number.isFinite(end) ? end : null,
+    };
+  }
+  return map;
+}
+
 /**
  * Drives one (task × agent) conversation thread in the cockpit.
  *
@@ -65,6 +88,7 @@ export function useTaskAgentRun(
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [persistedUsage, setPersistedUsage] =
     useState<PersistedUsage>(NO_PERSISTED_USAGE);
+  const [runTiming, setRunTiming] = useState<RunTimingMap>({});
   const abortRef = useRef<(() => void) | null>(null);
   const runIdRef = useRef<string | null>(null);
 
@@ -104,6 +128,7 @@ export function useTaskAgentRun(
             try {
               const runs = await client.listTaskRuns(taskId, agentId);
               setPersistedUsage(persistedUsageFromRuns(runs));
+              setRunTiming(runTimingFromRuns(runs));
             } catch {
               /* keep whatever was already shown */
             }
@@ -122,6 +147,7 @@ export function useTaskAgentRun(
     runIdRef.current = null;
     dispatch({ type: "reset", blocks: [] });
     setPersistedUsage(NO_PERSISTED_USAGE);
+    setRunTiming({});
     if (!taskId || !agentId) {
       setLoadingHistory(false);
       return;
@@ -136,7 +162,10 @@ export function useTaskAgentRun(
           (r) => r.status === "running" || r.status === "queued",
         );
         activeRunId = active?.id ?? null;
-        if (!cancelled) setPersistedUsage(persistedUsageFromRuns(runs));
+        if (!cancelled) {
+          setPersistedUsage(persistedUsageFromRuns(runs));
+          setRunTiming(runTimingFromRuns(runs));
+        }
       } catch {
         /* no runs yet */
       }
@@ -244,6 +273,8 @@ export function useTaskAgentRun(
     cliUsage: state.cliUsage ?? persistedUsage.gauge,
     // Cumulative conversation total (from the latest finished run).
     totalTokens: persistedUsage.total,
+    // Per-run wall-clock timing for the turn-duration footer.
+    runTiming,
     fatalError: state.fatalError,
     send,
     cancel,

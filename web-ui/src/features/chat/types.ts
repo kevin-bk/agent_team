@@ -25,6 +25,8 @@ export interface UserBlock {
   text: string;
   attachments?: UserAttachment[];
   sender?: Sender;
+  /** When the message was sent (epoch ms); shown at the start of the message. */
+  createdAtMs?: number;
 }
 export interface AssistantBlock {
   kind: "assistant";
@@ -32,12 +34,14 @@ export interface AssistantBlock {
   runId: string;
   text: string;
   open: boolean;
+  createdAtMs?: number;
 }
 export interface ThinkingBlock {
   kind: "thinking";
   id: string;
   runId: string;
   text: string;
+  createdAtMs?: number;
 }
 export interface ToolBlock {
   kind: "tool";
@@ -53,6 +57,7 @@ export interface ToolBlock {
   /** True when the result is longer than the inline preview (offer "show more"). */
   truncated?: boolean;
   durationMs?: number;
+  createdAtMs?: number;
 }
 export interface SubagentBlock {
   kind: "subagent";
@@ -64,6 +69,7 @@ export interface SubagentBlock {
   lastTool?: string;
   tokens?: number;
   error?: string;
+  createdAtMs?: number;
 }
 export interface AttachmentBlock {
   kind: "attachment";
@@ -72,12 +78,14 @@ export interface AttachmentBlock {
   caption: string;
   url: string;
   size: number;
+  createdAtMs?: number;
 }
 export interface NoticeBlock {
   kind: "notice";
   id: string;
   variant: "compaction" | "steer" | "error" | "info";
   text: string;
+  createdAtMs?: number;
 }
 
 export type Block =

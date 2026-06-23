@@ -64,7 +64,13 @@ export function blocksFromHistory(
 
   const pushText = (m: MessageDTO, text: string) => {
     if (m.role === "user") {
-      out.push({ kind: "user", id: nid("u"), text, sender: senderFrom(m) });
+      out.push({
+        kind: "user",
+        id: nid("u"),
+        text,
+        sender: senderFrom(m),
+        createdAtMs: m.created_at_ms,
+      });
     } else {
       out.push({
         kind: "assistant",
@@ -72,6 +78,7 @@ export function blocksFromHistory(
         runId: m.run_id ?? "history",
         text,
         open: false,
+        createdAtMs: m.created_at_ms,
       });
     }
   };
@@ -109,6 +116,7 @@ export function blocksFromHistory(
             id: nid("t"),
             runId: m.run_id ?? "history",
             text: t,
+            createdAtMs: m.created_at_ms,
           });
         }
       } else if (type === "tool_use") {
@@ -122,6 +130,7 @@ export function blocksFromHistory(
           input: (block.input as Record<string, unknown>) ?? {},
           status: "success",
           progress: "",
+          createdAtMs: m.created_at_ms,
         });
         toolIdx.set(toolId, out.length - 1);
       } else if (type === "tool_result") {
@@ -161,7 +170,13 @@ function userBlockFromContent(
   if (content.length === 0) {
     const t = m.text?.trim();
     if (!t) return null;
-    return { kind: "user", id: nid("u"), text: t, sender: senderFrom(m) };
+    return {
+      kind: "user",
+      id: nid("u"),
+      text: t,
+      sender: senderFrom(m),
+      createdAtMs: m.created_at_ms,
+    };
   }
 
   for (const block of content) {
@@ -197,6 +212,7 @@ function userBlockFromContent(
     text: texts.join("\n"),
     attachments: attachments.length ? attachments : undefined,
     sender: senderFrom(m),
+    createdAtMs: m.created_at_ms,
   };
 }
 
@@ -234,6 +250,7 @@ export function runReducer(state: RunState, action: Action): RunState {
             id: nid("u"),
             text: action.text,
             attachments: action.attachments,
+            createdAtMs: Date.now(),
           },
         ],
       };
@@ -271,6 +288,7 @@ function applyEvent(state: RunState, ev: AgentEvent): RunState {
           runId: ev.run_id,
           text: ev.text,
           open: true,
+          createdAtMs: Date.now(),
         });
       }
       return { ...state, blocks };
@@ -286,6 +304,7 @@ function applyEvent(state: RunState, ev: AgentEvent): RunState {
           id: nid("t"),
           runId: ev.run_id,
           text: ev.thinking,
+          createdAtMs: Date.now(),
         });
       }
       return { ...state, blocks };
@@ -303,6 +322,7 @@ function applyEvent(state: RunState, ev: AgentEvent): RunState {
         input: ev.input ?? {},
         status: "running",
         progress: "",
+        createdAtMs: Date.now(),
       });
       return { ...state, blocks: closed };
     }
@@ -349,6 +369,7 @@ function applyEvent(state: RunState, ev: AgentEvent): RunState {
         agentType: ev.agent_type || ev.profile_name,
         description: ev.description,
         status: "running",
+        createdAtMs: Date.now(),
       });
       return { ...state, blocks };
     }
