@@ -2411,7 +2411,7 @@ def test_resolve_push_credentials_respects_allow_push(db):
 
 
 def test_prepare_task_repos_wires_push_to_host(db, tmp_path, monkeypatch):
-    """Task copy gets origin=canonical for fetch + host remote as pushDefault."""
+    """Task copy has a single origin remote pointed at the real host."""
     import os
     import subprocess
     from pathlib import Path
@@ -2423,13 +2423,14 @@ def test_prepare_task_repos_wires_push_to_host(db, tmp_path, monkeypatch):
     prepare_task_repos(db, task)
     copy = task_copy_path(task.workspace_path, repo.slug)
 
-    def _cfg(key: str) -> str:
+    def _run(*args: str) -> str:
         return subprocess.run(
-            ["git", "-C", str(copy), "config", key], capture_output=True, text=True
+            ["git", "-C", str(copy), *args], capture_output=True, text=True
         ).stdout.strip()
 
-    assert _cfg("remote.pushDefault") == "host"
-    assert _cfg("remote.host.url") == str(src)  # effective URL (auth none = as-is)
+    # One remote only: origin → the real host (effective URL; auth none = as-is).
+    assert _run("remote") == "origin"
+    assert _run("config", "remote.origin.url") == str(src)
     hook = Path(copy) / ".git" / "hooks" / "pre-push"
     assert hook.is_file() and os.access(hook, os.X_OK)
     assert "refs/heads/" in hook.read_text()

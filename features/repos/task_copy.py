@@ -32,10 +32,10 @@ logger = logging.getLogger(__name__)
 
 _GIT_TIMEOUT = 300.0
 
-#: Name of the per-task-copy remote that points at the **real** git host (origin
-#: stays the local canonical clone for cheap fetches). ``remote.pushDefault`` is
-#: set to this so a plain ``git push`` reaches the host, not the local mirror.
-_HOST_REMOTE = "host"
+#: Legacy remote name from an earlier two-remote layout (origin=local mirror +
+#: host=real remote). We now point ``origin`` straight at the real host, so this
+#: is only removed for cleanup on copies created by the old code.
+_LEGACY_HOST_REMOTE = "host"
 
 #: Fallback commit identity when a repo configures none.
 _DEFAULT_COMMITTER_NAME = "Agent Team"
@@ -136,14 +136,15 @@ def _install_pre_push_hook(dest: Path, protected: list[str]) -> None:
 
 
 def _configure_push_to_host(dest: Path, repo: AgentTeamRepo, task: AgentTeamTask) -> None:
-    """Point the copy's push at the real remote with on-demand credentials.
+    """Point the copy's single ``origin`` remote straight at the real host.
 
-    Keeps ``origin`` as the local canonical clone (cheap fetches) and adds a
-    ``host`` remote at the real URL set as ``remote.pushDefault`` so a plain
-    ``git push`` lands on the host. For token auth the secret is fetched live by
-    the bundled credential helper (never stored in the workspace); for SSH a key
-    file is materialised in ``.git`` (kept out of the work tree). Best-effort:
-    failures only mean push falls back to the (gated) ``git_push`` tool.
+    The copy is created with ``git clone --local`` (cheap, hardlinked objects);
+    we then repoint ``origin`` to the real remote URL so there is **one** remote
+    and a plain ``git push`` reaches the host (not a local mirror). For token auth
+    the secret is fetched live by the bundled credential helper (never stored in
+    the workspace); for SSH a key file is materialised in ``.git`` (kept out of
+    the work tree). Best-effort: failures only mean push falls back to the
+    (gated) ``git_push`` tool.
     """
     from agent_team.features.repos import git_service
 
@@ -152,13 +153,14 @@ def _configure_push_to_host(dest: Path, repo: AgentTeamRepo, task: AgentTeamTask
         url = git_service._effective_url(repo)
         if not url:
             return
-        _run_git("-C", dest_s, "remote", "remove", _HOST_REMOTE)  # idempotent (ignore error)
-        code, _out, err = _run_git("-C", dest_s, "remote", "add", _HOST_REMOTE, url)
+        # One remote only: origin → real host. ``set-url`` if origin exists (it
+        # does after ``clone``), else add it.
+        code, _out, _err = _run_git("-C", dest_s, "remote", "set-url", "origin", url)
         if code != 0:
-            logger.warning("task %s: add host remote for %s failed: %s",
-                           task.human_key, repo.slug, err[:200])
-            return
-        _run_git("-C", dest_s, "config", "remote.pushDefault", _HOST_REMOTE)
+            _run_git("-C", dest_s, "remote", "add", "origin", url)
+        # Tidy up the legacy two-remote layout (origin=local mirror + host).
+        _run_git("-C", dest_s, "remote", "remove", _LEGACY_HOST_REMOTE)
+        _run_git("-C", dest_s, "config", "--unset", "remote.pushDefault")
         _run_git("-C", dest_s, "config", "push.autoSetupRemote", "true")
 
         git_dir = dest / ".git"

@@ -153,12 +153,12 @@ wiki's existing format when it has one). `wiki/service.py` only ships
 ## Publishing — both engines reach the host (Cách B)
 
 So a human can review/merge a wiki contribution as a normal PR, the work must
-reach the **real remote**, not the local mirror. The per-task copy is wired in
-`task_copy.prepare_task_repos` so a plain `git push` reaches the host for
-push-enabled repos:
+reach the **real remote**, not a local mirror. The per-task copy is wired in
+`task_copy.prepare_task_repos` so a plain `git push` reaches the host:
 
-- `origin` stays the local canonical clone (cheap fetches); a `host` remote at
-  the real URL is set as `remote.pushDefault`, so `git push` targets the host.
+- The copy is created with `git clone --local` (cheap, hardlinked objects), then
+  its **single `origin` remote is repointed at the real host URL** — so there is
+  one remote and `git push` goes straight to the host.
 - **Token auth:** a bundled git credential helper (`git_cred_helper.py`) fetches
   the token live from the DB at push time **only if** the repo's `allow_push`
   master gate AND the board opt-in are on — the secret is never written into the

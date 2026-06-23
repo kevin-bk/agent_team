@@ -1,13 +1,13 @@
 """Agent tool: push a board repo's task working copy to its real remote.
 
 An agent works in a per-task copy of each board repo (``<workspace>/<slug>``)
-created with ``git clone --local``; that copy's ``origin`` points at the local
-canonical clone. ``git_push`` lets an LLM agent publish explicitly *through the
+created with ``git clone --local`` (its ``origin`` is then repointed at the real
+host). ``git_push`` lets an LLM agent publish explicitly *through the
 trusted backend*: it resolves the repo from the task, checks the admin's per-repo
 ``allow_push`` policy, and pushes using the stored credential — which the agent
-never sees. (Direct-CLI agents instead use a plain ``git push``: the copy is also
-wired with a ``host`` remote + credential helper that enforces the same policy;
-see ``task_copy``.)
+never sees. (Direct-CLI agents instead use a plain ``git push``: the copy's
+``origin`` is repointed at the real host and a credential helper enforces the same
+policy; see ``task_copy``.)
 
 Contributed via the plugin's ``tool_factories()`` so it only exists while the
 ``agent_team`` plugin is enabled. The workspace root is bound at graph-build time
