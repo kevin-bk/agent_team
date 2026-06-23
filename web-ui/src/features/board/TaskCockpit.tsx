@@ -1875,6 +1875,62 @@ function ConversationIdBadge({ convId }: { convId: string }) {
   );
 }
 
+/** Parse a CLI gauge string like "45,000/200,000 tokens" into numbers. */
+function parseCliGauge(text: string | null): { used: number; size: number } | null {
+  if (!text) return null;
+  const m = /([\d,]+)\s*\/\s*([\d,]+)/.exec(text);
+  if (!m) return null;
+  const used = Number(m[1].replace(/,/g, ""));
+  const size = Number(m[2].replace(/,/g, ""));
+  if (!Number.isFinite(used) || used <= 0) return null;
+  return { used, size: Number.isFinite(size) ? size : 0 };
+}
+
+/**
+ * Direct-CLI token readout shown above the thread.
+ *
+ * Engines disagree on what the gauge means: Cursor/Codex report ``used`` as the
+ * current context occupancy (``used <= size``), while Claude reports it as a
+ * cumulative session total that can exceed the window. So we only render the
+ * ``used/size`` meter when it really is an occupancy gauge, and otherwise show a
+ * single "Total" figure — avoiding a confusing "225k/200k" readout.
+ */
+function CliUsageBar({
+  cliUsage,
+  totalTokens,
+}: {
+  cliUsage: string | null;
+  totalTokens: number | null;
+}) {
+  const gauge = parseCliGauge(cliUsage);
+  const showMeter = gauge !== null && gauge.size > 0 && gauge.used <= gauge.size;
+  const total = totalTokens ?? gauge?.used ?? null;
+  // Skip a redundant "Total" when the meter already shows the same number.
+  const showTotal =
+    total !== null && total > 0 && !(showMeter && gauge?.used === total);
+  if (!showMeter && !showTotal) return null;
+  return (
+    <div className="flex items-center gap-1.5 border-b border-border bg-surface-1/40 px-3 py-1 text-[11px] text-muted-foreground">
+      <TerminalSquare className="h-3 w-3 shrink-0" />
+      {showMeter && gauge && (
+        <>
+          <span className="font-medium">Context</span>
+          <span className="font-mono">
+            {gauge.used.toLocaleString()}/{gauge.size.toLocaleString()} tokens
+          </span>
+        </>
+      )}
+      {showTotal && total !== null && (
+        <>
+          {showMeter && <span className="opacity-40">·</span>}
+          <span className="font-medium">Total</span>
+          <span className="font-mono">{total.toLocaleString()} tokens</span>
+        </>
+      )}
+    </div>
+  );
+}
+
 function Conversation({
   taskId,
   agentId,
@@ -1951,26 +2007,7 @@ function Conversation({
 
   return (
     <>
-      {(cliUsage || totalTokens) && (
-        <div className="flex items-center gap-1.5 border-b border-border bg-surface-1/40 px-3 py-1 text-[11px] text-muted-foreground">
-          <TerminalSquare className="h-3 w-3 shrink-0" />
-          {cliUsage && (
-            <>
-              <span className="font-medium">Context</span>
-              <span className="font-mono">{cliUsage}</span>
-            </>
-          )}
-          {totalTokens ? (
-            <>
-              {cliUsage && <span className="opacity-40">·</span>}
-              <span className="font-medium">Total</span>
-              <span className="font-mono">
-                {totalTokens.toLocaleString()} tokens
-              </span>
-            </>
-          ) : null}
-        </div>
-      )}
+      <CliUsageBar cliUsage={cliUsage} totalTokens={totalTokens} />
       {changedCount > 0 && (
         <div className="flex items-center gap-1 border-b border-border px-3 py-1.5">
           <ViewToggle
