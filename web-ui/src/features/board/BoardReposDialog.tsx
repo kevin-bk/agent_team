@@ -72,7 +72,7 @@ export function BoardReposDialog({
 
   return (
     <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="max-w-xl">
         <DialogHeader>
           <DialogTitle>Board repositories</DialogTitle>
         </DialogHeader>
@@ -94,52 +94,60 @@ export function BoardReposDialog({
                   <Empty>No repositories assigned yet.</Empty>
                 ) : (
                   assigned.map(({ repo, branch_override, allow_push, is_wiki }) => (
-                    <Row key={repo.id}>
-                      <RepoLabel name={repo.name} url={repo.git_url} branch={branch_override || repo.default_branch} />
-                      <label
-                        className="flex shrink-0 items-center gap-1.5 text-[12px] text-muted-foreground"
-                        title="Use this repo as the board's wiki (knowledge base)"
-                      >
-                        <input
-                          type="checkbox"
-                          className="h-3.5 w-3.5 accent-[var(--primary)]"
-                          checked={is_wiki}
+                    <div
+                      key={repo.id}
+                      className="grid gap-1.5 rounded border border-border bg-surface-1 px-2.5 py-1.5"
+                    >
+                      <div className="flex items-center gap-2">
+                        <RepoLabel name={repo.name} url={repo.git_url} branch={branch_override || repo.default_branch} />
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="shrink-0"
                           disabled={busy}
-                          onChange={(e) =>
-                            doSetWiki(repo.id, branch_override, e.target.checked)
+                          onClick={() => doUnassign(repo.id)}
+                          title="Remove from board"
+                        >
+                          <X />
+                        </Button>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 pl-6 text-[12px] text-muted-foreground">
+                        <label
+                          className="flex items-center gap-1.5"
+                          title="Use this repo as the board's wiki (knowledge base)"
+                        >
+                          <input
+                            type="checkbox"
+                            className="h-3.5 w-3.5 accent-[var(--primary)]"
+                            checked={is_wiki}
+                            disabled={busy}
+                            onChange={(e) =>
+                              doSetWiki(repo.id, branch_override, e.target.checked)
+                            }
+                          />
+                          Wiki
+                        </label>
+                        <label
+                          className="flex items-center gap-1.5"
+                          title={
+                            repo.allow_push
+                              ? "Allow agents on this board to push this repo"
+                              : "Enable push for this repo in its settings first"
                           }
-                        />
-                        Wiki
-                      </label>
-                      <label
-                        className="flex shrink-0 items-center gap-1.5 text-[12px] text-muted-foreground"
-                        title={
-                          repo.allow_push
-                            ? "Allow agents on this board to push this repo"
-                            : "Enable push for this repo in its settings first"
-                        }
-                      >
-                        <input
-                          type="checkbox"
-                          className="h-3.5 w-3.5 accent-[var(--primary)]"
-                          checked={allow_push && repo.allow_push}
-                          disabled={busy || !repo.allow_push}
-                          onChange={(e) =>
-                            doSetPush(repo.id, branch_override, e.target.checked)
-                          }
-                        />
-                        Allow push
-                      </label>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        disabled={busy}
-                        onClick={() => doUnassign(repo.id)}
-                        title="Remove from board"
-                      >
-                        <X />
-                      </Button>
-                    </Row>
+                        >
+                          <input
+                            type="checkbox"
+                            className="h-3.5 w-3.5 accent-[var(--primary)]"
+                            checked={allow_push && repo.allow_push}
+                            disabled={busy || !repo.allow_push}
+                            onChange={(e) =>
+                              doSetPush(repo.id, branch_override, e.target.checked)
+                            }
+                          />
+                          Allow push
+                        </label>
+                      </div>
+                    </div>
                   ))
                 )}
               </Section>
