@@ -11,7 +11,40 @@ import {
   runReducer,
 } from "@/features/chat/reducer";
 import type { UserAttachment } from "@/features/chat/types";
+import type { TaskRunDTO } from "@/api/types";
 import { useBoardEventListener } from "../BoardEventsContext";
+
+/** Persisted CLI usage restored from the latest finished run (survives reload). */
+interface PersistedUsage {
+  /** Context-window gauge text, e.g. "45,000/200,000 tokens". */
+  gauge: string | null;
+  /** Cumulative total tokens for the conversation (latest run's value). */
+  total: number | null;
+}
+
+const NO_PERSISTED_USAGE: PersistedUsage = { gauge: null, total: null };
+
+/**
+ * Pick the conversation's usage readout from its runs (newest first).
+ *
+ * Direct CLI token totals are *cumulative across the session*, so the latest
+ * run already holds the whole-conversation total — we take it rather than
+ * summing. The gauge string and total may come from different runs (a later
+ * run might lack one), so each is resolved independently.
+ */
+function persistedUsageFromRuns(runs: TaskRunDTO[]): PersistedUsage {
+  let gauge: string | null = null;
+  let total: number | null = null;
+  for (const run of runs) {
+    if (gauge === null && run.cli_usage_text) gauge = run.cli_usage_text;
+    if (total === null) {
+      const t = run.total_tokens ?? run.tokens ?? 0;
+      if (t > 0) total = t;
+    }
+    if (gauge !== null && total !== null) break;
+  }
+  return { gauge, total };
+}
 
 /**
  * Drives one (task × agent) conversation thread in the cockpit.
@@ -30,6 +63,8 @@ export function useTaskAgentRun(
   const qc = useQueryClient();
   const [state, dispatch] = useReducer(runReducer, initialRunState);
   const [loadingHistory, setLoadingHistory] = useState(false);
+  const [persistedUsage, setPersistedUsage] =
+    useState<PersistedUsage>(NO_PERSISTED_USAGE);
   const abortRef = useRef<(() => void) | null>(null);
   const runIdRef = useRef<string | null>(null);
 
@@ -63,6 +98,16 @@ export function useTaskAgentRun(
               /* keep the live blocks if the reload fails */
             }
           })();
+          // Restore the CLI usage readout from the now-finalised run so the
+          // header keeps showing tokens after the live ``cliUsage`` is cleared.
+          void (async () => {
+            try {
+              const runs = await client.listTaskRuns(taskId, agentId);
+              setPersistedUsage(persistedUsageFromRuns(runs));
+            } catch {
+              /* keep whatever was already shown */
+            }
+          })();
         }
       },
     }),
@@ -76,6 +121,7 @@ export function useTaskAgentRun(
     abortRef.current = null;
     runIdRef.current = null;
     dispatch({ type: "reset", blocks: [] });
+    setPersistedUsage(NO_PERSISTED_USAGE);
     if (!taskId || !agentId) {
       setLoadingHistory(false);
       return;
@@ -90,6 +136,7 @@ export function useTaskAgentRun(
           (r) => r.status === "running" || r.status === "queued",
         );
         activeRunId = active?.id ?? null;
+        if (!cancelled) setPersistedUsage(persistedUsageFromRuns(runs));
       } catch {
         /* no runs yet */
       }
@@ -193,7 +240,10 @@ export function useTaskAgentRun(
     running: state.running,
     loadingHistory,
     usage: state.usage,
-    cliUsage: state.cliUsage,
+    // Live gauge while streaming; otherwise the value persisted on the last run.
+    cliUsage: state.cliUsage ?? persistedUsage.gauge,
+    // Cumulative conversation total (from the latest finished run).
+    totalTokens: persistedUsage.total,
     fatalError: state.fatalError,
     send,
     cancel,

@@ -100,6 +100,9 @@ class LocalRunBackend:
         usage = {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0}
         final_text = ""
         cancelled = False
+        #: Direct-CLI context-window gauge text (e.g. "45,000/200,000 tokens"),
+        #: persisted so the cockpit can show it after the run ends.
+        cli_usage_text: str | None = None
 
         await asyncio.to_thread(event_store.mark_running, run_id)
         await asyncio.to_thread(
@@ -109,13 +112,14 @@ class LocalRunBackend:
             # A ``cli:<engine>`` alias talks straight to a coding CLI over ACP;
             # any other alias is a regular agent driven through its graph.
             if is_direct_cli_alias(agent_alias):
-                final_text, cancelled = await self._run_direct_cli(
+                final_text, cancelled, cli_usage_text = await self._run_direct_cli(
                     run_id,
                     handle,
                     agent_alias=agent_alias,
                     prompt=input_text,
                     workspace_path=workspace_path,
                     thread_id=thread_id,
+                    usage=usage,
                 )
             else:
                 final_text, cancelled = await self._run_graph(
@@ -129,13 +133,15 @@ class LocalRunBackend:
                 )
 
             if cancelled:
-                await self._finish_cancelled(run_id, thread_id, final_text, usage)
+                await self._finish_cancelled(
+                    run_id, thread_id, final_text, usage, cli_usage_text
+                )
                 await _log_run_finished(
                     task_id, actor_id, run_id, RUN_CANCELLED,
                     board_id=board_id, agent_alias=agent_alias,
                 )
             else:
-                await self._finish_done(run_id, final_text, usage)
+                await self._finish_done(run_id, final_text, usage, cli_usage_text)
                 await _log_run_finished(
                     task_id, actor_id, run_id, RUN_DONE,
                     board_id=board_id, agent_alias=agent_alias,
@@ -143,7 +149,9 @@ class LocalRunBackend:
 
         except asyncio.CancelledError:
             usage["total_tokens"] = usage["input_tokens"] + usage["output_tokens"]
-            await self._finish_cancelled(run_id, thread_id, final_text, usage)
+            await self._finish_cancelled(
+                run_id, thread_id, final_text, usage, cli_usage_text
+            )
             await _log_run_finished(
                 task_id, actor_id, run_id, RUN_CANCELLED,
                 board_id=board_id, agent_alias=agent_alias,
@@ -249,13 +257,17 @@ class LocalRunBackend:
         prompt: str,
         workspace_path: str,
         thread_id: str,
-    ) -> tuple[str, bool]:
-        """Drive a direct CLI conversation over ACP; returns ``(final_text, cancelled)``.
+        usage: dict,
+    ) -> tuple[str, bool, str | None]:
+        """Drive a direct CLI conversation over ACP.
 
-        Streams the coding agent's progress as ``AgentEvent`` frames and persists
-        each one exactly like a graph run. Token usage stays zero — there is no
-        LLM in this path. A cross-process cancel request flips the in-memory
-        cancel event, which the ACP stream observes and acts on.
+        Returns ``(final_text, cancelled, cli_usage_text)``. Streams the coding
+        agent's progress as ``AgentEvent`` frames and persists each one exactly
+        like a graph run. Token totals come from ACP's ``PromptResponse.usage``
+        (authoritative, cumulative across the session) when the engine reports
+        it, else a best-effort fallback to the context-window gauge; both are
+        copied into ``usage`` in place. A cross-process cancel request flips the
+        in-memory cancel event, which the ACP stream observes and acts on.
         """
         run = DirectCliRun(
             engine=engine_for_alias(agent_alias),
@@ -273,9 +285,16 @@ class LocalRunBackend:
             data = await _persist_tool_output(run_id, event_type, data)
             await asyncio.to_thread(event_store.append_event, run_id, event_type, data)
         cancelled = run.cancelled or handle.cancel_event.is_set()
-        return run.final_text, cancelled
+        usage.update(run.usage)
+        return run.final_text, cancelled, run.cli_usage_text
 
-    async def _finish_done(self, run_id: str, final_text: str, usage: dict) -> None:
+    async def _finish_done(
+        self,
+        run_id: str,
+        final_text: str,
+        usage: dict,
+        cli_usage_text: str | None = None,
+    ) -> None:
         if final_text:
             await asyncio.to_thread(
                 event_store.append_event, run_id, *ev.final_answer(final_text)
@@ -291,10 +310,16 @@ class LocalRunBackend:
             status=RUN_DONE,
             final_answer=final_text or None,
             usage=usage,
+            cli_usage_text=cli_usage_text,
         )
 
     async def _finish_cancelled(
-        self, run_id: str, thread_id: str, final_text: str, usage: dict
+        self,
+        run_id: str,
+        thread_id: str,
+        final_text: str,
+        usage: dict,
+        cli_usage_text: str | None = None,
     ) -> None:
         await asyncio.to_thread(
             event_store.append_event,
@@ -307,6 +332,7 @@ class LocalRunBackend:
             status=RUN_CANCELLED,
             final_answer=final_text or None,
             usage=usage,
+            cli_usage_text=cli_usage_text,
         )
         await _cancel_ai_coding(thread_id)
 

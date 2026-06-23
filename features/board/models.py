@@ -338,6 +338,10 @@ class AgentTeamRun(Base):
     output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     total_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     cache_read_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: Direct-CLI context-window gauge text (e.g. "45,000/200,000 tokens"),
+    #: captured at the end of the run so the cockpit can display it after the
+    #: live stream ends. Null for non-CLI runs (or CLI runs with no gauge).
+    cli_usage_text: Mapped[str | None] = mapped_column(String(255), nullable=True)
     cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
     cancel_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     #: Highest event ``seq`` persisted so far (the SSE resume cursor).

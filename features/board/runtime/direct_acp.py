@@ -44,6 +44,7 @@ _KEY_PLAN = "claude_acp_plan"
 _KEY_TOOL_START = "claude_acp_tool_start"
 _KEY_TOOL_PROGRESS = "claude_acp_tool_progress"
 _KEY_USAGE = "claude_acp_usage"
+_KEY_USAGE_FINAL = "claude_acp_usage_final"
 
 #: ACP tool-call statuses that close a tool card.
 _TERMINAL_TOOL_STATUSES = frozenset({"completed", "failed"})
@@ -74,6 +75,45 @@ _ENGINES: dict[str, _EngineSpec] = {
     "cursor": _EngineSpec("cursor", "Cursor", "cursor-agent", "acp"),
     "codex": _EngineSpec("codex", "Codex", "npx", "-y @zed-industries/codex-acp"),
 }
+
+
+def _parse_usage_totals(value: str) -> dict[str, int] | None:
+    """Decode ``input\\x00output\\x00total\\x00cache_read`` into a usage dict."""
+    parts = value.split("\x00")
+    try:
+        nums = [int(p) for p in parts[:4]]
+    except (TypeError, ValueError):
+        return None
+    nums += [0] * (4 - len(nums))
+    inp, out, total, cache = nums[0], nums[1], nums[2], nums[3]
+    if total <= 0:
+        total = inp + out
+    return {
+        "input_tokens": inp,
+        "output_tokens": out,
+        "total_tokens": total,
+        "cache_read_tokens": cache,
+    }
+
+
+def _parse_gauge_tokens(text: str | None) -> tuple[int, int]:
+    """Best-effort ``(used, size)`` from a gauge like ``"45,000/200,000 tokens"``.
+
+    Used as a fallback when the engine does not report ``PromptResponse.usage``:
+    ``used`` is the conversation's current context occupancy, the closest proxy
+    we have for "tokens used so far". Returns ``(0, 0)`` when unparseable.
+    """
+    if not text:
+        return 0, 0
+    head = text.split("tokens", 1)[0]
+    head = head.replace(",", "").strip()
+    if "/" not in head:
+        return 0, 0
+    used_str, _, size_str = head.partition("/")
+    try:
+        return int(used_str.strip() or 0), int(size_str.strip() or 0)
+    except ValueError:
+        return 0, 0
 
 
 def is_direct_cli_alias(alias: str | None) -> bool:
@@ -182,6 +222,12 @@ class _DirectAcpTranslator:
         #: cards. ``command`` is the latest params summary seen (it may arrive
         #: after the call starts, so it is remembered and surfaced when known).
         self._open: dict[str, tuple[str, str, str]] = {}
+        #: Last context-window gauge text seen (``"45,000/200,000 tokens"``),
+        #: persisted so the cockpit can show it after the run ends.
+        self.cli_usage_text: str | None = None
+        #: Authoritative cumulative token totals for the turn, from ACP's
+        #: ``PromptResponse.usage`` when the engine provides it; else ``None``.
+        self.totals: dict[str, int] | None = None
 
     def on_delta(self, delta: dict[str, object]) -> list[tuple[str, dict]]:
         frames: list[tuple[str, dict]] = []
@@ -216,9 +262,16 @@ class _DirectAcpTranslator:
             return self._tool_progress(value)
         if key == _KEY_USAGE:
             # The CLI's own context-window gauge (e.g. "45,000/200,000 tokens").
-            # Surfaced as a live ``usage`` frame; it is not LLM billing, so the
-            # run's token total stays zero.
+            # Surfaced live *and* remembered so the cockpit can still show it once
+            # the run ends (the run record persists this string).
+            self.cli_usage_text = value
             return [ev.usage({"text": value})]
+        if key == _KEY_USAGE_FINAL:
+            # Authoritative cumulative totals from ACP's ``PromptResponse.usage``
+            # (``input\x00output\x00total\x00cache_read``). Stored for finalize;
+            # no live frame needed (the gauge already shows progress).
+            self.totals = _parse_usage_totals(value)
+            return []
         # Unknown keys are status pings — ignore.
         return []
 
@@ -319,6 +372,17 @@ class DirectCliRun:
         self.ok = True
         self.cancelled = False
         self._translator = _DirectAcpTranslator()
+        #: Context-window gauge text seen during the turn (for display after end).
+        self.cli_usage_text: str | None = None
+        #: Token totals to persist on the run: the engine's authoritative
+        #: cumulative ``PromptResponse.usage`` when available, else a gauge-based
+        #: fallback (``total_tokens`` = current context occupancy).
+        self.usage: dict[str, int] = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "cache_read_tokens": 0,
+        }
 
     async def stream_frames(
         self, cancel_event: asyncio.Event
@@ -367,6 +431,7 @@ class DirectCliRun:
                     self.cancelled = True
                     future.cancel()
                     await asyncio.to_thread(cancel_acp_sessions, self.thread_id)
+                    self._capture_usage()
                     return
                 deltas = await loop.run_in_executor(
                     None, _drain_queue, progress_q, _DRAIN_TIMEOUT_SECONDS
@@ -389,3 +454,20 @@ class DirectCliRun:
         self.final_text = (text or "").strip()
         for frame in self._translator.finalize():
             yield frame
+        self._capture_usage()
+
+    def _capture_usage(self) -> None:
+        """Snapshot the gauge text + token totals for the run record.
+
+        Prefers the engine's authoritative cumulative ``PromptResponse.usage``;
+        when absent, falls back to the context-window gauge's ``used`` count as a
+        best-effort running total so the cockpit still shows a number.
+        """
+        self.cli_usage_text = self._translator.cli_usage_text
+        totals = self._translator.totals
+        if totals is not None:
+            self.usage = {**self.usage, **totals}
+            return
+        used, _size = _parse_gauge_tokens(self.cli_usage_text)
+        if used:
+            self.usage = {**self.usage, "total_tokens": used}

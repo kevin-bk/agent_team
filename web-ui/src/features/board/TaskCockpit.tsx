@@ -1893,8 +1893,16 @@ function Conversation({
   onOpenFile: (path: string) => void;
 }) {
   const { client } = useApi();
-  const { blocks, running, loadingHistory, cliUsage, fatalError, send, cancel } =
-    useTaskAgentRun(taskId, agentId);
+  const {
+    blocks,
+    running,
+    loadingHistory,
+    cliUsage,
+    totalTokens,
+    fatalError,
+    send,
+    cancel,
+  } = useTaskAgentRun(taskId, agentId);
   const { typingNames, notifyTyping, stopTyping } = useTypingIndicator(
     taskId,
     agentId,
@@ -1943,11 +1951,24 @@ function Conversation({
 
   return (
     <>
-      {cliUsage && (
+      {(cliUsage || totalTokens) && (
         <div className="flex items-center gap-1.5 border-b border-border bg-surface-1/40 px-3 py-1 text-[11px] text-muted-foreground">
           <TerminalSquare className="h-3 w-3 shrink-0" />
-          <span className="font-medium">Context</span>
-          <span className="font-mono">{cliUsage}</span>
+          {cliUsage && (
+            <>
+              <span className="font-medium">Context</span>
+              <span className="font-mono">{cliUsage}</span>
+            </>
+          )}
+          {totalTokens ? (
+            <>
+              {cliUsage && <span className="opacity-40">·</span>}
+              <span className="font-medium">Total</span>
+              <span className="font-mono">
+                {totalTokens.toLocaleString()} tokens
+              </span>
+            </>
+          ) : null}
         </div>
       )}
       {changedCount > 0 && (

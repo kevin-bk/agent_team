@@ -888,11 +888,13 @@ def test_event_store_status_transitions_and_finalize(db):
         status=RUN_DONE,
         final_answer="done",
         usage={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+        cli_usage_text="45,000/200,000 tokens",
     )
     db.refresh(run)
     assert run.status == RUN_DONE
     assert run.final_answer == "done"
     assert run.total_tokens == 15
+    assert run.cli_usage_text == "45,000/200,000 tokens"
     assert run.ended_at is not None
 
 
@@ -2953,8 +2955,77 @@ def test_direct_acp_translator_maps_progress_thinking_and_tools():
     # The CLI's context-window gauge surfaces as a live usage frame…
     usage = tr.on_delta({"claude_acp_usage": "45,000/200,000 tokens"})
     assert usage == [ev.usage({"text": "45,000/200,000 tokens"})]
+    # …and is remembered so it can be persisted after the run ends.
+    assert tr.cli_usage_text == "45,000/200,000 tokens"
     # …while unknown keys are ignored.
     assert tr.on_delta({"claude_acp_unknown": "x"}) == []
+
+
+def test_direct_acp_translator_captures_usage_final_totals():
+    """``claude_acp_usage_final`` parses cumulative totals; emits no live frame."""
+    from agent_team.features.board.runtime.direct_acp import _DirectAcpTranslator
+
+    tr = _DirectAcpTranslator()
+    # Encoded ``input\x00output\x00total\x00cache_read``.
+    assert tr.on_delta({"claude_acp_usage_final": "1200\x00800\x002000\x00300"}) == []
+    assert tr.totals == {
+        "input_tokens": 1200,
+        "output_tokens": 800,
+        "total_tokens": 2000,
+        "cache_read_tokens": 300,
+    }
+
+
+def test_direct_acp_translator_usage_final_derives_total_when_missing():
+    """When ``total`` is 0, it falls back to input+output."""
+    from agent_team.features.board.runtime.direct_acp import _DirectAcpTranslator
+
+    tr = _DirectAcpTranslator()
+    tr.on_delta({"claude_acp_usage_final": "1000\x00500\x000\x000"})
+    assert tr.totals is not None
+    assert tr.totals["total_tokens"] == 1500
+
+
+def test_parse_gauge_tokens_extracts_used_and_size():
+    from agent_team.features.board.runtime.direct_acp import _parse_gauge_tokens
+
+    assert _parse_gauge_tokens("45,000/200,000 tokens") == (45000, 200000)
+    assert _parse_gauge_tokens("12,345/67,890 tokens · $0.0123 USD") == (12345, 67890)
+    assert _parse_gauge_tokens(None) == (0, 0)
+    assert _parse_gauge_tokens("garbage") == (0, 0)
+
+
+def test_usage_totals_roundtrip_producer_to_consumer():
+    """Engine-agnostic accurate-totals path: ACP ``Usage`` → encode → decode.
+
+    Proves that whenever *any* ACP engine populates ``PromptResponse.usage``,
+    the producer (``_acp_base._format_usage_totals``) and the direct-CLI consumer
+    (``direct_acp._parse_usage_totals``) agree on the wire format, so accurate
+    cumulative totals get persisted on the run. (Today Claude populates this;
+    Cursor/Codex don't yet — see the gauge fallback test below.)
+    """
+    from acp.schema import Usage
+
+    from agent_team.features.board.runtime.direct_acp import _parse_usage_totals
+    from plugins.ai_code.tools._acp_base import _format_usage_totals
+
+    usage = Usage.model_validate(
+        {
+            "inputTokens": 1200,
+            "outputTokens": 800,
+            "totalTokens": 2000,
+            "cachedReadTokens": 300,
+            "cachedWriteTokens": 0,
+            "thoughtTokens": 50,
+        }
+    )
+    encoded = _format_usage_totals(usage)
+    assert _parse_usage_totals(encoded) == {
+        "input_tokens": 1200,
+        "output_tokens": 800,
+        "total_tokens": 2000,
+        "cache_read_tokens": 300,
+    }
 
 
 def test_direct_acp_translator_failed_tool_and_finalize():

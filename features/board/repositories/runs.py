@@ -79,6 +79,7 @@ def serialize_run(run: AgentTeamRun) -> RunDTO:
         input_tokens=run.input_tokens,
         output_tokens=run.output_tokens,
         total_tokens=run.total_tokens,
+        cli_usage_text=run.cli_usage_text,
         cost_usd=run.cost_usd,
         last_seq=run.last_seq,
         created_at=run.created_at.isoformat() if run.created_at else None,

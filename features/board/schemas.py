@@ -330,6 +330,9 @@ class RunDTO(BaseModel):
     input_tokens: int
     output_tokens: int
     total_tokens: int
+    #: Direct-CLI context-window gauge text (e.g. "45,000/200,000 tokens"), so
+    #: the cockpit can show the CLI's own usage readout after the run ends.
+    cli_usage_text: str | None = None
     cost_usd: float | None
     last_seq: int
     created_at: str | None

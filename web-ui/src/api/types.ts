@@ -532,6 +532,10 @@ export interface TaskRunDTO {
   final_answer?: string | null;
   error?: string | null;
   tokens: number;
+  /** Total tokens for the turn (cumulative across the session for direct CLI). */
+  total_tokens?: number;
+  /** Direct-CLI context-window gauge text, e.g. "45,000/200,000 tokens". */
+  cli_usage_text?: string | null;
   cost_usd: number;
   started_at?: string | null;
   ended_at?: string | null;

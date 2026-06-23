@@ -122,6 +122,7 @@ def finalize_run(
     final_answer: str | None = None,
     error: str | None = None,
     usage: dict | None = None,
+    cli_usage_text: str | None = None,
 ) -> None:
     """Write a run's terminal status, answer/error and token totals at once."""
     usage = usage or {}
@@ -135,6 +136,8 @@ def finalize_run(
             "total_tokens": int(usage.get("total_tokens", 0) or 0),
             "cache_read_tokens": int(usage.get("cache_read_tokens", 0) or 0),
         }
+        if cli_usage_text is not None:
+            values["cli_usage_text"] = cli_usage_text[:255]
         if final_answer is not None:
             values["final_answer"] = final_answer[:50000]
         if error is not None:
