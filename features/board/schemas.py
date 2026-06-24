@@ -224,6 +224,13 @@ class JiraImportBody(BaseModel):
     jira_key: str = Field(min_length=1, max_length=64)
 
 
+class JiraPreviewBody(BaseModel):
+    """Optional preview scope: when ``jira_keys`` is given, preview just those
+    issues (across any project) instead of the board's import filter."""
+
+    jira_keys: list[str] | None = None
+
+
 class JiraPreviewItem(BaseModel):
     """A project issue offered for import, with a peek at its Jira-side fields."""
 

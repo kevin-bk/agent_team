@@ -11,6 +11,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 
 //: Common Jira issue type names offered as filter chips.
@@ -65,8 +66,11 @@ export function BoardJiraDialog({
   board: BoardDTO;
   open: boolean;
   onClose: () => void;
-  /** Called after the config is saved, to open the import preview dialog. */
-  onSyncAll: () => void;
+  /**
+   * Called after the config is saved, to open the import preview dialog.
+   * Pass `keys` to scope the preview to specific issue keys.
+   */
+  onSyncAll: (keys?: string[]) => void;
 }) {
   const update = useUpdateBoard(board.id);
 
@@ -84,6 +88,9 @@ export function BoardJiraDialog({
   const [statusCategories, setStatusCategories] = useState<string[]>([]);
   const [updatedWithin, setUpdatedWithin] = useState(0);
 
+  // One or more issue keys to preview before importing.
+  const [keysInput, setKeysInput] = useState("");
+
   useEffect(() => {
     if (!open) return;
     setEnabled(board.jira_enabled ?? false);
@@ -93,6 +100,7 @@ export function BoardJiraDialog({
     setToken("");
     setClearToken(false);
     setSyncStatus(board.jira_sync_status ?? true);
+    setKeysInput("");
     const f = board.jira_sync_filter ?? {};
     setIssueTypes(f.issue_types ?? []);
     setStatusCategories(f.status_categories ?? []);
@@ -140,11 +148,36 @@ export function BoardJiraDialog({
     }
   };
 
+  const parsedKeys = Array.from(
+    new Set(
+      keysInput
+        .split(/[\s,]+/)
+        .map((k) => k.trim().toUpperCase())
+        .filter(Boolean),
+    ),
+  );
+
+  // Save the config first (so credentials are current), then open the preview
+  // scoped to the typed keys — works even for keys the import filter excludes.
+  const previewKeys = async () => {
+    if (parsedKeys.length === 0 || update.isPending) return;
+    try {
+      await update.mutateAsync(buildBody());
+      onSyncAll(parsedKeys);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to save settings");
+    }
+  };
+
   const busy = update.isPending;
 
   return (
     <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
-      <DialogContent className="max-w-lg">
+      <DialogContent
+        className="max-w-lg"
+        onInteractOutside={(e) => e.preventDefault()}
+        onEscapeKeyDown={(e) => e.preventDefault()}
+      >
         <DialogHeader>
           <DialogTitle>Jira sync</DialogTitle>
         </DialogHeader>
@@ -273,6 +306,50 @@ export function BoardJiraDialog({
               </span>{" "}
               so the preview stays small. Leave a group empty to not restrict by it.
             </span>
+
+            {/* Import specific keys: preview them before importing. Works even
+                for keys (or projects) the filter below would exclude. */}
+            <div className="grid gap-1.5 rounded-md border border-border bg-surface-1 p-2">
+              <span className="text-[12px] font-medium text-muted-foreground">
+                Import by key
+              </span>
+              <div className="flex items-center gap-2">
+                <Input
+                  value={keysInput}
+                  placeholder="e.g. ABC-123, ABC-124"
+                  disabled={busy || !enabled}
+                  onChange={(e) => setKeysInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      void previewKeys();
+                    }
+                  }}
+                  className="h-8 flex-1"
+                />
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => void previewKeys()}
+                  disabled={busy || !enabled || parsedKeys.length === 0}
+                  title={
+                    enabled
+                      ? "Save settings and preview these keys"
+                      : "Enable Jira sync first"
+                  }
+                >
+                  {busy ? (
+                    <Spinner className="h-4 w-4" />
+                  ) : (
+                    `Preview${parsedKeys.length > 1 ? ` (${parsedKeys.length})` : ""}`
+                  )}
+                </Button>
+              </div>
+              <span className="text-[11px] text-muted-foreground/80">
+                Separate multiple keys with spaces or commas. You'll review them
+                before anything is imported.
+              </span>
+            </div>
 
             <div className="grid gap-1.5">
               <span className="text-[12px] font-medium text-muted-foreground">

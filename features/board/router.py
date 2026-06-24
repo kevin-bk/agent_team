@@ -7,7 +7,7 @@ import json
 import shutil
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Request, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Request, UploadFile
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -44,6 +44,7 @@ from agent_team.features.board.schemas import (
     CsvImportResult,
     CsvImportRow,
     JiraImportBody,
+    JiraPreviewBody,
     JiraPreviewItem,
     JiraPreviewResponse,
     JiraSyncBody,
@@ -451,13 +452,17 @@ _JIRA_PREVIEW_LIMIT = 300
 
 @router.post("/boards/{board_id}/jira/sync/preview")
 async def preview_board_jira_sync(
-    board_id: str, request: Request, db: Session = Depends(get_db)
+    board_id: str,
+    request: Request,
+    payload: JiraPreviewBody | None = Body(default=None),
+    db: Session = Depends(get_db),
 ):
-    """List a project's issues for import, flagging which already exist as tasks.
+    """List issues for import, flagging which already exist as tasks.
 
-    Queries the configured Jira project (newest first, capped at
-    ``_JIRA_PREVIEW_LIMIT``) so the user can pick which issues to pull in. Each
-    row is marked *new* or *update* depending on whether a task is already linked.
+    Without a body, queries the configured Jira project (newest first, capped at
+    ``_JIRA_PREVIEW_LIMIT``). When ``jira_keys`` is supplied, previews exactly
+    those issues (across any project) so the user can confirm before importing.
+    Each row is marked *new* or *update* depending on whether a task is linked.
     """
     user, err = auth_or_401(db, request)
     if err:
@@ -470,8 +475,20 @@ async def preview_board_jira_sync(
             status_code=422,
             content={"detail": "Jira sync is not enabled for this board"},
         )
+
+    # Normalise any explicit keys (deduped, upper-cased, capped).
+    keys: list[str] = []
+    if payload and payload.jira_keys:
+        seen: set[str] = set()
+        for raw in payload.jira_keys:
+            k = (raw or "").strip().upper()
+            if k and k not in seen:
+                seen.add(k)
+                keys.append(k)
+        keys = keys[:_JIRA_PREVIEW_LIMIT]
+
     project_key = (board.jira_project_key or "").strip()
-    if not project_key:
+    if not keys and not project_key:
         return JSONResponse(
             status_code=422,
             content={"detail": "Set a Jira project key first"},
@@ -479,7 +496,12 @@ async def preview_board_jira_sync(
 
     try:
         client = jira_service.build_client(board)
-        jql = jira_service.build_search_jql(project_key, board.jira_sync_filter())
+        if keys:
+            jql = jira_service.build_keys_jql(keys)
+        else:
+            jql = jira_service.build_search_jql(
+                project_key, board.jira_sync_filter()
+            )
         issues = client.search_issues(jql, max_results=_JIRA_PREVIEW_LIMIT)
     except JiraError as exc:
         status = 400 if exc.status_code else 502

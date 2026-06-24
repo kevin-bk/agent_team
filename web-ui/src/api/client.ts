@@ -301,10 +301,14 @@ export class ApiClient {
       method: "POST",
     });
   }
-  previewBoardJiraSync(boardId: string) {
+  previewBoardJiraSync(boardId: string, jiraKeys?: string[]) {
+    const hasKeys = jiraKeys && jiraKeys.length > 0;
     return this.request<JiraPreviewResponse>(
       `/api/boards/${boardId}/jira/sync/preview`,
-      { method: "POST" },
+      {
+        method: "POST",
+        ...(hasKeys ? { body: JSON.stringify({ jira_keys: jiraKeys }) } : {}),
+      },
     );
   }
   importIssueFromJira(boardId: string, jiraKey: string) {

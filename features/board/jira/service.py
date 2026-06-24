@@ -389,6 +389,11 @@ def build_search_jql(project_key: str, flt: dict) -> str:
     return " AND ".join(clauses) + " ORDER BY updated DESC"
 
 
+def build_keys_jql(keys: list[str]) -> str:
+    """Build JQL that fetches a specific set of issue keys (any project)."""
+    return f"key in ({_jql_in(keys)}) ORDER BY updated DESC"
+
+
 def task_matches_filter(task: AgentTeamTask, flt: dict) -> bool:
     """Whether a task satisfies the board's batch-sync filter (AND of clauses)."""
     statuses = flt.get("statuses")

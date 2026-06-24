@@ -30,10 +30,13 @@ export function BoardJiraSyncDialog({
   board,
   open,
   onClose,
+  initialKeys,
 }: {
   board: BoardDTO;
   open: boolean;
   onClose: () => void;
+  /** When set, the preview is scoped to exactly these issue keys. */
+  initialKeys?: string[];
 }) {
   const { client } = useApi();
   const qc = useQueryClient();
@@ -54,7 +57,7 @@ export function BoardJiraSyncDialog({
     setErrors([]);
     setQuickKey("");
     try {
-      const res = await client.previewBoardJiraSync(board.id);
+      const res = await client.previewBoardJiraSync(board.id, initialKeys);
       setItems(res.items);
       setSelected(new Set(res.items.map((i) => i.jira_key)));
       setPhase("review");
@@ -62,7 +65,7 @@ export function BoardJiraSyncDialog({
       toast.error(err instanceof Error ? err.message : "Failed to load preview");
       onClose();
     }
-  }, [client, board.id, onClose]);
+  }, [client, board.id, onClose, initialKeys]);
 
   // Load the preview once per open. A ref guards against re-running when
   // `loadPreview`'s identity changes mid-import (board refetches from sync SSE
@@ -95,20 +98,44 @@ export function BoardJiraSyncDialog({
   const total = items.filter((i) => selected.has(i.jira_key)).length;
   const pct = total > 0 ? Math.round((done / total) * 100) : 0;
 
-  // Import a single issue straight from a typed key — works even for keys the
-  // board filter would exclude from the list above.
-  const quickImport = async () => {
-    const key = quickKey.trim().toUpperCase();
-    if (!key || quickBusy) return;
+  // Pull one or more typed keys (space/comma/newline separated) into the preview
+  // list — works even for keys the board filter would exclude. Nothing is
+  // imported until the user confirms with the "Import" button below.
+  const addKeys = async () => {
+    const keys = Array.from(
+      new Set(
+        quickKey
+          .split(/[\s,]+/)
+          .map((k) => k.trim().toUpperCase())
+          .filter(Boolean),
+      ),
+    );
+    if (keys.length === 0 || quickBusy) return;
     setQuickBusy(true);
     try {
-      await client.importIssueFromJira(board.id, key);
-      void qc.invalidateQueries({ queryKey: qk.boardTasks(board.id) });
-      toast.success(`Imported ${key}`);
+      const res = await client.previewBoardJiraSync(board.id, keys);
+      if (res.items.length === 0) {
+        toast.warning("No matching issues found");
+        return;
+      }
+      // Merge: new keys first, then existing rows (deduped by key).
+      setItems((prev) => {
+        const added = res.items.map((i) => i.jira_key);
+        const kept = prev.filter((i) => !added.includes(i.jira_key));
+        return [...res.items, ...kept];
+      });
+      setSelected((prev) => {
+        const next = new Set(prev);
+        res.items.forEach((i) => next.add(i.jira_key));
+        return next;
+      });
+      const missing = keys.filter(
+        (k) => !res.items.some((i) => i.jira_key === k),
+      );
+      if (missing.length > 0) toast.warning(`Not found: ${missing.join(", ")}`);
       setQuickKey("");
-      await loadPreview();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : `Failed to import ${key}`);
+      toast.error(err instanceof Error ? err.message : "Failed to load keys");
     } finally {
       setQuickBusy(false);
     }
@@ -143,7 +170,11 @@ export function BoardJiraSyncDialog({
 
   return (
     <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
-      <DialogContent className="max-w-5xl">
+      <DialogContent
+        className="max-w-5xl"
+        onInteractOutside={(e) => e.preventDefault()}
+        onEscapeKeyDown={(e) => e.preventDefault()}
+      >
         <DialogHeader>
           <DialogTitle>Import from Jira</DialogTitle>
         </DialogHeader>
@@ -158,17 +189,17 @@ export function BoardJiraSyncDialog({
           <>
             <div className="flex items-center gap-2 rounded-md border border-border bg-surface-1 p-2">
               <span className="shrink-0 text-[12.5px] font-medium text-muted-foreground">
-                Import one by key
+                Add by key
               </span>
               <Input
                 value={quickKey}
-                placeholder="e.g. CHIZY-123"
+                placeholder="e.g. CHIZY-123, CHIZY-124"
                 disabled={quickBusy}
                 onChange={(e) => setQuickKey(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") {
                     e.preventDefault();
-                    void quickImport();
+                    void addKeys();
                   }
                 }}
                 className="h-8 flex-1"
@@ -176,16 +207,17 @@ export function BoardJiraSyncDialog({
               <Button
                 size="sm"
                 variant="secondary"
-                onClick={() => void quickImport()}
+                onClick={() => void addKeys()}
                 disabled={quickBusy || !quickKey.trim()}
+                title="Add these keys to the preview below"
               >
-                {quickBusy ? <Spinner className="h-4 w-4" /> : "Import"}
+                {quickBusy ? <Spinner className="h-4 w-4" /> : "Add to preview"}
               </Button>
             </div>
 
             {items.length === 0 ? (
               <div className="py-6 text-center text-[13px] text-muted-foreground">
-                No issues match the filter — import one by key above.
+                No issues match the filter — add one or more by key above.
               </div>
             ) : (
               <>

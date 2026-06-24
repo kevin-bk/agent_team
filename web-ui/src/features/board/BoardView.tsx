@@ -189,6 +189,10 @@ function BoardViewInner({
   const [reposOpen, setReposOpen] = useState(false);
   const [jiraOpen, setJiraOpen] = useState(false);
   const [jiraSyncOpen, setJiraSyncOpen] = useState(false);
+  // When set, the import preview is scoped to these specific keys.
+  const [jiraSyncKeys, setJiraSyncKeys] = useState<string[] | undefined>(
+    undefined,
+  );
   const [importOpen, setImportOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [query, setQuery] = useState("");
@@ -543,7 +547,8 @@ function BoardViewInner({
         board={board.data}
         open={jiraOpen}
         onClose={() => setJiraOpen(false)}
-        onSyncAll={() => {
+        onSyncAll={(keys) => {
+          setJiraSyncKeys(keys && keys.length > 0 ? keys : undefined);
           setJiraOpen(false);
           setJiraSyncOpen(true);
         }}
@@ -552,7 +557,11 @@ function BoardViewInner({
       <BoardJiraSyncDialog
         board={board.data}
         open={jiraSyncOpen}
-        onClose={() => setJiraSyncOpen(false)}
+        initialKeys={jiraSyncKeys}
+        onClose={() => {
+          setJiraSyncOpen(false);
+          setJiraSyncKeys(undefined);
+        }}
       />
 
       <BoardSettingsDialog
