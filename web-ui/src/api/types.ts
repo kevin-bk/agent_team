@@ -512,6 +512,40 @@ export interface PatchAutopilotBody {
   routing_rules?: RoutingRule[];
 }
 
+export type TaskScheduleConversationMode = "new" | "continue";
+
+export interface TaskScheduleDTO {
+  task_id: string;
+  enabled: boolean;
+  cron?: string | null;
+  timezone: string;
+  agent_alias?: string | null;
+  prompt?: string | null;
+  conversation_mode: TaskScheduleConversationMode;
+  next_run_at?: string | null;
+  last_run_at?: string | null;
+  last_run_id?: string | null;
+  updated_at?: string | null;
+}
+
+export interface PatchTaskScheduleBody {
+  enabled?: boolean;
+  cron?: string | null;
+  timezone?: string;
+  agent_alias?: string | null;
+  prompt?: string | null;
+  conversation_mode?: TaskScheduleConversationMode;
+}
+
+export interface TaskScheduleHistoryItem {
+  run_id: string;
+  human_key: string;
+  agent_id: string;
+  status: TaskRunStatus;
+  created_at?: string | null;
+  ended_at?: string | null;
+}
+
 export type TaskRunStatus =
   | "queued"
   | "running"
@@ -648,6 +682,10 @@ export interface TaskActivityDTO {
     agent_id?: string | null;
     /** Autopilot activity: the terminal run status that triggered the move. */
     run_status?: string | null;
+    /** Schedule activity: conversation mode of the fired run ("new"/"continue"). */
+    mode?: string | null;
+    /** Schedule activity: why a due fire was skipped. */
+    reason?: string | null;
   };
   created_at: string;
 }

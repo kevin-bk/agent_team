@@ -601,3 +601,58 @@ class AgentTeamAutopilot(Base):
             except (TypeError, ValueError):
                 continue
         return out
+
+
+#: How a scheduled run reuses the agent's thread.
+TASK_SCHEDULE_MODE_NEW = "new"  # start a fresh conversation each time
+TASK_SCHEDULE_MODE_CONTINUE = "continue"  # append to the existing conversation
+TASK_SCHEDULE_MODES = frozenset({TASK_SCHEDULE_MODE_NEW, TASK_SCHEDULE_MODE_CONTINUE})
+
+
+class AgentTeamTaskSchedule(Base):
+    """Per-task cron schedule that fires a recurring agent run.
+
+    One row per task (``task_id`` is the primary key). When ``enabled`` and a
+    valid ``cron`` is set, a background ticker fires at each due time: it picks
+    ``agent_alias`` and sends ``prompt`` as the opening message, either starting
+    a fresh conversation (``conversation_mode == "new"``) or appending to the
+    agent's existing thread (``"continue"``). Unlike the board autopilot, a
+    scheduled run never moves the task between columns. If the previous scheduled
+    run is still in flight when the next tick is due, the tick is skipped.
+    """
+
+    __tablename__ = "plugin_agent_team_task_schedule"
+
+    task_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("plugin_agent_team_task.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    #: Five-field cron expression evaluated in ``timezone``.
+    cron: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="UTC")
+
+    #: Agent (or direct-CLI) alias that runs the task each time it fires.
+    agent_alias: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    #: Opening message sent to the agent on each fire.
+    prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: ``new`` (fresh conversation each time) or ``continue`` (append to thread).
+    conversation_mode: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=TASK_SCHEDULE_MODE_CONTINUE
+    )
+
+    # ── scheduler cursor / last-fire bookkeeping ──────────────────────────
+    next_run_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    last_run_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    #: Id of the run started by the most recent successful fire (for the UI).
+    last_run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )

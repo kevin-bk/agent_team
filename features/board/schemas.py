@@ -431,3 +431,41 @@ class AutopilotSummaryDTO(BaseModel):
     #: Autopilot runs started since 00:00 UTC today.
     runs_today: int = 0
     recent: list[AutopilotRecentItem] = Field(default_factory=list)
+
+
+class TaskScheduleUpdate(BaseModel):
+    """Patch a task's recurring-run schedule (every field optional)."""
+
+    enabled: bool | None = None
+    cron: str | None = Field(default=None, max_length=128)
+    timezone: str | None = Field(default=None, max_length=64)
+    #: Agent (or direct-CLI) alias that runs the task each time it fires.
+    agent_alias: str | None = Field(default=None, max_length=255)
+    #: Opening message sent to the agent on each fire.
+    prompt: str | None = Field(default=None, max_length=20000)
+    conversation_mode: Literal["new", "continue"] | None = None
+
+
+class TaskScheduleDTO(BaseModel):
+    task_id: str
+    enabled: bool = False
+    cron: str | None = None
+    timezone: str = "UTC"
+    agent_alias: str | None = None
+    prompt: str | None = None
+    conversation_mode: str = "continue"
+    next_run_at: str | None = None
+    last_run_at: str | None = None
+    last_run_id: str | None = None
+    updated_at: str | None = None
+
+
+class TaskScheduleHistoryItem(BaseModel):
+    """One past scheduled run (newest first), for the schedule history view."""
+
+    run_id: str
+    human_key: str
+    agent_id: str
+    status: str
+    created_at: str | None = None
+    ended_at: str | None = None

@@ -69,6 +69,9 @@ class BoardAutopilotTicker:
 
     def _run_loop(self) -> None:
         from agent_team.features.board.runtime.autopilot import run_tick
+        from agent_team.features.board.runtime.task_schedule import (
+            run_tick as run_schedule_tick,
+        )
 
         while not self._stop.is_set():
             try:
@@ -77,6 +80,16 @@ class BoardAutopilotTicker:
                     logger.info("agent_team autopilot: started %d run(s)", started)
             except Exception:  # noqa: BLE001
                 logger.exception("agent_team autopilot: tick crashed (continuing)")
+            try:
+                fired = run_schedule_tick()
+                if fired:
+                    logger.info(
+                        "agent_team task schedule: fired %d run(s)", fired
+                    )
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "agent_team task schedule: tick crashed (continuing)"
+                )
             self._stop.wait(self._interval)
 
     # ── cross-process lock ───────────────────────────────────────────────────

@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   ArrowRight,
   Bot,
+  CalendarClock,
   Check,
   ChevronDown,
   CircleDot,
@@ -106,6 +107,7 @@ import { TaskRepoCard } from "./cockpit/TaskRepoCard";
 import { PRIORITY_META, PRIORITY_ORDER, PriorityIcon } from "./priority";
 import { SelectMenu } from "@/components/ui/select-menu";
 import { statusColor } from "./statusColor";
+import { TaskScheduleDialog } from "./TaskScheduleDialog";
 
 const OVERVIEW = "__overview__";
 
@@ -241,6 +243,7 @@ export function TaskCockpit({
   const reset = useResetTaskThread(task.id);
   const syncJira = useSyncTaskFromJira(task.board_id);
   const [keyPromptOpen, setKeyPromptOpen] = useState(false);
+  const [scheduleOpen, setScheduleOpen] = useState(false);
   const [keyInput, setKeyInput] = useState("");
   const confirm = useConfirm();
   const qc = useQueryClient();
@@ -365,6 +368,16 @@ export function TaskCockpit({
                   )}
                 />{" "}
                 Sync
+              </Button>
+            )}
+            {canEdit && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setScheduleOpen(true)}
+                title="Schedule recurring runs for this task"
+              >
+                <CalendarClock className="h-3.5 w-3.5" /> Schedule
               </Button>
             )}
             {canEdit && (
@@ -680,6 +693,15 @@ export function TaskCockpit({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {board.data && (
+        <TaskScheduleDialog
+          board={board.data}
+          task={task}
+          open={scheduleOpen}
+          onClose={() => setScheduleOpen(false)}
+        />
+      )}
     </div>
   );
 }
@@ -1737,6 +1759,14 @@ const ACTIVITY_STYLE: Record<
     icon: Bot,
     tone: "bg-emerald-100 text-emerald-600 dark:bg-emerald-500/15",
   },
+  schedule_fired: {
+    icon: CalendarClock,
+    tone: "bg-sky-100 text-sky-600 dark:bg-sky-500/15",
+  },
+  schedule_skipped: {
+    icon: CalendarClock,
+    tone: "bg-amber-100 text-amber-600 dark:bg-amber-500/15",
+  },
 };
 
 function ActivityItem({
@@ -1748,13 +1778,16 @@ function ActivityItem({
   nameOf: (id?: string | null) => string;
   statusOf: (key?: string | null) => string;
 }) {
-  // Autopilot/agent activity has no human actor; label it accordingly.
+  // Autopilot/agent/schedule activity has no human actor; label it accordingly.
   const isAutopilot = activity.kind.startsWith("autopilot_");
+  const isSchedule = activity.kind.startsWith("schedule_");
   const actor = isAutopilot
     ? "Autopilot"
-    : activity.kind === "agent_status_changed"
-      ? "Agent"
-      : activity.actor_name || activity.actor_id || "Someone";
+    : isSchedule
+      ? "Schedule"
+      : activity.kind === "agent_status_changed"
+        ? "Agent"
+        : activity.actor_name || activity.actor_id || "Someone";
   const style = ACTIVITY_STYLE[activity.kind] ?? {
     icon: CircleDot,
     tone: "bg-surface-3 text-muted-foreground",
@@ -1827,6 +1860,25 @@ function ActivityItem({
           <b className="font-medium text-foreground">{statusOf(d.from)}</b>{" "}
           <ArrowRight className="inline h-3 w-3 -translate-y-px text-muted-foreground" />{" "}
           <b className="font-medium text-foreground">{statusOf(d.to)}</b>
+        </>
+      );
+      break;
+    case "schedule_fired":
+      detail = (
+        <>
+          started a scheduled run for{" "}
+          <b className="font-medium text-foreground">{nameOf(d.agent_id)}</b>
+          {d.mode === "new" ? " (new conversation)" : ""}
+        </>
+      );
+      break;
+    case "schedule_skipped":
+      detail = (
+        <>
+          skipped a scheduled run
+          {d.reason ? (
+            <span className="text-muted-foreground"> — {String(d.reason)}</span>
+          ) : null}
         </>
       );
       break;

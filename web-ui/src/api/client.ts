@@ -29,6 +29,9 @@ import {
   type PatchBoardBody,
   type PatchCronBody,
   type PatchTaskBody,
+  type PatchTaskScheduleBody,
+  type TaskScheduleDTO,
+  type TaskScheduleHistoryItem,
   type PlanDTO,
   type ProfileDTO,
   type BoardRepoDTO,
@@ -368,6 +371,20 @@ export class ApiClient {
     return this.request<{ assigned: number }>(
       `/api/boards/${boardId}/autopilot/route`,
       { method: "POST" },
+    );
+  }
+  getTaskSchedule(taskId: string) {
+    return this.request<TaskScheduleDTO>(`/api/tasks/${taskId}/schedule`);
+  }
+  updateTaskSchedule(taskId: string, body: PatchTaskScheduleBody) {
+    return this.request<TaskScheduleDTO>(`/api/tasks/${taskId}/schedule`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    });
+  }
+  getTaskScheduleHistory(taskId: string) {
+    return this.request<TaskScheduleHistoryItem[]>(
+      `/api/tasks/${taskId}/schedule/history`,
     );
   }
   mentionAgent(taskId: string, body: MentionBody) {

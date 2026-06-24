@@ -15,6 +15,7 @@ import type {
   PatchBoardBody,
   PatchCronBody,
   PatchTaskBody,
+  PatchTaskScheduleBody,
   RepoCreateBody,
   RepoUpdateBody,
   TaskDTO,
@@ -40,6 +41,9 @@ export const qk = {
   skills: ["skills"] as const,
   autopilot: (id: string) => ["autopilot", id] as const,
   autopilotSummary: (id: string) => ["autopilot-summary", id] as const,
+  taskSchedule: (taskId: string) => ["task-schedule", taskId] as const,
+  taskScheduleHistory: (taskId: string) =>
+    ["task-schedule-history", taskId] as const,
   taskRuns: (taskId: string, agentId?: string) =>
     ["task-runs", taskId, agentId ?? "_all"] as const,
   runStats: (boardId: string, days: number, agentId?: string) =>
@@ -281,6 +285,39 @@ export function useAutopilotSummary(boardId: string | undefined) {
     enabled: !!boardId,
     // Cheap, frequently-changing status — keep it fresh while the panel is open.
     refetchInterval: 15_000,
+  });
+}
+
+export function useTaskSchedule(taskId: string | undefined) {
+  const { client } = useApi();
+  return useQuery({
+    queryKey: qk.taskSchedule(taskId ?? "_"),
+    queryFn: () => client.getTaskSchedule(taskId as string),
+    enabled: !!taskId,
+  });
+}
+
+export function useUpdateTaskSchedule(taskId: string) {
+  const { client } = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: PatchTaskScheduleBody) =>
+      client.updateTaskSchedule(taskId, body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: qk.taskSchedule(taskId) });
+    },
+  });
+}
+
+export function useTaskScheduleHistory(
+  taskId: string | undefined,
+  enabled = true,
+) {
+  const { client } = useApi();
+  return useQuery({
+    queryKey: qk.taskScheduleHistory(taskId ?? "_"),
+    queryFn: () => client.getTaskScheduleHistory(taskId as string),
+    enabled: !!taskId && enabled,
   });
 }
 

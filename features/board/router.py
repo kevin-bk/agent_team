@@ -25,6 +25,7 @@ from agent_team.features.board.repositories import conversations as conversation
 from agent_team.features.board.repositories import members as members_repo
 from agent_team.features.board.repositories import messages as messages_repo
 from agent_team.features.board.repositories import runs as runs_repo
+from agent_team.features.board.repositories import task_schedule as schedule_repo
 from agent_team.features.board.repositories import tasks as tasks_repo
 from agent_team.features.board.repositories import tool_outputs as tool_outputs_repo
 from agent_team.features.board.runtime import event_store, run_service
@@ -51,6 +52,8 @@ from agent_team.features.board.schemas import (
     SkillPackDTO,
     TaskCreate,
     TaskMove,
+    TaskScheduleHistoryItem,
+    TaskScheduleUpdate,
     TaskUpdate,
     TypingBody,
 )
@@ -1079,6 +1082,132 @@ async def autopilot_summary(
         runs_today=runs_today,
         recent=recent,
     )
+
+
+# ---------------------------------------------------------------------------
+# Task schedule: recurring cron-driven agent runs for a single task
+# ---------------------------------------------------------------------------
+
+
+@router.get("/tasks/{task_id}/schedule")
+async def get_task_schedule(
+    task_id: str, request: Request, db: Session = Depends(get_db)
+):
+    """Return the task's recurring-run schedule (a disabled default if unset)."""
+    # Polled by the schedule dialog — a reliable place to capture the app's main
+    # loop so the ticker thread can dispatch scheduled runs.
+    from agent_team.features.board.runtime.dispatch import capture_main_loop
+
+    capture_main_loop()
+    _, err = auth_or_401(db, request)
+    if err:
+        return err
+    task = tasks_repo.get_task(db, task_id)
+    if task is None:
+        return not_found("Task not found")
+    row = schedule_repo.get_or_create(db, task_id)
+    db.commit()
+    return schedule_repo.serialize(row)
+
+
+@router.put("/tasks/{task_id}/schedule")
+async def update_task_schedule(
+    task_id: str,
+    payload: TaskScheduleUpdate,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Patch a task's recurring-run schedule and reseed its cron cursor."""
+    _, err = auth_or_401(db, request)
+    if err:
+        return err
+    task = tasks_repo.get_task(db, task_id)
+    if task is None:
+        return not_found("Task not found")
+    board = boards_repo.get_board(db, task.board_id)
+    if board is None:
+        return not_found("Board not found")
+
+    from agent_team.features.board.runtime import task_schedule as schedule_rt
+
+    row = schedule_repo.get_or_create(db, task_id)
+
+    if payload.agent_alias is not None:
+        agent = payload.agent_alias.strip() or None
+        if agent is not None:
+            staffed = set(board.agent_ids()) | set(board.cli_target_ids())
+            if agent not in staffed:
+                return JSONResponse(
+                    status_code=422,
+                    content={"detail": f"agent '{agent}' is not staffed on this board"},
+                )
+        row.agent_alias = agent
+    if payload.cron is not None:
+        row.cron = payload.cron.strip() or None
+    if payload.timezone is not None:
+        row.timezone = payload.timezone
+    if "prompt" in payload.model_fields_set:
+        row.prompt = (payload.prompt or "").strip() or None
+    if payload.conversation_mode is not None:
+        row.conversation_mode = payload.conversation_mode
+    if payload.enabled is not None:
+        row.enabled = payload.enabled
+
+    if row.enabled:
+        if not schedule_rt.is_valid_cron(row.cron):
+            return JSONResponse(
+                status_code=422,
+                content={"detail": "A valid cron expression is required to enable a schedule"},
+            )
+        if not (row.agent_alias or "").strip():
+            return JSONResponse(
+                status_code=422,
+                content={"detail": "An agent must be selected to enable a schedule"},
+            )
+
+    # Reseed the cursor: enabled + valid cron → next due time; else clear it so
+    # the ticker skips this task.
+    row.next_run_at = schedule_rt.compute_next_run_at(row) if row.enabled else None
+    db.commit()
+    db.refresh(row)
+    return schedule_repo.serialize(row)
+
+
+@router.get("/tasks/{task_id}/schedule/history")
+async def task_schedule_history(
+    task_id: str, request: Request, db: Session = Depends(get_db)
+):
+    """Return recent runs started by this task's schedule (newest first)."""
+    _, err = auth_or_401(db, request)
+    if err:
+        return err
+    task = tasks_repo.get_task(db, task_id)
+    if task is None:
+        return not_found("Task not found")
+
+    from agent_team.features.board.models import AgentTeamRun
+
+    rows = (
+        db.query(AgentTeamRun)
+        .filter(
+            AgentTeamRun.task_id == task_id,
+            AgentTeamRun.trigger == "schedule",
+        )
+        .order_by(AgentTeamRun.created_at.desc())
+        .limit(50)
+        .all()
+    )
+    return [
+        TaskScheduleHistoryItem(
+            run_id=r.id,
+            human_key=r.human_key,
+            agent_id=r.agent_alias,
+            status=r.status,
+            created_at=r.created_at.isoformat() if r.created_at else None,
+            ended_at=r.ended_at.isoformat() if r.ended_at else None,
+        )
+        for r in rows
+    ]
 
 
 # ---------------------------------------------------------------------------

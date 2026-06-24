@@ -34,6 +34,10 @@ AUTOPILOT_TRANSITIONED = "autopilot_transitioned"
 AGENT_STATUS_CHANGED = "agent_status_changed"
 #: Routing rules auto-assigned an agent to a task (manual "Auto-assign" action).
 AUTOPILOT_ASSIGNED = "autopilot_assigned"
+#: A per-task cron schedule fired and started a run.
+SCHEDULE_FIRED = "schedule_fired"
+#: A per-task cron schedule was due but skipped (e.g. previous run still active).
+SCHEDULE_SKIPPED = "schedule_skipped"
 
 
 def record(

@@ -9,6 +9,7 @@ from agent_team.features.board.keys import next_human_key, slugify
 from agent_team.features.board.models import (
     AgentTeamActivity,
     AgentTeamAutopilot,
+    AgentTeamTaskSchedule,
     AgentTeamBoard,
     AgentTeamBoardMember,
     AgentTeamComment,
@@ -30,6 +31,7 @@ from sqlalchemy.pool import StaticPool
 
 _PLUGIN_MODELS = (
     AgentTeamKeySeq,
+    AgentTeamTaskSchedule,
     AgentTeamBoard,
     AgentTeamBoardMember,
     AgentTeamTask,
@@ -108,6 +110,7 @@ def test_plugin_meta_models_and_menu():
         "plugin_agent_team_board_repo",
         "plugin_agent_team_tool_output",
         "plugin_agent_team_autopilot",
+        "plugin_agent_team_task_schedule",
     ]
     menu = plugin.menu_items()
     assert len(menu) == 1
@@ -3480,3 +3483,278 @@ def test_autopilot_on_run_finished_ignores_non_autopilot(db, monkeypatch):
 
     db.expire_all()
     assert tasks_repo.get_task(db, task.id).status == "in_progress"
+
+
+# ---------------------------------------------------------------------------
+# Task schedule (per-task recurring cron runs)
+# ---------------------------------------------------------------------------
+
+
+def _make_schedule(db, task_id, **overrides):
+    from agent_team.features.board.repositories import task_schedule as schedule_repo
+
+    row = schedule_repo.get_or_create(db, task_id)
+    for key, value in overrides.items():
+        setattr(row, key, value)
+    db.flush()
+    return row
+
+
+def _scheduled_board_task(db, *, agent="agent:a", status="todo"):
+    """A staffed board with one task; returns ``(board, task)``."""
+    board = boards_repo.create_board(
+        db, name="Sched", description=None, columns=None, owner_id=None
+    )
+    board.agents_json = json.dumps([agent])
+    db.flush()
+    task = tasks_repo.create_task(
+        db, board_id=board.id, title="recurring", description=None, status=status,
+        assignee_id=None, labels=None, priority=None, created_by=None,
+    )
+    db.flush()
+    return board, task
+
+
+def test_task_schedule_compute_next_run_at():
+    """A valid cron yields a strictly future instant; invalid/empty → None."""
+    from datetime import UTC, datetime
+
+    from agent_team.features.board.models import AgentTeamTaskSchedule
+    from agent_team.features.board.runtime import task_schedule as ts
+
+    base = datetime(2026, 1, 1, tzinfo=UTC)
+    good = AgentTeamTaskSchedule(task_id="t", cron="*/5 * * * *", timezone="UTC")
+    assert ts.compute_next_run_at(good, base=base) > base
+
+    bad = AgentTeamTaskSchedule(task_id="t", cron="not a cron")
+    assert ts.compute_next_run_at(bad, base=base) is None
+
+    empty = AgentTeamTaskSchedule(task_id="t", cron=None)
+    assert ts.compute_next_run_at(empty, base=base) is None
+
+
+def test_task_schedule_fire_starts_run(db, monkeypatch):
+    """A due schedule starts one scheduled run with the configured prompt."""
+    from agent_team.features.board.repositories import activity as activity_repo
+    from agent_team.features.board.runtime import dispatch
+    from agent_team.features.board.runtime import task_schedule as ts
+
+    started_ids: list[str] = []
+    monkeypatch.setattr(
+        dispatch, "dispatch_start", lambda run_id: (started_ids.append(run_id), True)[1]
+    )
+
+    board, task = _scheduled_board_task(db)
+    _make_schedule(
+        db, task.id, enabled=True, cron="*/5 * * * *", agent_alias="agent:a",
+        prompt="daily standup", conversation_mode="continue",
+    )
+    db.commit()
+    row = _make_schedule(db, task.id)
+
+    from datetime import UTC, datetime
+
+    assert ts._fire(db, row, datetime.now(UTC)) is True
+
+    runs = db.query(AgentTeamRun).filter(AgentTeamRun.task_id == task.id).all()
+    assert len(runs) == 1
+    assert runs[0].trigger == "schedule"
+    assert runs[0].prompt == "daily standup"
+    assert runs[0].agent_alias == "agent:a"
+    assert started_ids == [runs[0].id]
+    # The task stays in its column (scheduled runs never move it).
+    assert tasks_repo.get_task(db, task.id).status == "todo"
+    # A fire is recorded in the activity log.
+    kinds = [a.kind for a in activity_repo.list_activity(db, task.id)]
+    assert activity_repo.SCHEDULE_FIRED in kinds
+
+
+def test_task_schedule_fire_skips_when_run_in_flight(db, monkeypatch):
+    """If a previous scheduled run is still running, the fire is skipped."""
+    from agent_team.features.board.repositories import activity as activity_repo
+    from agent_team.features.board.repositories import conversations as conv_repo
+    from agent_team.features.board.repositories import runs as runs_repo
+    from agent_team.features.board.runtime import dispatch
+    from agent_team.features.board.runtime import task_schedule as ts
+
+    monkeypatch.setattr(dispatch, "dispatch_start", lambda run_id: True)
+
+    board, task = _scheduled_board_task(db)
+    # An in-flight scheduled run already exists.
+    conv = conv_repo.get_or_create_active_conversation(
+        db, task_id=task.id, agent_alias="agent:a"
+    )
+    runs_repo.create_run(
+        db, task_id=task.id, conversation=conv, agent_alias="agent:a",
+        trigger="schedule", actor_id=None, prompt="prev",
+    )
+    row = _make_schedule(
+        db, task.id, enabled=True, cron="*/5 * * * *", agent_alias="agent:a",
+    )
+    db.commit()
+
+    from datetime import UTC, datetime
+
+    assert ts._fire(db, row, datetime.now(UTC)) is False
+    # Still only the original run; a skip is recorded.
+    runs = db.query(AgentTeamRun).filter(AgentTeamRun.task_id == task.id).all()
+    assert len(runs) == 1
+    kinds = [a.kind for a in activity_repo.list_activity(db, task.id)]
+    assert activity_repo.SCHEDULE_SKIPPED in kinds
+
+
+def test_task_schedule_fire_skips_when_autopilot_run_active(db, monkeypatch):
+    """A scheduled fire is skipped if the same agent has an autopilot run going."""
+    from agent_team.features.board.repositories import conversations as conv_repo
+    from agent_team.features.board.repositories import runs as runs_repo
+    from agent_team.features.board.runtime import dispatch
+    from agent_team.features.board.runtime import task_schedule as ts
+
+    monkeypatch.setattr(dispatch, "dispatch_start", lambda run_id: True)
+
+    board, task = _scheduled_board_task(db, agent="agent:a")
+    conv = conv_repo.get_or_create_active_conversation(
+        db, task_id=task.id, agent_alias="agent:a"
+    )
+    # An autopilot (not schedule) run is already in flight for the same agent.
+    runs_repo.create_run(
+        db, task_id=task.id, conversation=conv, agent_alias="agent:a",
+        trigger="autopilot", actor_id=None, prompt="auto",
+    )
+    row = _make_schedule(
+        db, task.id, enabled=True, cron="*/5 * * * *", agent_alias="agent:a",
+    )
+    db.commit()
+
+    from datetime import UTC, datetime
+
+    assert ts._fire(db, row, datetime.now(UTC)) is False
+    # No new scheduled run was created.
+    sched_runs = (
+        db.query(AgentTeamRun)
+        .filter(AgentTeamRun.task_id == task.id, AgentTeamRun.trigger == "schedule")
+        .count()
+    )
+    assert sched_runs == 0
+
+
+def test_task_schedule_fire_ignores_other_agent_run(db, monkeypatch):
+    """An in-flight run for a *different* agent doesn't block the schedule."""
+    from agent_team.features.board.repositories import conversations as conv_repo
+    from agent_team.features.board.repositories import runs as runs_repo
+    from agent_team.features.board.runtime import dispatch
+    from agent_team.features.board.runtime import task_schedule as ts
+
+    monkeypatch.setattr(dispatch, "dispatch_start", lambda run_id: True)
+
+    board = boards_repo.create_board(
+        db, name="Sched", description=None, columns=None, owner_id=None
+    )
+    board.agents_json = json.dumps(["agent:a", "agent:b"])
+    db.flush()
+    task = tasks_repo.create_task(
+        db, board_id=board.id, title="t", description=None, status="todo",
+        assignee_id=None, labels=None, priority=None, created_by=None,
+    )
+    db.flush()
+    # agent:b is busy; the schedule runs agent:a → not blocked.
+    conv = conv_repo.get_or_create_active_conversation(
+        db, task_id=task.id, agent_alias="agent:b"
+    )
+    runs_repo.create_run(
+        db, task_id=task.id, conversation=conv, agent_alias="agent:b",
+        trigger="autopilot", actor_id=None, prompt="auto",
+    )
+    row = _make_schedule(
+        db, task.id, enabled=True, cron="*/5 * * * *", agent_alias="agent:a",
+    )
+    db.commit()
+
+    from datetime import UTC, datetime
+
+    assert ts._fire(db, row, datetime.now(UTC)) is True
+    sched_runs = (
+        db.query(AgentTeamRun)
+        .filter(AgentTeamRun.task_id == task.id, AgentTeamRun.trigger == "schedule")
+        .count()
+    )
+    assert sched_runs == 1
+
+
+def test_task_schedule_fire_new_mode_resets_conversation(db, monkeypatch):
+    """``new`` mode archives the active thread and opens a fresh attempt."""
+    from agent_team.features.board.repositories import conversations as conv_repo
+    from agent_team.features.board.runtime import dispatch
+    from agent_team.features.board.runtime import task_schedule as ts
+
+    monkeypatch.setattr(dispatch, "dispatch_start", lambda run_id: True)
+
+    board, task = _scheduled_board_task(db)
+    first = conv_repo.get_or_create_active_conversation(
+        db, task_id=task.id, agent_alias="agent:a"
+    )
+    assert first.attempt == 1
+    row = _make_schedule(
+        db, task.id, enabled=True, cron="*/5 * * * *", agent_alias="agent:a",
+        conversation_mode="new",
+    )
+    db.commit()
+
+    from datetime import UTC, datetime
+
+    assert ts._fire(db, row, datetime.now(UTC)) is True
+    active = conv_repo.get_active_conversation(db, task_id=task.id, agent_alias="agent:a")
+    assert active.attempt == 2
+
+
+def test_task_schedule_fire_skips_unstaffed_agent(db, monkeypatch):
+    """A schedule whose agent isn't staffed on the board is skipped."""
+    from agent_team.features.board.runtime import dispatch
+    from agent_team.features.board.runtime import task_schedule as ts
+
+    monkeypatch.setattr(dispatch, "dispatch_start", lambda run_id: True)
+
+    board, task = _scheduled_board_task(db, agent="agent:a")
+    row = _make_schedule(
+        db, task.id, enabled=True, cron="*/5 * * * *", agent_alias="agent:ghost",
+    )
+    db.commit()
+
+    from datetime import UTC, datetime
+
+    assert ts._fire(db, row, datetime.now(UTC)) is False
+    assert db.query(AgentTeamRun).filter(AgentTeamRun.task_id == task.id).count() == 0
+
+
+def test_task_schedule_run_tick_advances_cursor(db, monkeypatch):
+    """The tick fires due schedules and advances ``next_run_at`` (at-most-once)."""
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy.orm import sessionmaker
+
+    from agent_team.features.board.runtime import dispatch
+    from agent_team.features.board.runtime import task_schedule as ts
+
+    factory = sessionmaker(
+        bind=db.get_bind(), autoflush=False, autocommit=False, future=True
+    )
+    monkeypatch.setattr(ts, "SessionLocal", factory)
+    monkeypatch.setattr(dispatch, "main_loop_ready", lambda: True)
+    monkeypatch.setattr(dispatch, "dispatch_start", lambda run_id: True)
+
+    board, task = _scheduled_board_task(db)
+    past = datetime.now(UTC) - timedelta(minutes=1)
+    _make_schedule(
+        db, task.id, enabled=True, cron="*/5 * * * *", agent_alias="agent:a",
+        next_run_at=past,
+    )
+    db.commit()
+
+    assert ts.run_tick() == 1
+
+    db.expire_all()
+    refreshed = _make_schedule(db, task.id)
+    assert refreshed.next_run_at is not None
+    # SQLite returns naive datetimes; compare both as naive.
+    assert refreshed.next_run_at.replace(tzinfo=None) > past.replace(tzinfo=None)
+    assert refreshed.last_run_id is not None
