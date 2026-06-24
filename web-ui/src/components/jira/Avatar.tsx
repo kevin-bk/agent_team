@@ -130,7 +130,6 @@ export function AvatarGroup({
   const extra = items.length - shown.length;
   const interactive = !!onItemClick;
   const active = new Set(activeIds ?? []);
-  const hasActive = active.size > 0;
 
   if (items.length === 0 && emptyLabel) {
     const Wrapper = onClick ? "button" : "div";
@@ -165,7 +164,6 @@ export function AvatarGroup({
               className={cn(
                 "-ml-1.5 rounded-full transition-all duration-100 first:ml-0 hover:-translate-y-1",
                 isActive && "ring-2 ring-primary ring-offset-1 ring-offset-card",
-                hasActive && !isActive && "opacity-40 hover:opacity-100",
               )}
             >
               <JiraAvatar

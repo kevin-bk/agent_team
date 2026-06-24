@@ -17,7 +17,14 @@ import {
   Users,
   X,
 } from "@/components/icons";
-import { type ReactNode, useCallback, useMemo, useRef, useState } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { toast } from "sonner";
 import { useApi } from "@/api/ApiProvider";
 import {
@@ -82,6 +89,49 @@ function matchesSelection(
   return selected.includes(value);
 }
 
+interface BoardFilters {
+  assignee: string[];
+  agent: string[];
+  label: string[];
+}
+
+const EMPTY_FILTERS: BoardFilters = { assignee: [], agent: [], label: [] };
+
+/** Per-board filter selections persist in localStorage so F5 keeps them. */
+function filtersKey(boardId: string): string {
+  return `agent_team:board:${boardId}:filters`;
+}
+
+function loadFilters(boardId: string): BoardFilters {
+  try {
+    const raw = localStorage.getItem(filtersKey(boardId));
+    if (!raw) return EMPTY_FILTERS;
+    const parsed = JSON.parse(raw) as Partial<BoardFilters>;
+    const arr = (v: unknown) =>
+      Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+    return {
+      assignee: arr(parsed.assignee),
+      agent: arr(parsed.agent),
+      label: arr(parsed.label),
+    };
+  } catch {
+    return EMPTY_FILTERS;
+  }
+}
+
+function saveFilters(boardId: string, filters: BoardFilters): void {
+  try {
+    const empty =
+      filters.assignee.length === 0 &&
+      filters.agent.length === 0 &&
+      filters.label.length === 0;
+    if (empty) localStorage.removeItem(filtersKey(boardId));
+    else localStorage.setItem(filtersKey(boardId), JSON.stringify(filters));
+  } catch {
+    // Ignore storage failures (private mode / quota) — filters still work in-session.
+  }
+}
+
 interface BoardViewProps {
   boardId: string;
   cockpitTaskKey: string | null;
@@ -95,7 +145,7 @@ export function BoardView(props: BoardViewProps) {
   // list ⇄ cockpit switch so multi-user changes stream in without an F5.
   return (
     <BoardEventsProvider boardId={props.boardId}>
-      <BoardViewInner {...props} />
+      <BoardViewInner key={props.boardId} {...props} />
     </BoardEventsProvider>
   );
 }
@@ -119,9 +169,20 @@ function BoardViewInner({
     { mode: "create"; status: string } | { mode: "edit"; task: TaskDTO } | null
   >(null);
   const [membersOpen, setMembersOpen] = useState(false);
-  const [assigneeFilter, setAssigneeFilter] = useState<string[]>([]);
-  const [agentFilter, setAgentFilter] = useState<string[]>([]);
-  const [labelFilter, setLabelFilter] = useState<string[]>([]);
+  const initialFilters = useMemo(() => loadFilters(boardId), [boardId]);
+  const [assigneeFilter, setAssigneeFilter] = useState<string[]>(
+    initialFilters.assignee,
+  );
+  const [agentFilter, setAgentFilter] = useState<string[]>(initialFilters.agent);
+  const [labelFilter, setLabelFilter] = useState<string[]>(initialFilters.label);
+  // Persist selections per board so a reload (F5) keeps the same filters.
+  useEffect(() => {
+    saveFilters(boardId, {
+      assignee: assigneeFilter,
+      agent: agentFilter,
+      label: labelFilter,
+    });
+  }, [boardId, assigneeFilter, agentFilter, labelFilter]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [agentsOpen, setAgentsOpen] = useState(false);
   const [autopilotOpen, setAutopilotOpen] = useState(false);
