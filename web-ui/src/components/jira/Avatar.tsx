@@ -92,6 +92,8 @@ export interface AvatarGroupItem {
   id: string;
   name?: string | null;
   src?: string | null;
+  /** Tooltip override (e.g. "Name\nemail"); falls back to `name`. */
+  title?: string | null;
 }
 
 /**
@@ -158,7 +160,7 @@ export function AvatarGroup({
               key={m.id}
               type="button"
               onClick={() => onItemClick?.(m.id)}
-              title={m.name || m.id}
+              title={m.title || m.name || m.id}
               aria-pressed={isActive}
               className={cn(
                 "-ml-1.5 rounded-full transition-all duration-100 first:ml-0 hover:-translate-y-1",
@@ -166,7 +168,13 @@ export function AvatarGroup({
                 hasActive && !isActive && "opacity-40 hover:opacity-100",
               )}
             >
-              <JiraAvatar name={m.name} src={m.src} size={size} ring />
+              <JiraAvatar
+                name={m.name}
+                src={m.src}
+                size={size}
+                ring
+                title={m.title || m.name || undefined}
+              />
             </button>
           );
         })}
@@ -194,7 +202,13 @@ export function AvatarGroup({
           key={m.id}
           className="-ml-1.5 transition-transform duration-100 first:ml-0 hover:-translate-y-1"
         >
-          <JiraAvatar name={m.name} src={m.src} size={size} ring />
+          <JiraAvatar
+            name={m.name}
+            src={m.src}
+            size={size}
+            ring
+            title={m.title || m.name || undefined}
+          />
         </span>
       ))}
       {extra > 0 && (

@@ -131,4 +131,23 @@ def build_task_changes(issue: dict, *, board: AgentTeamBoard) -> dict:
     if isinstance(labels, list):
         changes["labels"] = [str(x) for x in labels]
 
+    # People: surface the Jira account email so the service layer can map it to
+    # a local user. Jira may hide the email (GDPR) → emailAddress is then null,
+    # in which case we simply can't auto-assign. Resolution happens in service.py
+    # because it needs DB access (this module stays pure/unit-testable).
+    assignee_email = _account_email(fields.get("assignee"))
+    if assignee_email:
+        changes["assignee_email"] = assignee_email
+    reporter_email = _account_email(fields.get("reporter"))
+    if reporter_email:
+        changes["reporter_email"] = reporter_email
+
     return changes
+
+
+def _account_email(account: object) -> str | None:
+    """Pull a usable email from a Jira user object (or None if absent/hidden)."""
+    if not isinstance(account, dict):
+        return None
+    email = (account.get("emailAddress") or "").strip()
+    return email or None

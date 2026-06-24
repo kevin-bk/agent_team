@@ -100,6 +100,7 @@ def serialize_task(task: AgentTeamTask) -> TaskDTO:
         status=task.status,
         position=task.position,
         assignee_id=task.assignee_id,
+        reporter_id=task.reporter_id,
         agent_assignee=task.agent_assignee,
         labels=task.labels(),
         priority=task.priority,

@@ -23,7 +23,7 @@ class JiraError(Exception):
 
 
 #: Only the fields Phase 1 maps onto a task — keeps payloads small.
-_ISSUE_FIELDS = "summary,description,status,priority,assignee,labels,issuetype"
+_ISSUE_FIELDS = "summary,description,status,priority,assignee,reporter,labels,issuetype"
 
 
 class JiraClient:

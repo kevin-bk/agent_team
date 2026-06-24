@@ -47,6 +47,8 @@ class BoardUpdate(BaseModel):
     #: Which tasks a "sync all" run targets (statuses/task_types/assignee_ids/
     #: exclude_archived). Empty = every linked task.
     jira_sync_filter: dict | None = None
+    #: Whether a sync overwrites the local task status with the Jira status.
+    jira_sync_status: bool | None = None
 
 
 class BoardDTO(BaseModel):
@@ -75,6 +77,8 @@ class BoardDTO(BaseModel):
     jira_project_key: str | None = None
     jira_mappings: dict = Field(default_factory=dict)
     jira_sync_filter: dict = Field(default_factory=dict)
+    #: Whether a sync overwrites the local task status with the Jira status.
+    jira_sync_status: bool = True
     #: True when an API token is stored (so the UI can show "configured").
     jira_has_token: bool = False
     created_at: str | None
@@ -158,6 +162,8 @@ class TaskDTO(BaseModel):
     status: str
     position: float
     assignee_id: str | None
+    #: Human reporter mapped from Jira (null = none).
+    reporter_id: str | None = None
     #: Agent/CLI alias this task is assigned to (null = none).
     agent_assignee: str | None = None
     labels: list[str]

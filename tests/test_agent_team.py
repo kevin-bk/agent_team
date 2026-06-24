@@ -304,6 +304,88 @@ def test_jira_build_task_changes_maps_fields(db):
     assert changes["labels"] == ["backend", "urgent"]
 
 
+def test_jira_build_task_changes_extracts_people_emails(db):
+    """Assignee/reporter account emails surface for later user mapping."""
+    from agent_team.features.board.jira.sync import build_task_changes
+
+    board = boards_repo.create_board(
+        db, name="Team", description=None, columns=None, owner_id=None
+    )
+    db.flush()
+    issue = {
+        "fields": {
+            "summary": "t",
+            "assignee": {"emailAddress": "Alice@Example.com", "displayName": "A"},
+            "reporter": {"emailAddress": "bob@example.com", "displayName": "B"},
+        }
+    }
+    changes = build_task_changes(issue, board=board)
+    assert changes["assignee_email"] == "Alice@Example.com"
+    assert changes["reporter_email"] == "bob@example.com"
+
+    # Hidden email (GDPR) → no key, so nothing to map.
+    hidden = {"fields": {"summary": "t", "assignee": {"displayName": "A"}}}
+    assert "assignee_email" not in build_task_changes(hidden, board=board)
+
+
+def test_jira_apply_maps_people_and_status_toggle(db, monkeypatch):
+    """Sync maps assignee/reporter by email and honours jira_sync_status."""
+    from agent_team.features.board.jira import service as jira_service
+
+    alice = _make_user(db, username="alice")
+    bob = _make_user(db, username="bob")
+    board = boards_repo.create_board(
+        db, name="Team", description=None, columns=None, owner_id=None
+    )
+    board.jira_base_url = "https://acme.atlassian.net"
+    db.flush()
+    task = tasks_repo.create_task(
+        db, board_id=board.id, title="t", description=None, status="todo",
+        assignee_id=None, labels=None, priority=None, created_by=None,
+    )
+    db.flush()
+
+    class FakeClient:
+        def get_issue(self, key):
+            return {
+                "fields": {
+                    "summary": "Synced",
+                    "status": {"name": "In Progress"},
+                    "assignee": {"emailAddress": "alice@example.com"},
+                    "reporter": {"emailAddress": "BOB@example.com"},
+                }
+            }
+
+        def get_comments(self, key, *, max_results=200):
+            return []
+
+        def browse_url(self, key):
+            return f"https://acme.atlassian.net/browse/{key}"
+
+    client = FakeClient()
+
+    # Default (jira_sync_status True): status + people all applied.
+    applied = jira_service.apply_issue_to_task(
+        db, board=board, task=task, client=client, key="ACME-1", actor_id=None
+    )
+    db.flush()
+    assert task.status == "in_progress"
+    assert task.assignee_id == alice.id
+    assert task.reporter_id == bob.id  # case-insensitive email match
+    assert "assignee" in applied and "reporter" in applied and "status" in applied
+
+    # Turn off status overwrite: a later sync keeps the local status.
+    board.jira_sync_status = False
+    task.status = "done"
+    db.flush()
+    applied2 = jira_service.apply_issue_to_task(
+        db, board=board, task=task, client=client, key="ACME-1", actor_id=None
+    )
+    db.flush()
+    assert task.status == "done"
+    assert "status" not in applied2
+
+
 def test_jira_task_matches_filter():
     from types import SimpleNamespace
 

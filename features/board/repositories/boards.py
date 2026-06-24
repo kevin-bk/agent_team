@@ -102,6 +102,7 @@ def serialize_board(
         jira_project_key=board.jira_project_key,
         jira_mappings=board.jira_mappings(),
         jira_sync_filter=board.jira_sync_filter(),
+        jira_sync_status=board.jira_sync_status,
         jira_has_token=board.jira_has_token(),
         created_at=board.created_at.isoformat() if board.created_at else None,
         updated_at=board.updated_at.isoformat() if board.updated_at else None,

@@ -119,7 +119,7 @@ def apply_issue_to_task(
             referenced |= ref
         task.description = desc
         applied.append("description")
-    if changes.get("status") in valid_columns:
+    if board.jira_sync_status and changes.get("status") in valid_columns:
         task.status = changes["status"]
         applied.append("status")
     if "priority" in changes:
@@ -131,6 +131,17 @@ def apply_issue_to_task(
     if "labels" in changes:
         task.labels_json = json.dumps(changes["labels"])
         applied.append("labels")
+
+    # Map Jira people to local users by email. Only set when a matching user
+    # exists; never wipe an existing assignment when Jira hides the email.
+    assignee_uid = _user_id_for_email(db, changes.get("assignee_email"))
+    if assignee_uid and assignee_uid != task.assignee_id:
+        task.assignee_id = assignee_uid
+        applied.append("assignee")
+    reporter_uid = _user_id_for_email(db, changes.get("reporter_email"))
+    if reporter_uid and reporter_uid != task.reporter_id:
+        task.reporter_id = reporter_uid
+        applied.append("reporter")
 
     task.jira_key = key
     task.jira_url = client.browse_url(key)
@@ -158,6 +169,22 @@ def apply_issue_to_task(
         data={"jira_key": key, "fields": applied, "attachments_note": note_files},
     )
     return applied
+
+
+def _user_id_for_email(db: Session, email: str | None) -> str | None:
+    """Resolve a local user id from a Jira account email (case-insensitive)."""
+    if not email:
+        return None
+    from sqlalchemy import func
+
+    from core.database.models import User
+
+    row = (
+        db.query(User.id)
+        .filter(func.lower(User.email) == email.strip().lower())
+        .first()
+    )
+    return row[0] if row else None
 
 
 def _comment_body(comment: dict) -> str:

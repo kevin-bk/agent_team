@@ -185,6 +185,7 @@ function BoardViewInner({
         id: m.user_id,
         label: m.display_name || m.email || m.user_id,
         avatar: m.avatar_url,
+        sub: m.email,
       })),
     [members.data],
   );
@@ -512,6 +513,8 @@ interface FilterOption {
   id: string;
   label: string;
   avatar?: string | null;
+  /** Secondary text (e.g. email) shown in tooltips/sub-labels. */
+  sub?: string | null;
 }
 
 function FilterBar({
@@ -564,6 +567,7 @@ function FilterBar({
           id: m.id,
           name: m.label,
           src: m.avatar,
+          title: m.sub && m.sub !== m.label ? `${m.label}\n${m.sub}` : m.label,
         }))}
         size={28}
         max={8}
@@ -701,7 +705,14 @@ function MultiSelectFilter({
                 ) : opt.avatar !== undefined ? (
                   <span className="flex min-w-0 items-center gap-2">
                     <JiraAvatar name={opt.label} src={opt.avatar} size={20} />
-                    <span className="truncate">{opt.label}</span>
+                    <span className="flex min-w-0 flex-col">
+                      <span className="truncate leading-tight">{opt.label}</span>
+                      {opt.sub && opt.sub !== opt.label && (
+                        <span className="truncate text-[11px] leading-tight text-muted-foreground">
+                          {opt.sub}
+                        </span>
+                      )}
+                    </span>
                   </span>
                 ) : (
                   <span className="truncate">{opt.label}</span>

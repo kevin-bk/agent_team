@@ -210,6 +210,8 @@ export interface BoardDTO {
   jira_project_key?: string | null;
   jira_mappings?: Record<string, Record<string, string>>;
   jira_sync_filter?: JiraSyncFilter;
+  /** Whether a sync overwrites the local task status with the Jira status. */
+  jira_sync_status?: boolean;
   jira_has_token?: boolean;
 }
 
@@ -293,6 +295,8 @@ export interface TaskDTO {
   status: string;
   position: number;
   assignee_id?: string | null;
+  /** Human reporter mapped from Jira (by account email). */
+  reporter_id?: string | null;
   /** Agent/CLI alias this task is assigned to (autopilot ownership). */
   agent_assignee?: string | null;
   labels: string[];
@@ -334,6 +338,7 @@ export interface PatchBoardBody {
   jira_project_key?: string | null;
   jira_mappings?: Record<string, Record<string, string>>;
   jira_sync_filter?: JiraSyncFilter;
+  jira_sync_status?: boolean;
 }
 
 export interface CreateTaskBody {

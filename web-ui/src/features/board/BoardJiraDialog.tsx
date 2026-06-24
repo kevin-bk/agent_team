@@ -76,6 +76,7 @@ export function BoardJiraDialog({
   const [projectKey, setProjectKey] = useState(board.jira_project_key ?? "");
   const [token, setToken] = useState("");
   const [clearToken, setClearToken] = useState(false);
+  const [syncStatus, setSyncStatus] = useState(board.jira_sync_status ?? true);
   const hasToken = board.jira_has_token ?? false;
 
   // Jira-side import filter (narrows the project query → smaller preview).
@@ -91,6 +92,7 @@ export function BoardJiraDialog({
     setProjectKey(board.jira_project_key ?? "");
     setToken("");
     setClearToken(false);
+    setSyncStatus(board.jira_sync_status ?? true);
     const f = board.jira_sync_filter ?? {};
     setIssueTypes(f.issue_types ?? []);
     setStatusCategories(f.status_categories ?? []);
@@ -106,6 +108,7 @@ export function BoardJiraDialog({
       jira_base_url: baseUrl.trim() || null,
       jira_email: email.trim() || null,
       jira_project_key: projectKey.trim() || null,
+      jira_sync_status: syncStatus,
       jira_sync_filter: {
         issue_types: issueTypes,
         status_categories: statusCategories,
@@ -231,6 +234,31 @@ export function BoardJiraDialog({
               </a>
               . Stored on the server and never shown again.
             </span>
+          </div>
+
+          {/* ── Sync behaviour ─────────────────────────────────────────── */}
+          <div className="grid gap-2 border-t border-border pt-3">
+            <span className="text-[13px] font-semibold text-foreground">
+              Sync behaviour
+            </span>
+            <label className="flex cursor-pointer items-start gap-2.5">
+              <input
+                type="checkbox"
+                checked={syncStatus}
+                onChange={(e) => setSyncStatus(e.target.checked)}
+                className="mt-0.5 h-3.5 w-3.5 accent-primary"
+              />
+              <span className="grid gap-0.5">
+                <span className="text-[13px] font-medium text-foreground">
+                  Update task status from Jira
+                </span>
+                <span className="text-[12px] text-muted-foreground/80">
+                  When on, a sync moves the card to the column mapped from the
+                  Jira status. Turn off to keep the board status under local
+                  control (other fields still sync).
+                </span>
+              </span>
+            </label>
           </div>
 
           {/* ── Import filter (Jira-side, narrows the preview) ─────────── */}

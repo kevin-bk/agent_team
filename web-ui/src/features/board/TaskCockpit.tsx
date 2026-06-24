@@ -864,8 +864,8 @@ function TaskDetailsPanel({
         </DetailRow>
         <DetailRow label="Reporter">
           <PersonInline
-            name={nameOf(task.created_by)}
-            avatar={avatarOf(task.created_by)}
+            name={nameOf(task.reporter_id ?? task.created_by)}
+            avatar={avatarOf(task.reporter_id ?? task.created_by)}
           />
         </DetailRow>
         <DetailRow label="Assignee">

@@ -115,6 +115,12 @@ class AgentTeamBoard(Base):
     jira_mappings_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     #: JSON object describing which tasks a batch ("sync all") run targets.
     jira_sync_filter_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    #: When True (default), a Jira sync overwrites the local task status with the
+    #: mapped Jira status. Turn off to keep the board status under local control
+    #: while still syncing the other fields.
+    jira_sync_status: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True
+    )
     archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
@@ -223,6 +229,12 @@ class AgentTeamTask(Base):
     #: renumbering siblings.
     position: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     assignee_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    #: Human reporter (who raised the issue), set from Jira's reporter on sync by
+    #: matching the Jira account email to a local user. Distinct from
+    #: ``created_by`` (whoever created the task row in our system).
+    reporter_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
     )
     #: Agent (or direct-CLI) alias this task is assigned to, e.g. an agent id or

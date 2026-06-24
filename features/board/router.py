@@ -212,6 +212,8 @@ async def update_board(
         board.jira_mappings_json = json.dumps(payload.jira_mappings)
     if payload.jira_sync_filter is not None:
         board.jira_sync_filter_json = json.dumps(payload.jira_sync_filter)
+    if payload.jira_sync_status is not None:
+        board.jira_sync_status = payload.jira_sync_status
     if "jira_api_token" in fields_set:
         # Omit the field to keep the stored token; send "" to clear it.
         token = (payload.jira_api_token or "").strip()
