@@ -2,6 +2,7 @@ import {
   ArrowLeft,
   Bot,
   Calendar,
+  Check,
   ChevronDown,
   Columns3,
   Download,
@@ -14,20 +15,30 @@ import {
   Settings,
   Tag,
   Users,
+  X,
 } from "@/components/icons";
 import { type ReactNode, useCallback, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useApi } from "@/api/ApiProvider";
 import {
+  useAgents,
   useAutopilot,
   useBoard,
   useBoardMembers,
   useBoardTasks,
+  useCliTargets,
   useMoveTask,
 } from "@/api/hooks";
 import type { BoardMemberDTO, TaskDTO } from "@/api/types";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { BoardImportDialog } from "./BoardImportDialog";
-import { AvatarGroup, Breadcrumbs, JiraIcon } from "@/components/jira";
+import { AvatarGroup, Breadcrumbs, JiraAvatar, JiraIcon } from "@/components/jira";
 import { Button } from "@/components/ui/button";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -56,6 +67,19 @@ function matchesQuery(task: TaskDTO, q: string): boolean {
     (task.jira_key?.toLowerCase().includes(needle) ?? false) ||
     task.labels.some((l) => l.toLowerCase().includes(needle))
   );
+}
+
+/** Sentinel filter value for "no assignee / no agent". */
+const UNASSIGNED = "__unassigned__";
+
+/** Multi-select OR-match against a task field (empty selection = match all). */
+function matchesSelection(
+  selected: string[],
+  value: string | null | undefined,
+): boolean {
+  if (selected.length === 0) return true;
+  if (!value) return selected.includes(UNASSIGNED);
+  return selected.includes(value);
 }
 
 interface BoardViewProps {
@@ -89,10 +113,15 @@ function BoardViewInner({
   const move = useMoveTask(boardId);
 
   const members = useBoardMembers(boardId);
+  const agents = useAgents();
+  const cliTargets = useCliTargets();
   const [dialog, setDialog] = useState<
     { mode: "create"; status: string } | { mode: "edit"; task: TaskDTO } | null
   >(null);
   const [membersOpen, setMembersOpen] = useState(false);
+  const [assigneeFilter, setAssigneeFilter] = useState<string[]>([]);
+  const [agentFilter, setAgentFilter] = useState<string[]>([]);
+  const [labelFilter, setLabelFilter] = useState<string[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [agentsOpen, setAgentsOpen] = useState(false);
   const [autopilotOpen, setAutopilotOpen] = useState(false);
@@ -132,14 +161,61 @@ function BoardViewInner({
 
   const tasks = useMemo(() => tasksQuery.data ?? [], [tasksQuery.data]);
   const visibleTasks = useMemo(
-    () => tasks.filter((t) => matchesQuery(t, query)),
-    [tasks, query],
+    () =>
+      tasks.filter(
+        (t) =>
+          matchesQuery(t, query) &&
+          matchesSelection(assigneeFilter, t.assignee_id) &&
+          matchesSelection(agentFilter, t.agent_assignee) &&
+          (labelFilter.length === 0 ||
+            t.labels.some((l) => labelFilter.includes(l))),
+      ),
+    [tasks, query, assigneeFilter, agentFilter, labelFilter],
   );
   const membersById = useMemo(() => {
     const map = new Map<string, BoardMemberDTO>();
     for (const m of members.data ?? []) map.set(m.user_id, m);
     return map;
   }, [members.data]);
+
+  // Filter option lists ────────────────────────────────────────────────
+  const memberOptions = useMemo<FilterOption[]>(
+    () =>
+      (members.data ?? []).map((m) => ({
+        id: m.user_id,
+        label: m.display_name || m.email || m.user_id,
+        avatar: m.avatar_url,
+      })),
+    [members.data],
+  );
+  const agentOptions = useMemo<FilterOption[]>(() => {
+    const staffedAgents = new Set(board.data?.agent_ids ?? []);
+    const staffedClis = new Set(board.data?.cli_target_ids ?? []);
+    const out: FilterOption[] = [];
+    for (const a of agents.data ?? [])
+      if (staffedAgents.has(a.id)) out.push({ id: a.id, label: a.display_name });
+    for (const t of cliTargets.data ?? [])
+      if (staffedClis.has(t.id))
+        out.push({ id: t.id, label: `${t.label} (direct)` });
+    return out;
+  }, [board.data?.agent_ids, board.data?.cli_target_ids, agents.data, cliTargets.data]);
+  const labelOptions = useMemo<FilterOption[]>(() => {
+    const seen = new Set<string>();
+    for (const t of tasks) for (const l of t.labels) seen.add(l);
+    return [...seen].sort().map((l) => ({ id: l, label: l }));
+  }, [tasks]);
+
+  const toggleIn = (setter: typeof setAssigneeFilter) => (id: string) =>
+    setter((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    );
+  const clearAllFilters = () => {
+    setAssigneeFilter([]);
+    setAgentFilter([]);
+    setLabelFilter([]);
+  };
+  const activeFilterCount =
+    assigneeFilter.length + agentFilter.length + labelFilter.length;
   const taskCounts = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const t of tasks) counts[t.status] = (counts[t.status] ?? 0) + 1;
@@ -330,8 +406,18 @@ function BoardViewInner({
         <FilterBar
           query={query}
           onQuery={setQuery}
-          members={members.data ?? []}
-          onMembersClick={() => setMembersOpen(true)}
+          memberOptions={memberOptions}
+          agentOptions={agentOptions}
+          labelOptions={labelOptions}
+          assigneeFilter={assigneeFilter}
+          agentFilter={agentFilter}
+          labelFilter={labelFilter}
+          onToggleAssignee={toggleIn(setAssigneeFilter)}
+          onToggleAgent={toggleIn(setAgentFilter)}
+          onToggleLabel={toggleIn(setLabelFilter)}
+          activeFilterCount={activeFilterCount}
+          onClearFilters={clearAllFilters}
+          onManageMembers={() => setMembersOpen(true)}
         />
       </div>
 
@@ -422,20 +508,45 @@ function BoardViewInner({
   );
 }
 
+interface FilterOption {
+  id: string;
+  label: string;
+  avatar?: string | null;
+}
+
 function FilterBar({
   query,
   onQuery,
-  members,
-  onMembersClick,
+  memberOptions,
+  agentOptions,
+  labelOptions,
+  assigneeFilter,
+  agentFilter,
+  labelFilter,
+  onToggleAssignee,
+  onToggleAgent,
+  onToggleLabel,
+  activeFilterCount,
+  onClearFilters,
+  onManageMembers,
 }: {
   query: string;
   onQuery: (q: string) => void;
-  members: BoardMemberDTO[];
-  onMembersClick: () => void;
+  memberOptions: FilterOption[];
+  agentOptions: FilterOption[];
+  labelOptions: FilterOption[];
+  assigneeFilter: string[];
+  agentFilter: string[];
+  labelFilter: string[];
+  onToggleAssignee: (id: string) => void;
+  onToggleAgent: (id: string) => void;
+  onToggleLabel: (id: string) => void;
+  activeFilterCount: number;
+  onClearFilters: () => void;
+  onManageMembers: () => void;
 }) {
-  // Demo layout: compact search field, then the avatar stack (lift on
-  // hover), then plain borderless text-button filters — all on the page,
-  // no bar chrome.
+  // Compact search field, then the clickable avatar stack (click a face to
+  // filter by that assignee, Jira-style), then multi-select filter dropdowns.
   return (
     <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2">
       <div className="relative w-40 focus-within:w-52 transition-all duration-150">
@@ -449,36 +560,159 @@ function FilterBar({
       </div>
 
       <AvatarGroup
-        items={members.map((m) => ({
-          id: m.user_id,
-          name: m.display_name || m.email || m.user_id,
-          src: m.avatar_url,
+        items={memberOptions.map((m) => ({
+          id: m.id,
+          name: m.label,
+          src: m.avatar,
         }))}
         size={28}
-        max={6}
-        onClick={onMembersClick}
+        max={8}
+        onItemClick={onToggleAssignee}
+        activeIds={assigneeFilter}
+        onClick={onManageMembers}
         emptyLabel="Members"
         className="px-1"
       />
 
-      <FilterButton icon={<Users className="h-3.5 w-3.5" />} label="Assignee" />
-      <FilterButton icon={<Bot className="h-3.5 w-3.5" />} label="Agent" />
-      <FilterButton icon={<Tag className="h-3.5 w-3.5" />} label="Label" />
+      <MultiSelectFilter
+        icon={<Users className="h-3.5 w-3.5" />}
+        label="Assignee"
+        options={memberOptions}
+        selected={assigneeFilter}
+        onToggle={onToggleAssignee}
+        includeUnassigned
+        footer={
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={onManageMembers}>
+              <Plus className="h-3.5 w-3.5" /> Manage members…
+            </DropdownMenuItem>
+          </>
+        }
+      />
+      <MultiSelectFilter
+        icon={<Bot className="h-3.5 w-3.5" />}
+        label="Agent"
+        options={agentOptions}
+        selected={agentFilter}
+        onToggle={onToggleAgent}
+        includeUnassigned
+        emptyHint="No agents staffed on this board."
+      />
+      <MultiSelectFilter
+        icon={<Tag className="h-3.5 w-3.5" />}
+        label="Label"
+        options={labelOptions}
+        selected={labelFilter}
+        onToggle={onToggleLabel}
+        emptyHint="No labels on this board yet."
+      />
+
+      {activeFilterCount > 0 && (
+        <button
+          type="button"
+          onClick={onClearFilters}
+          className="inline-flex h-8 items-center gap-1 rounded px-2 text-[13px] text-muted-foreground transition-colors hover:bg-surface-1 hover:text-foreground"
+        >
+          <X className="h-3.5 w-3.5" /> Clear ({activeFilterCount})
+        </button>
+      )}
     </div>
   );
 }
 
-/** Borderless "btn-empty" filter (jira-clone style): plain text, gray hover. */
-function FilterButton({ icon, label }: { icon: ReactNode; label: string }) {
+/**
+ * Borderless Jira-style filter that opens a multi-select checklist dropdown.
+ * Selecting an item toggles it without closing the menu.
+ */
+function MultiSelectFilter({
+  icon,
+  label,
+  options,
+  selected,
+  onToggle,
+  includeUnassigned,
+  emptyHint,
+  footer,
+}: {
+  icon: ReactNode;
+  label: string;
+  options: FilterOption[];
+  selected: string[];
+  onToggle: (id: string) => void;
+  includeUnassigned?: boolean;
+  emptyHint?: string;
+  footer?: ReactNode;
+}) {
+  const count = selected.length;
+  const allOptions: FilterOption[] = includeUnassigned
+    ? [{ id: UNASSIGNED, label: "Unassigned" }, ...options]
+    : options;
   return (
-    <button
-      type="button"
-      className="inline-flex h-8 items-center gap-1.5 rounded px-2.5 text-[14px] text-foreground transition-colors duration-100 hover:bg-surface-1 active:bg-primary/10 active:text-primary"
-    >
-      {icon}
-      {label}
-      <ChevronDown className="h-3 w-3 text-muted-foreground" />
-    </button>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            "inline-flex h-8 items-center gap-1.5 rounded px-2.5 text-[14px] transition-colors duration-100 hover:bg-surface-1",
+            count > 0
+              ? "bg-primary/10 text-primary"
+              : "text-foreground active:bg-primary/10 active:text-primary",
+          )}
+        >
+          {icon}
+          {label}
+          {count > 0 && (
+            <span className="ml-0.5 rounded-full bg-primary px-1.5 text-[11px] font-semibold text-primary-foreground">
+              {count}
+            </span>
+          )}
+          <ChevronDown className="h-3 w-3 text-muted-foreground" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="max-h-80 w-56 overflow-y-auto">
+        {options.length === 0 && !includeUnassigned ? (
+          <div className="px-2 py-3 text-center text-[12px] text-muted-foreground">
+            {emptyHint ?? "No options."}
+          </div>
+        ) : (
+          allOptions.map((opt) => {
+            const checked = selected.includes(opt.id);
+            return (
+              <DropdownMenuItem
+                key={opt.id}
+                onSelect={(e) => {
+                  e.preventDefault();
+                  onToggle(opt.id);
+                }}
+              >
+                <span
+                  className={cn(
+                    "flex h-4 w-4 shrink-0 items-center justify-center rounded border",
+                    checked
+                      ? "border-primary bg-primary text-primary-foreground"
+                      : "border-border-strong",
+                  )}
+                >
+                  {checked && <Check className="h-3 w-3" />}
+                </span>
+                {opt.id === UNASSIGNED ? (
+                  <span className="italic text-muted-foreground">{opt.label}</span>
+                ) : opt.avatar !== undefined ? (
+                  <span className="flex min-w-0 items-center gap-2">
+                    <JiraAvatar name={opt.label} src={opt.avatar} size={20} />
+                    <span className="truncate">{opt.label}</span>
+                  </span>
+                ) : (
+                  <span className="truncate">{opt.label}</span>
+                )}
+              </DropdownMenuItem>
+            );
+          })
+        )}
+        {footer}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 

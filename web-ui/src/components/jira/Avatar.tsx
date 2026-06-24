@@ -103,21 +103,35 @@ export function AvatarGroup({
   max = 5,
   size = 28,
   onClick,
+  onItemClick,
+  activeIds,
   className,
   emptyLabel,
 }: {
   items: AvatarGroupItem[];
   max?: number;
   size?: number;
+  /** Click handler for the whole stack (e.g. open a members dialog). */
   onClick?: () => void;
+  /**
+   * Per-avatar click handler. When provided, each face becomes individually
+   * clickable (Jira-style assignee filtering) and `onClick` is ignored on the
+   * faces; the active ones get a highlight ring while the rest dim.
+   */
+  onItemClick?: (id: string) => void;
+  /** Ids that are currently "selected" — highlighted, others dimmed. */
+  activeIds?: string[];
   className?: string;
   emptyLabel?: string;
 }) {
   const shown = items.slice(0, max);
   const extra = items.length - shown.length;
-  const Wrapper = onClick ? "button" : "div";
+  const interactive = !!onItemClick;
+  const active = new Set(activeIds ?? []);
+  const hasActive = active.size > 0;
 
   if (items.length === 0 && emptyLabel) {
+    const Wrapper = onClick ? "button" : "div";
     return (
       <Wrapper
         type={onClick ? "button" : undefined}
@@ -132,6 +146,43 @@ export function AvatarGroup({
     );
   }
 
+  // Interactive (per-avatar) mode: a plain container holding avatar buttons —
+  // avoids nesting buttons. Non-interactive mode keeps the original behaviour.
+  if (interactive) {
+    return (
+      <div className={cn("flex items-center", className)}>
+        {shown.map((m) => {
+          const isActive = active.has(m.id);
+          return (
+            <button
+              key={m.id}
+              type="button"
+              onClick={() => onItemClick?.(m.id)}
+              title={m.name || m.id}
+              aria-pressed={isActive}
+              className={cn(
+                "-ml-1.5 rounded-full transition-all duration-100 first:ml-0 hover:-translate-y-1",
+                isActive && "ring-2 ring-primary ring-offset-1 ring-offset-card",
+                hasActive && !isActive && "opacity-40 hover:opacity-100",
+              )}
+            >
+              <JiraAvatar name={m.name} src={m.src} size={size} ring />
+            </button>
+          );
+        })}
+        {extra > 0 && (
+          <span
+            style={{ width: size, height: size }}
+            className="-ml-1.5 flex items-center justify-center rounded-full bg-accent text-[11px] font-semibold text-muted-foreground ring-2 ring-card"
+          >
+            +{extra}
+          </span>
+        )}
+      </div>
+    );
+  }
+
+  const Wrapper = onClick ? "button" : "div";
   return (
     <Wrapper
       type={onClick ? "button" : undefined}
