@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from sqlalchemy.orm import Session
 
 from agent_team.features.board import attachments
+from agent_team.features.board import authz
 from agent_team.features.board import workspace as ws_module
 from agent_team.features.board.board_events import get_board_bus
 from agent_team.features.board.jira import service as jira_service
@@ -90,16 +91,19 @@ async def list_boards(request: Request, db: Session = Depends(get_db)):
     from agent_team.features.board.runtime.dispatch import capture_main_loop
 
     capture_main_loop()
-    boards = boards_repo.list_boards(db)
-    counts = boards_repo.task_counts_by_board(db, [b.id for b in boards])
     is_admin = _is_admin(user)
+    # Only surface boards the caller can actually access (owner/member/admin).
+    visible: list[tuple] = []
+    for b in boards_repo.list_boards(db):
+        role = members_repo.access_role(db, b, user_id=user.id, is_admin=is_admin)
+        if role is not None:
+            visible.append((b, role))
+    counts = boards_repo.task_counts_by_board(db, [b.id for b, _ in visible])
     return [
         boards_repo.serialize_board(
-            b,
-            task_count=counts.get(b.id, 0),
-            my_role=members_repo.effective_role(db, b, user_id=user.id, is_admin=is_admin),
+            b, task_count=counts.get(b.id, 0), my_role=role
         )
-        for b in boards
+        for b, role in visible
     ]
 
 
@@ -125,18 +129,13 @@ async def create_board(
 
 @router.get("/boards/{board_id}")
 async def get_board(board_id: str, request: Request, db: Session = Depends(get_db)):
-    user, err = auth_or_401(db, request)
+    ctx, err = authz.guard_board(db, request, board_id, min_role="viewer")
     if err:
         return err
-    board = boards_repo.get_board(db, board_id)
-    if board is None:
-        return not_found("Board not found")
+    board = ctx.board
     counts = boards_repo.task_counts_by_board(db, [board.id])
-    my_role = members_repo.effective_role(
-        db, board, user_id=user.id, is_admin=_is_admin(user)
-    )
     return boards_repo.serialize_board(
-        board, task_count=counts.get(board.id, 0), my_role=my_role
+        board, task_count=counts.get(board.id, 0), my_role=ctx.role
     )
 
 
@@ -144,12 +143,12 @@ async def get_board(board_id: str, request: Request, db: Session = Depends(get_d
 async def update_board(
     board_id: str, payload: BoardUpdate, request: Request, db: Session = Depends(get_db)
 ):
-    user, err = auth_or_401(db, request)
+    # Board configuration (settings, agents, Jira, autopilot wiring, archive) is
+    # owner-only.
+    ctx, err = authz.guard_board(db, request, board_id, min_role="owner")
     if err:
         return err
-    board = boards_repo.get_board(db, board_id)
-    if board is None:
-        return not_found("Board not found")
+    board = ctx.board
     if payload.name is not None:
         board.name = payload.name.strip()
     if payload.description is not None:
@@ -222,11 +221,8 @@ async def update_board(
     db.commit()
     db.refresh(board)
     counts = boards_repo.task_counts_by_board(db, [board.id])
-    my_role = members_repo.effective_role(
-        db, board, user_id=user.id, is_admin=_is_admin(user)
-    )
     return boards_repo.serialize_board(
-        board, task_count=counts.get(board.id, 0), my_role=my_role
+        board, task_count=counts.get(board.id, 0), my_role=ctx.role
     )
 
 
@@ -237,12 +233,9 @@ async def update_board(
 
 @router.get("/boards/{board_id}/tasks")
 async def list_tasks(board_id: str, request: Request, db: Session = Depends(get_db)):
-    _, err = auth_or_401(db, request)
+    _, err = authz.guard_board(db, request, board_id, min_role="viewer")
     if err:
         return err
-    board = boards_repo.get_board(db, board_id)
-    if board is None:
-        return not_found("Board not found")
     tasks = tasks_repo.list_tasks(db, board_id=board_id)
     return [tasks_repo.serialize_task(t) for t in tasks]
 
@@ -290,51 +283,41 @@ def _create_task(db: Session, *, board, payload: TaskCreate, actor_id: str):
 async def create_task(
     board_id: str, payload: TaskCreate, request: Request, db: Session = Depends(get_db)
 ):
-    user, err = auth_or_401(db, request)
+    ctx, err = authz.guard_board(db, request, board_id, min_role="editor")
     if err:
         return err
-    board = boards_repo.get_board(db, board_id)
-    if board is None:
-        return not_found("Board not found")
-    return _create_task(db, board=board, payload=payload, actor_id=user.id)
+    return _create_task(db, board=ctx.board, payload=payload, actor_id=ctx.user.id)
 
 
 @router.post("/tasks")
 async def create_task_flat(
     payload: TaskCreate, request: Request, db: Session = Depends(get_db)
 ):
-    user, err = auth_or_401(db, request)
-    if err:
-        return err
     if not payload.board_id:
         return JSONResponse(status_code=400, content={"detail": "board_id is required"})
-    board = boards_repo.get_board(db, payload.board_id)
-    if board is None:
-        return not_found("Board not found")
-    return _create_task(db, board=board, payload=payload, actor_id=user.id)
+    ctx, err = authz.guard_board(db, request, payload.board_id, min_role="editor")
+    if err:
+        return err
+    return _create_task(db, board=ctx.board, payload=payload, actor_id=ctx.user.id)
 
 
 @router.get("/tasks/{task_id}")
 async def get_task(task_id: str, request: Request, db: Session = Depends(get_db)):
-    _, err = auth_or_401(db, request)
+    ctx, err = authz.guard_task(db, request, task_id, min_role="viewer")
     if err:
         return err
-    task = tasks_repo.get_task(db, task_id)
-    if task is None:
-        return not_found("Task not found")
-    return tasks_repo.serialize_task(task)
+    return tasks_repo.serialize_task(ctx.task)
 
 
 @router.patch("/tasks/{task_id}")
 async def update_task(
     task_id: str, payload: TaskUpdate, request: Request, db: Session = Depends(get_db)
 ):
-    user, err = auth_or_401(db, request)
+    ctx, err = authz.guard_task(db, request, task_id, min_role="editor")
     if err:
         return err
-    task = tasks_repo.get_task(db, task_id)
-    if task is None:
-        return not_found("Task not found")
+    user = ctx.user
+    task = ctx.task
 
     changes: dict[str, dict] = {}
 
@@ -406,14 +389,13 @@ async def sync_task_from_jira(
     db: Session = Depends(get_db),
 ):
     """Pull a linked Jira issue's fields onto the task (Phase 1, one-way)."""
-    user, err = auth_or_401(db, request)
+    ctx, err = authz.guard_task(db, request, task_id, min_role="editor")
     if err:
         return err
-    task = tasks_repo.get_task(db, task_id)
-    if task is None:
-        return not_found("Task not found")
-    board = boards_repo.get_board(db, task.board_id)
-    if board is None or not board.jira_enabled:
+    user = ctx.user
+    task = ctx.task
+    board = ctx.board
+    if not board.jira_enabled:
         return JSONResponse(
             status_code=422,
             content={"detail": "Jira sync is not enabled for this board"},
@@ -464,12 +446,10 @@ async def preview_board_jira_sync(
     those issues (across any project) so the user can confirm before importing.
     Each row is marked *new* or *update* depending on whether a task is linked.
     """
-    user, err = auth_or_401(db, request)
+    ctx, err = authz.guard_board(db, request, board_id, min_role="editor")
     if err:
         return err
-    board = boards_repo.get_board(db, board_id)
-    if board is None:
-        return not_found("Board not found")
+    board = ctx.board
     if not board.jira_enabled:
         return JSONResponse(
             status_code=422,
@@ -559,12 +539,11 @@ async def import_issue_from_jira(
     New tasks land in the board's first column (the Jira status mapping may then
     move them). Called once per selected issue so the UI can show progress.
     """
-    user, err = auth_or_401(db, request)
+    ctx, err = authz.guard_board(db, request, board_id, min_role="editor")
     if err:
         return err
-    board = boards_repo.get_board(db, board_id)
-    if board is None:
-        return not_found("Board not found")
+    user = ctx.user
+    board = ctx.board
     if not board.jira_enabled:
         return JSONResponse(
             status_code=422,
@@ -623,12 +602,11 @@ async def sync_board_from_jira(
     board_id: str, request: Request, db: Session = Depends(get_db)
 ):
     """Pull every linked task on the board that matches its sync filter."""
-    user, err = auth_or_401(db, request)
+    ctx, err = authz.guard_board(db, request, board_id, min_role="editor")
     if err:
         return err
-    board = boards_repo.get_board(db, board_id)
-    if board is None:
-        return not_found("Board not found")
+    user = ctx.user
+    board = ctx.board
     if not board.jira_enabled:
         return JSONResponse(
             status_code=422,
@@ -659,13 +637,12 @@ async def sync_board_from_jira(
 async def move_task(
     task_id: str, payload: TaskMove, request: Request, db: Session = Depends(get_db)
 ):
-    user, err = auth_or_401(db, request)
+    ctx, err = authz.guard_task(db, request, task_id, min_role="editor")
     if err:
         return err
-    task = tasks_repo.get_task(db, task_id)
-    if task is None:
-        return not_found("Task not found")
-    board = boards_repo.get_board(db, task.board_id)
+    user = ctx.user
+    task = ctx.task
+    board = ctx.board
     if board is not None and payload.status not in {c["key"] for c in board.columns()}:
         return JSONResponse(
             status_code=400,
@@ -701,12 +678,10 @@ async def move_task(
 
 @router.delete("/tasks/{task_id}")
 async def archive_task(task_id: str, request: Request, db: Session = Depends(get_db)):
-    _, err = auth_or_401(db, request)
+    ctx, err = authz.guard_task(db, request, task_id, min_role="editor")
     if err:
         return err
-    task = tasks_repo.get_task(db, task_id)
-    if task is None:
-        return not_found("Task not found")
+    task = ctx.task
     task.archived = True
     board_id = task.board_id
     # Reclaim disk: drop the per-task repo working copies (re-created on demand if
@@ -742,12 +717,10 @@ async def export_board_tasks_csv(
     db: Session = Depends(get_db),
 ):
     """Download the board's tasks as CSV (one row per task)."""
-    _, err = auth_or_401(db, request)
+    ctx, err = authz.guard_board(db, request, board_id, min_role="viewer")
     if err:
         return err
-    board = boards_repo.get_board(db, board_id)
-    if board is None:
-        return not_found("Board not found")
+    board = ctx.board
     from agent_team.features.board import csv_tasks
 
     body = csv_tasks.export_tasks_csv(db, board, include_archived=include_archived)
@@ -779,12 +752,10 @@ async def preview_board_tasks_csv(
     db: Session = Depends(get_db),
 ):
     """Dry-run an upload: validate every row and report create/update/error."""
-    _, err = auth_or_401(db, request)
+    ctx, err = authz.guard_board(db, request, board_id, min_role="editor")
     if err:
         return err
-    board = boards_repo.get_board(db, board_id)
-    if board is None:
-        return not_found("Board not found")
+    board = ctx.board
     from agent_team.features.board import csv_tasks
 
     data = await file.read()
@@ -803,12 +774,11 @@ async def import_board_tasks_csv(
     db: Session = Depends(get_db),
 ):
     """Apply an upload: create/update tasks, then refresh the board."""
-    user, err = auth_or_401(db, request)
+    ctx, err = authz.guard_board(db, request, board_id, min_role="editor")
     if err:
         return err
-    board = boards_repo.get_board(db, board_id)
-    if board is None:
-        return not_found("Board not found")
+    user = ctx.user
+    board = ctx.board
     from agent_team.features.board import csv_tasks
 
     data = await file.read()
@@ -834,12 +804,10 @@ async def import_board_tasks_csv(
 
 @router.get("/tasks/{task_id}/repos")
 async def list_task_repos(task_id: str, request: Request, db: Session = Depends(get_db)):
-    _, err = auth_or_401(db, request)
+    ctx, err = authz.guard_task(db, request, task_id, min_role="viewer")
     if err:
         return err
-    task = tasks_repo.get_task(db, task_id)
-    if task is None:
-        return not_found("Task not found")
+    task = ctx.task
     from agent_team.features.repos.task_copy import list_task_repo_dirs
 
     return list_task_repo_dirs(db, task)
@@ -849,12 +817,9 @@ async def list_task_repos(task_id: str, request: Request, db: Session = Depends(
 async def prepare_task_repos_endpoint(
     task_id: str, request: Request, db: Session = Depends(get_db)
 ):
-    _, err = auth_or_401(db, request)
+    _, err = authz.guard_task(db, request, task_id, min_role="editor")
     if err:
         return err
-    task = tasks_repo.get_task(db, task_id)
-    if task is None:
-        return not_found("Task not found")
     from agent_team.features.repos.task_copy import prepare_task_repos_by_id
 
     prepared = await asyncio.to_thread(prepare_task_repos_by_id, task_id)
@@ -938,12 +903,9 @@ async def get_autopilot(board_id: str, request: Request, db: Session = Depends(g
     from agent_team.features.board.runtime.dispatch import capture_main_loop
 
     capture_main_loop()
-    _, err = auth_or_401(db, request)
+    _, err = authz.guard_board(db, request, board_id, min_role="viewer")
     if err:
         return err
-    board = boards_repo.get_board(db, board_id)
-    if board is None:
-        return not_found("Board not found")
     row = autopilot_repo.get_or_create(db, board_id)
     db.commit()
     return autopilot_repo.serialize(row)
@@ -957,12 +919,10 @@ async def update_autopilot(
     db: Session = Depends(get_db),
 ):
     """Patch the board's autopilot config and reseed the schedule cursor."""
-    _, err = auth_or_401(db, request)
+    ctx, err = authz.guard_board(db, request, board_id, min_role="owner")
     if err:
         return err
-    board = boards_repo.get_board(db, board_id)
-    if board is None:
-        return not_found("Board not found")
+    board = ctx.board
 
     row = autopilot_repo.get_or_create(db, board_id)
     column_keys = {c["key"] for c in board.columns()}
@@ -1028,12 +988,9 @@ async def autopilot_route(
     board_id: str, request: Request, db: Session = Depends(get_db)
 ):
     """Apply routing rules once: auto-assign agents to unassigned source tasks."""
-    _, err = auth_or_401(db, request)
+    _, err = authz.guard_board(db, request, board_id, min_role="editor")
     if err:
         return err
-    board = boards_repo.get_board(db, board_id)
-    if board is None:
-        return not_found("Board not found")
 
     from agent_team.features.board.runtime import autopilot as autopilot_rt
 
@@ -1052,12 +1009,9 @@ async def autopilot_summary(
     from agent_team.features.board.runtime.dispatch import capture_main_loop
 
     capture_main_loop()
-    _, err = auth_or_401(db, request)
+    _, err = authz.guard_board(db, request, board_id, min_role="viewer")
     if err:
         return err
-    board = boards_repo.get_board(db, board_id)
-    if board is None:
-        return not_found("Board not found")
 
     from datetime import UTC, datetime
 
@@ -1123,12 +1077,9 @@ async def get_task_schedule(
     from agent_team.features.board.runtime.dispatch import capture_main_loop
 
     capture_main_loop()
-    _, err = auth_or_401(db, request)
+    _, err = authz.guard_task(db, request, task_id, min_role="viewer")
     if err:
         return err
-    task = tasks_repo.get_task(db, task_id)
-    if task is None:
-        return not_found("Task not found")
     row = schedule_repo.get_or_create(db, task_id)
     db.commit()
     return schedule_repo.serialize(row)
@@ -1142,15 +1093,10 @@ async def update_task_schedule(
     db: Session = Depends(get_db),
 ):
     """Patch a task's recurring-run schedule and reseed its cron cursor."""
-    _, err = auth_or_401(db, request)
+    ctx, err = authz.guard_task(db, request, task_id, min_role="editor")
     if err:
         return err
-    task = tasks_repo.get_task(db, task_id)
-    if task is None:
-        return not_found("Task not found")
-    board = boards_repo.get_board(db, task.board_id)
-    if board is None:
-        return not_found("Board not found")
+    board = ctx.board
 
     from agent_team.features.board.runtime import task_schedule as schedule_rt
 
@@ -1202,12 +1148,9 @@ async def task_schedule_history(
     task_id: str, request: Request, db: Session = Depends(get_db)
 ):
     """Return recent runs started by this task's schedule (newest first)."""
-    _, err = auth_or_401(db, request)
+    _, err = authz.guard_task(db, request, task_id, min_role="viewer")
     if err:
         return err
-    task = tasks_repo.get_task(db, task_id)
-    if task is None:
-        return not_found("Task not found")
 
     from agent_team.features.board.models import AgentTeamRun
 
@@ -1259,12 +1202,11 @@ def _prompt_with_attachments(task, body: str, attachment_ids: list[str] | None) 
 async def create_mention(
     task_id: str, payload: MentionCreate, request: Request, db: Session = Depends(get_db)
 ):
-    user, err = auth_or_401(db, request)
+    ctx, err = authz.guard_task(db, request, task_id, min_role="editor")
     if err:
         return err
-    task = tasks_repo.get_task(db, task_id)
-    if task is None:
-        return not_found("Task not found")
+    user = ctx.user
+    task = ctx.task
 
     prompt = _prompt_with_attachments(task, payload.body, payload.attachment_ids)
     run, _conversation = run_service.create_run_for_task(
@@ -1310,35 +1252,26 @@ async def list_runs(
     task_id: str, request: Request, agent_id: str | None = None, db: Session = Depends(get_db)
 ):
     """Runs for a task, optionally narrowed to one agent (``?agent_id=``)."""
-    _, err = auth_or_401(db, request)
+    _, err = authz.guard_task(db, request, task_id, min_role="viewer")
     if err:
         return err
-    task = tasks_repo.get_task(db, task_id)
-    if task is None:
-        return not_found("Task not found")
     runs = runs_repo.list_runs_for_task(db, task_id, agent_alias=agent_id)
     return [runs_repo.serialize_run(r) for r in runs]
 
 
 @router.get("/runs/{run_id}")
 async def get_run(run_id: str, request: Request, db: Session = Depends(get_db)):
-    _, err = auth_or_401(db, request)
+    run, _ctx, err = authz.guard_run(db, request, run_id, min_role="viewer")
     if err:
         return err
-    run = runs_repo.get_run(db, run_id)
-    if run is None:
-        return not_found("Run not found")
     return runs_repo.serialize_run(run)
 
 
 @router.post("/runs/{run_id}/cancel")
 async def cancel_run(run_id: str, request: Request, db: Session = Depends(get_db)):
-    _, err = auth_or_401(db, request)
+    _run, _ctx, err = authz.guard_run(db, request, run_id, min_role="editor")
     if err:
         return err
-    run = runs_repo.get_run(db, run_id)
-    if run is None:
-        return not_found("Run not found")
     ok = await get_run_backend().cancel(run_id)
     return {"ok": ok, "status": event_store.get_run_status(run_id)}
 
@@ -1352,11 +1285,9 @@ async def get_tool_output(
     The streamed frame only carries a short preview, so the complete output is
     fetched here only for the specific tool the user chose to expand.
     """
-    _, err = auth_or_401(db, request)
+    _run, _ctx, err = authz.guard_run(db, request, run_id, min_role="viewer")
     if err:
         return err
-    if runs_repo.get_run(db, run_id) is None:
-        return not_found("Run not found")
     output = tool_outputs_repo.get_tool_output(run_id, tool_id)
     if output is None:
         return not_found("Tool output not found")
@@ -1373,14 +1304,11 @@ async def stream_run_events(run_id: str, request: Request):
     """
     db = SessionLocal()
     try:
-        _, err = auth_or_401(db, request)
+        _run, _ctx, err = authz.guard_run(db, request, run_id, min_role="viewer")
         if err:
             return err
-        exists = runs_repo.get_run(db, run_id) is not None
     finally:
         db.close()
-    if not exists:
-        return not_found("Run not found")
 
     cursor_raw = request.headers.get("Last-Event-ID") or request.query_params.get("after", "0")
     try:
@@ -1442,12 +1370,9 @@ async def _event_stream(run_id: str, after: int):
 
 @router.get("/tasks/{task_id}/comments")
 async def list_comments(task_id: str, request: Request, db: Session = Depends(get_db)):
-    _, err = auth_or_401(db, request)
+    _, err = authz.guard_task(db, request, task_id, min_role="viewer")
     if err:
         return err
-    task = tasks_repo.get_task(db, task_id)
-    if task is None:
-        return not_found("Task not found")
     comments = comments_repo.list_comments(db, task_id)
     authors = comments_repo.resolve_authors(db, comments)
     return [
@@ -1460,12 +1385,11 @@ async def list_comments(task_id: str, request: Request, db: Session = Depends(ge
 async def create_comment(
     task_id: str, payload: CommentCreate, request: Request, db: Session = Depends(get_db)
 ):
-    user, err = auth_or_401(db, request)
+    ctx, err = authz.guard_task(db, request, task_id, min_role="editor")
     if err:
         return err
-    task = tasks_repo.get_task(db, task_id)
-    if task is None:
-        return not_found("Task not found")
+    user = ctx.user
+    task = ctx.task
     if not payload.body.strip() and not payload.attachments:
         return JSONResponse(
             status_code=422,
@@ -1509,19 +1433,17 @@ async def update_comment(
     db: Session = Depends(get_db),
 ):
     """Edit a note's body and/or agent visibility. Author (or admin) only."""
-    user, err = auth_or_401(db, request)
+    comment, ctx, err = authz.guard_comment(db, request, comment_id, min_role="editor")
     if err:
         return err
-    comment = comments_repo.get_comment(db, comment_id)
-    if comment is None or comment.task_id != task_id or comment.deleted_at is not None:
+    user = ctx.user
+    task = ctx.task
+    if comment.task_id != task_id or comment.deleted_at is not None:
         return not_found("Comment not found")
-    if comment.author_id != user.id and not _is_admin(user):
+    if comment.author_id != user.id and not authz.is_admin(user):
         return JSONResponse(
             status_code=403, content={"detail": "Only the author can edit a note"}
         )
-    task = tasks_repo.get_task(db, task_id)
-    if task is None:
-        return not_found("Task not found")
     comments_repo.update_comment(
         db, comment, body=payload.body, visible_to_agents=payload.visible_to_agents
     )
@@ -1562,24 +1484,33 @@ async def delete_task_comment(
     task_id: str, comment_id: str, request: Request, db: Session = Depends(get_db)
 ):
     """Task-scoped delete — the path shape the current web client calls."""
-    _, err = auth_or_401(db, request)
+    comment, ctx, err = authz.guard_comment(db, request, comment_id, min_role="editor")
     if err:
         return err
-    comment = comments_repo.get_comment(db, comment_id)
-    if comment is None or comment.task_id != task_id or comment.deleted_at is not None:
+    if comment.task_id != task_id or comment.deleted_at is not None:
         return not_found("Comment not found")
+    # Author can delete their own; board owners (and admins) can delete any.
+    if comment.author_id != ctx.user.id and ctx.role != "owner":
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Only the author or a board owner can delete a note"},
+        )
     return _soft_delete_comment_and_publish(db, comment)
 
 
 @router.delete("/comments/{comment_id}")
 async def delete_comment(comment_id: str, request: Request, db: Session = Depends(get_db)):
     """Flat-path delete, kept for older bundled clients."""
-    _, err = auth_or_401(db, request)
+    comment, ctx, err = authz.guard_comment(db, request, comment_id, min_role="editor")
     if err:
         return err
-    comment = comments_repo.get_comment(db, comment_id)
-    if comment is None or comment.deleted_at is not None:
+    if comment.deleted_at is not None:
         return not_found("Comment not found")
+    if comment.author_id != ctx.user.id and ctx.role != "owner":
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Only the author or a board owner can delete a note"},
+        )
     return _soft_delete_comment_and_publish(db, comment)
 
 
@@ -1590,12 +1521,9 @@ async def delete_comment(comment_id: str, request: Request, db: Session = Depend
 
 @router.get("/tasks/{task_id}/activity")
 async def list_activity(task_id: str, request: Request, db: Session = Depends(get_db)):
-    _, err = auth_or_401(db, request)
+    _, err = authz.guard_task(db, request, task_id, min_role="viewer")
     if err:
         return err
-    task = tasks_repo.get_task(db, task_id)
-    if task is None:
-        return not_found("Task not found")
     return [
         activity_repo.serialize_activity(a) for a in activity_repo.list_activity(db, task_id)
     ]
@@ -1617,14 +1545,11 @@ async def stream_board(board_id: str, request: Request):
     capture_main_loop()
     db = SessionLocal()
     try:
-        _, err = auth_or_401(db, request)
+        _ctx, err = authz.guard_board(db, request, board_id, min_role="viewer")
         if err:
             return err
-        exists = boards_repo.get_board(db, board_id) is not None
     finally:
         db.close()
-    if not exists:
-        return not_found("Board not found")
 
     return StreamingResponse(
         _board_stream(board_id),
@@ -1666,12 +1591,10 @@ async def _board_stream(board_id: str):
 
 @router.get("/boards/{board_id}/members")
 async def list_members(board_id: str, request: Request, db: Session = Depends(get_db)):
-    _, err = auth_or_401(db, request)
+    ctx, err = authz.guard_board(db, request, board_id, min_role="viewer")
     if err:
         return err
-    board = boards_repo.get_board(db, board_id)
-    if board is None:
-        return not_found("Board not found")
+    board = ctx.board
 
     rows = members_repo.list_members(db, board_id)
     result = [members_repo.serialize_member(m, u) for m, u in rows]
@@ -1705,12 +1628,9 @@ async def list_members(board_id: str, request: Request, db: Session = Depends(ge
 async def add_member(
     board_id: str, payload: AddMemberBody, request: Request, db: Session = Depends(get_db)
 ):
-    _, err = auth_or_401(db, request)
+    _, err = authz.guard_board(db, request, board_id, min_role="owner")
     if err:
         return err
-    board = boards_repo.get_board(db, board_id)
-    if board is None:
-        return not_found("Board not found")
 
     from core.database.models import User
 
@@ -1733,7 +1653,7 @@ async def add_member(
 async def remove_member(
     board_id: str, user_id: str, request: Request, db: Session = Depends(get_db)
 ):
-    _, err = auth_or_401(db, request)
+    _, err = authz.guard_board(db, request, board_id, min_role="owner")
     if err:
         return err
     members_repo.remove_member(db, board_id=board_id, user_id=user_id)
@@ -1750,7 +1670,7 @@ async def remove_member(
 async def list_attempts(
     task_id: str, agent_id: str, request: Request, db: Session = Depends(get_db)
 ):
-    _, err = auth_or_401(db, request)
+    _, err = authz.guard_task(db, request, task_id, min_role="viewer")
     if err:
         return err
     attempts = conversations_repo.list_attempts(db, task_id=task_id, agent_alias=agent_id)
@@ -1761,12 +1681,9 @@ async def list_attempts(
 async def reset_thread(
     task_id: str, agent_id: str, request: Request, db: Session = Depends(get_db)
 ):
-    _, err = auth_or_401(db, request)
+    _, err = authz.guard_task(db, request, task_id, min_role="editor")
     if err:
         return err
-    task = tasks_repo.get_task(db, task_id)
-    if task is None:
-        return not_found("Task not found")
     conv = conversations_repo.reset_conversation(db, task_id=task_id, agent_alias=agent_id)
     db.commit()
     db.refresh(conv)
@@ -1781,12 +1698,11 @@ async def set_typing(
     request: Request,
     db: Session = Depends(get_db),
 ):
-    user, err = auth_or_401(db, request)
+    ctx, err = authz.guard_task(db, request, task_id, min_role="editor")
     if err:
         return err
-    task = tasks_repo.get_task(db, task_id)
-    if task is None:
-        return not_found("Task not found")
+    user = ctx.user
+    task = ctx.task
     # Pure presence: broadcast an ephemeral "X is typing…" hint, never persisted.
     # ``state`` must be forwarded — a "stop" ping (sent on send/blur) clears the
     # indicator on other clients instead of renewing it.
@@ -1826,7 +1742,7 @@ def _agent_display(db: Session, agent_alias: str) -> str:
 async def list_agent_messages(
     task_id: str, agent_id: str, request: Request, db: Session = Depends(get_db)
 ):
-    _, err = auth_or_401(db, request)
+    _, err = authz.guard_task(db, request, task_id, min_role="viewer")
     if err:
         return err
     conversation = conversations_repo.get_active_conversation(
@@ -1847,7 +1763,7 @@ async def list_attempt_messages(
     request: Request,
     db: Session = Depends(get_db),
 ):
-    _, err = auth_or_401(db, request)
+    _, err = authz.guard_task(db, request, task_id, min_role="viewer")
     if err:
         return err
     conversation = conversations_repo.get_conversation(db, conv_id)
@@ -1878,7 +1794,7 @@ async def workspace_tree(
     depth: int = 1,
     db: Session = Depends(get_db),
 ):
-    _, err = auth_or_401(db, request)
+    _, err = authz.guard_task(db, request, task_id, min_role="viewer")
     if err:
         return err
     task = _task_workspace(db, task_id)
@@ -1897,7 +1813,7 @@ async def workspace_tree(
 async def workspace_file(
     task_id: str, request: Request, path: str, db: Session = Depends(get_db)
 ):
-    _, err = auth_or_401(db, request)
+    _, err = authz.guard_task(db, request, task_id, min_role="viewer")
     if err:
         return err
     task = _task_workspace(db, task_id)
@@ -1931,7 +1847,7 @@ async def workspace_file(
 async def workspace_file_raw(
     task_id: str, request: Request, path: str, db: Session = Depends(get_db)
 ):
-    _, err = auth_or_401(db, request)
+    _, err = authz.guard_task(db, request, task_id, min_role="viewer")
     if err:
         return err
     task = _task_workspace(db, task_id)
@@ -1952,7 +1868,7 @@ async def workspace_file_raw(
 async def workspace_write(
     task_id: str, request: Request, db: Session = Depends(get_db)
 ):
-    _, err = auth_or_401(db, request)
+    _, err = authz.guard_task(db, request, task_id, min_role="editor")
     if err:
         return err
     task = _task_workspace(db, task_id)
@@ -1980,7 +1896,7 @@ async def workspace_write(
 async def workspace_delete(
     task_id: str, request: Request, path: str, db: Session = Depends(get_db)
 ):
-    _, err = auth_or_401(db, request)
+    _, err = authz.guard_task(db, request, task_id, min_role="editor")
     if err:
         return err
     task = _task_workspace(db, task_id)
@@ -2031,7 +1947,7 @@ async def upload_task_attachments(
     files: list[UploadFile] = File(...),
     db: Session = Depends(get_db),
 ):
-    _, err = auth_or_401(db, request)
+    _, err = authz.guard_task(db, request, task_id, min_role="editor")
     if err:
         return err
     task = _task_workspace(db, task_id)
@@ -2044,7 +1960,7 @@ async def upload_task_attachments(
 async def delete_task_attachment(
     task_id: str, attachment_id: str, request: Request, db: Session = Depends(get_db)
 ):
-    _, err = auth_or_401(db, request)
+    _, err = authz.guard_task(db, request, task_id, min_role="editor")
     if err:
         return err
     task = _task_workspace(db, task_id)
@@ -2063,7 +1979,7 @@ async def upload_comment_attachments(
     files: list[UploadFile] = File(...),
     db: Session = Depends(get_db),
 ):
-    _, err = auth_or_401(db, request)
+    _, err = authz.guard_task(db, request, task_id, min_role="editor")
     if err:
         return err
     task = _task_workspace(db, task_id)
@@ -2076,7 +1992,7 @@ async def upload_comment_attachments(
 async def delete_comment_attachment(
     task_id: str, request: Request, path: str = "", db: Session = Depends(get_db)
 ):
-    _, err = auth_or_401(db, request)
+    _, err = authz.guard_task(db, request, task_id, min_role="editor")
     if err:
         return err
     task = _task_workspace(db, task_id)

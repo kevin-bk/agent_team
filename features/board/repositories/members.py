@@ -35,6 +35,23 @@ def effective_role(
     return "owner" if is_admin else "viewer"
 
 
+def access_role(
+    db: Session, board: AgentTeamBoard, *, user_id: str, is_admin: bool
+) -> str | None:
+    """Like :func:`effective_role` but returns ``None`` when the user has no real
+    access (not the owner, not a member, not an admin).
+
+    Used for authorization: a non-member must be rejected rather than silently
+    treated as a viewer.
+    """
+    if board.owner_id and board.owner_id == user_id:
+        return "owner"
+    role = get_role(db, board.id, user_id)
+    if role:
+        return role
+    return "owner" if is_admin else None
+
+
 def list_members(db: Session, board_id: str) -> list[tuple[AgentTeamBoardMember, User]]:
     return (
         db.query(AgentTeamBoardMember, User)

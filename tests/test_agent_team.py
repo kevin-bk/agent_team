@@ -3840,3 +3840,51 @@ def test_task_schedule_run_tick_advances_cursor(db, monkeypatch):
     # SQLite returns naive datetimes; compare both as naive.
     assert refreshed.next_run_at.replace(tzinfo=None) > past.replace(tzinfo=None)
     assert refreshed.last_run_id is not None
+
+
+# ---------------------------------------------------------------------------
+# Role-based access control (authz)
+# ---------------------------------------------------------------------------
+
+
+def test_authz_role_at_least_hierarchy():
+    """owner > editor > viewer, and missing roles never satisfy a minimum."""
+    from agent_team.features.board import authz
+
+    assert authz.role_at_least("owner", "viewer")
+    assert authz.role_at_least("owner", "editor")
+    assert authz.role_at_least("owner", "owner")
+    assert authz.role_at_least("editor", "viewer")
+    assert authz.role_at_least("editor", "editor")
+    assert not authz.role_at_least("editor", "owner")
+    assert authz.role_at_least("viewer", "viewer")
+    assert not authz.role_at_least("viewer", "editor")
+    assert not authz.role_at_least("viewer", "owner")
+    # No role at all (non-member) satisfies nothing.
+    assert not authz.role_at_least(None, "viewer")
+    assert not authz.role_at_least("", "viewer")
+
+
+def test_access_role_owner_member_admin_and_nonmember(db):
+    """`access_role` returns the real role, or None when the user has no access."""
+    from agent_team.features.board.repositories import members as members_repo
+
+    board = boards_repo.create_board(
+        db, name="Perm", description=None, columns=None, owner_id="u-owner"
+    )
+    members_repo.add_member(db, board_id=board.id, user_id="u-editor", role="editor")
+    members_repo.add_member(db, board_id=board.id, user_id="u-viewer", role="viewer")
+    db.flush()
+
+    role = lambda uid, admin=False: members_repo.access_role(
+        db, board, user_id=uid, is_admin=admin
+    )
+
+    assert role("u-owner") == "owner"
+    assert role("u-editor") == "editor"
+    assert role("u-viewer") == "viewer"
+    # A non-member gets no access (None), even though `effective_role` would
+    # have defaulted them to "viewer".
+    assert role("u-stranger") is None
+    # Admins are treated as owner on any board, member or not.
+    assert role("u-stranger", admin=True) == "owner"

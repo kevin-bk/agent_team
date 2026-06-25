@@ -13,8 +13,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
-from agent_team.features.board.repositories import boards as boards_repo
-from agent_team.features.board.repositories import members as members_repo
+from agent_team.features.board import authz
 from agent_team.features.repos import git_service
 from agent_team.features.repos import repositories as repos_repo
 from agent_team.features.repos.schedule import is_valid_cron
@@ -28,8 +27,6 @@ from agent_team.web import API_PREFIX, auth_or_401, not_found
 from core.database.base import get_db
 
 router = APIRouter(prefix=API_PREFIX, tags=["agent-team-repos"])
-
-_EDITOR_ROLES = {"owner", "editor"}
 
 
 def _is_admin(user) -> bool:
@@ -195,31 +192,19 @@ async def repo_status(repo_id: str, request: Request, db: Session = Depends(get_
     return RepoStatusDTO(repo_id=repo_id, **info)
 
 
-# ── board assignments (board owner/editor) ──────────────────────────────────
-
-
-def _board_editor_or_error(db: Session, board_id: str, user):
-    board = boards_repo.get_board(db, board_id)
-    if board is None:
-        return None, not_found("Board not found")
-    role = members_repo.effective_role(
-        db, board, user_id=user.id, is_admin=_is_admin(user)
-    )
-    if role not in _EDITOR_ROLES:
-        return None, _forbidden("Board owner or editor required")
-    return board, None
+# ── board assignments ───────────────────────────────────────────────────────
+# Viewing a board's repos needs board *viewer*; assigning/unassigning a repo is
+# board configuration, so it requires *owner*.
 
 
 @router.get("/boards/{board_id}/repos")
 async def list_board_repos(
     board_id: str, request: Request, db: Session = Depends(get_db)
 ):
-    user, err = auth_or_401(db, request)
+    ctx, err = authz.guard_board(db, request, board_id, min_role="viewer")
     if err:
         return err
-    board, berr = _board_editor_or_error(db, board_id, user)
-    if berr:
-        return berr
+    user = ctx.user
     assigned = [
         repos_repo.serialize_board_repo(db, repo, branch, allow_push, is_wiki)
         for repo, branch, allow_push, is_wiki in repos_repo.repos_for_board(db, board_id)
@@ -240,12 +225,9 @@ async def assign_board_repo(
     request: Request,
     db: Session = Depends(get_db),
 ):
-    user, err = auth_or_401(db, request)
+    _, err = authz.guard_board(db, request, board_id, min_role="owner")
     if err:
         return err
-    board, berr = _board_editor_or_error(db, board_id, user)
-    if berr:
-        return berr
     repo = repos_repo.get_repo(db, payload.repo_id)
     if repo is None:
         return not_found("Repository not found")
@@ -266,11 +248,8 @@ async def assign_board_repo(
 async def unassign_board_repo(
     board_id: str, repo_id: str, request: Request, db: Session = Depends(get_db)
 ):
-    user, err = auth_or_401(db, request)
+    _, err = authz.guard_board(db, request, board_id, min_role="owner")
     if err:
         return err
-    board, berr = _board_editor_or_error(db, board_id, user)
-    if berr:
-        return berr
     repos_repo.unassign_repo(db, board_id=board_id, repo_id=repo_id)
     return {"ok": True}
