@@ -96,11 +96,13 @@ class AgentTeamPlugin(PluginBase):
     def models(self) -> list:
         from agent_team.features.board.models import (
             AgentTeamActivity,
+            AgentTeamAttempt,
             AgentTeamAutopilot,
             AgentTeamBoard,
             AgentTeamBoardMember,
             AgentTeamComment,
             AgentTeamConversation,
+            AgentTeamEvaluation,
             AgentTeamKeySeq,
             AgentTeamRun,
             AgentTeamRunEvent,
@@ -128,6 +130,8 @@ class AgentTeamPlugin(PluginBase):
             AgentTeamToolOutput,
             AgentTeamAutopilot,
             AgentTeamTaskSchedule,
+            AgentTeamAttempt,
+            AgentTeamEvaluation,
         ]
 
     def routers(self) -> list[APIRouter]:

@@ -11,8 +11,7 @@ from fastapi import APIRouter, Body, Depends, File, Request, UploadFile
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from sqlalchemy.orm import Session
 
-from agent_team.features.board import attachments
-from agent_team.features.board import authz
+from agent_team.features.board import attachments, authz
 from agent_team.features.board import workspace as ws_module
 from agent_team.features.board.board_events import get_board_bus
 from agent_team.features.board.jira import service as jira_service
@@ -49,6 +48,7 @@ from agent_team.features.board.schemas import (
     JiraPreviewItem,
     JiraPreviewResponse,
     JiraSyncBody,
+    LoopStartCreate,
     MentionCreate,
     MentionResponse,
     SkillPackDTO,
@@ -1245,6 +1245,49 @@ async def create_mention(
         conversation_id=conversation_id or "",
         stream_url=f"{API_PREFIX}/runs/{run.id}/events",
     )
+
+
+@router.post("/tasks/{task_id}/loop")
+async def start_task_loop(
+    task_id: str, payload: LoopStartCreate, request: Request, db: Session = Depends(get_db)
+):
+    """Start an autonomous loop: a generator agent works, an evaluator grades.
+
+    The loop drives generator turns and independent evaluations until the
+    objective is met (or a guardrail stops it), persisting each attempt. Plain
+    chat continues to work through ``/mentions`` and is unaffected.
+    """
+    ctx, err = authz.guard_task(db, request, task_id, min_role="editor")
+    if err:
+        return err
+    task = ctx.task
+
+    from agent_team.features.board.models import TASK_EXEC_MODE_AUTONOMOUS
+
+    objective = (payload.objective or task.objective or task.description or "").strip()
+    # Persist the objective + autonomous mode so a later run reuses them.
+    task.objective = objective
+    task.execution_mode = TASK_EXEC_MODE_AUTONOMOUS
+    db.commit()
+
+    from agent_team.features.board.runtime.dispatch import capture_main_loop
+    from agent_team.features.board.runtime.loop.budget import LoopBudget
+    from agent_team.features.board.runtime.loop.service import start_autonomous_loop
+
+    capture_main_loop()
+    start_autonomous_loop(
+        task_id=task_id,
+        agent_alias=payload.agent_id,
+        evaluator_alias=payload.evaluator_id,
+        objective=objective,
+        max_attempts=payload.max_attempts,
+        budget=LoopBudget(
+            max_tokens=payload.max_tokens,
+            max_cost_usd=payload.max_cost_usd,
+            max_wall_seconds=payload.max_wall_seconds,
+        ),
+    )
+    return {"ok": True, "task_id": task_id, "execution_mode": task.execution_mode}
 
 
 @router.get("/tasks/{task_id}/runs")
