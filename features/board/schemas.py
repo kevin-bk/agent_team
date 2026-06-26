@@ -32,6 +32,9 @@ class BoardUpdate(BaseModel):
     cli_target_ids: list[str] | None = None
     #: Skill pack names made available to direct-CLI agents on this board.
     skill_ids: list[str] | None = None
+    #: Per-CLI-agent MCP config: ``{"cli:<engine>": {"mcpServers": {...}}}``.
+    #: Each enabled CLI agent can connect to a different set of MCP servers.
+    agent_mcp: dict | None = None
     #: Reusable starter chat message offered as a one-click first message.
     starter_prompt: str | None = None
     archived: bool | None = None
@@ -64,6 +67,10 @@ class BoardDTO(BaseModel):
     cli_target_ids: list[str] = Field(default_factory=list)
     #: Skill pack names made available to direct-CLI agents on this board.
     skill_ids: list[str] = Field(default_factory=list)
+    #: Per-CLI-agent MCP config (``{"cli:<engine>": {"mcpServers": {...}}}``).
+    #: Returned only to board owners; redacted to ``{}`` for everyone else
+    #: because the config may embed auth tokens.
+    agent_mcp: dict = Field(default_factory=dict)
     #: Reusable starter chat message offered as a one-click first message.
     starter_prompt: str = ""
     archived: bool

@@ -4331,3 +4331,72 @@ def test_access_role_owner_member_admin_and_nonmember(db):
     assert role("u-stranger") is None
     # Admins are treated as owner on any board, member or not.
     assert role("u-stranger", admin=True) == "owner"
+
+
+# ---------------------------------------------------------------------------
+# Per-CLI-agent MCP config
+# ---------------------------------------------------------------------------
+
+
+def test_board_agent_mcp_helpers(db):
+    """`agent_mcp()` decodes the map; `agent_mcp_for` returns one alias' config."""
+    board = boards_repo.create_board(
+        db, name="MCP", description=None, columns=None, owner_id="u1"
+    )
+    board.agent_mcp_json = json.dumps(
+        {"cli:claude": {"mcpServers": {"ctx7": {"url": "https://x/sse"}}}}
+    )
+    db.flush()
+
+    assert board.agent_mcp() == {
+        "cli:claude": {"mcpServers": {"ctx7": {"url": "https://x/sse"}}}
+    }
+    assert board.agent_mcp_for("cli:claude") == {
+        "mcpServers": {"ctx7": {"url": "https://x/sse"}}
+    }
+    # Unknown alias or malformed JSON yields an empty config rather than raising.
+    assert board.agent_mcp_for("cli:cursor") == {}
+    board.agent_mcp_json = "not json"
+    assert board.agent_mcp() == {}
+    assert board.agent_mcp_for("cli:claude") == {}
+
+
+def test_collect_mcp_secrets_picks_auth_headers_env():
+    """Secret collection gathers auth/headers/env values, skipping short ones."""
+    from agent_team.features.board.runtime.local_backend import _collect_mcp_secrets
+
+    cfg = {
+        "mcpServers": {
+            "remote": {
+                "url": "https://x/sse",
+                "auth": "supersecrettoken",
+                "headers": {"X-Api-Key": "headervalue123"},
+            },
+            "local": {"command": "node", "env": {"TOKEN": "envvalue123"}},
+            "short": {"auth": "abc"},
+        }
+    }
+    secrets = _collect_mcp_secrets(cfg)
+    assert "supersecrettoken" in secrets
+    assert "headervalue123" in secrets
+    assert "envvalue123" in secrets
+    # Values shorter than the threshold are not masked.
+    assert "abc" not in secrets
+
+
+def test_serialize_board_hides_agent_mcp_from_non_owner(db):
+    """MCP config (may hold tokens) is returned to owners only."""
+    board = boards_repo.create_board(
+        db, name="MCP", description=None, columns=None, owner_id="u1"
+    )
+    board.agent_mcp_json = json.dumps(
+        {"cli:claude": {"mcpServers": {"ctx7": {"url": "https://x/sse"}}}}
+    )
+    db.flush()
+
+    owner_dto = boards_repo.serialize_board(board, my_role="owner")
+    assert owner_dto.agent_mcp == {
+        "cli:claude": {"mcpServers": {"ctx7": {"url": "https://x/sse"}}}
+    }
+    viewer_dto = boards_repo.serialize_board(board, my_role="viewer")
+    assert viewer_dto.agent_mcp == {}

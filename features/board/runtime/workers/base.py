@@ -70,6 +70,11 @@ class TurnContext:
     role: WorkerRole = WorkerRole.CHAT
     permission_mode: PermissionMode = PermissionMode.AUTO
     usage: dict[str, int] = field(default_factory=_zero_usage)
+    #: Per-agent MCP config (``{"mcpServers": {...}}``) for a direct-CLI worker,
+    #: or ``None`` for none. Only the owned ACP engine forwards this to the CLI.
+    mcp_config: dict | None = None
+    #: Secret values to mask in streamed tool-call frames (e.g. MCP auth tokens).
+    secrets: list[str] = field(default_factory=list)
 
 
 @dataclass

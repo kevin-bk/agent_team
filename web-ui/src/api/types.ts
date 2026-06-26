@@ -183,6 +183,29 @@ export interface BoardColumn {
   name: string;
 }
 
+/** One MCP server entry (shape mirrors the agent MCP config the backend reads). */
+export interface McpServerConfig {
+  /** Remote (HTTP/SSE) server URL, e.g. "https://mcp.example.com/sse". */
+  url?: string;
+  /** Local stdio server command (mutually exclusive with `url`). */
+  command?: string;
+  args?: string[];
+  /** Bearer token or auth string for a remote server. */
+  auth?: string;
+  /** Extra HTTP headers for a remote server. */
+  headers?: Record<string, string>;
+  /** Environment variables for a local stdio server. */
+  env?: Record<string, string>;
+}
+
+/** A CLI agent's MCP config: a named map of servers. */
+export interface AgentMcpConfig {
+  mcpServers: Record<string, McpServerConfig>;
+}
+
+/** Per-CLI-agent MCP config keyed by the `cli:<engine>` alias. */
+export type BoardAgentMcp = Record<string, AgentMcpConfig>;
+
 export interface BoardDTO {
   id: string;
   slug: string;
@@ -196,6 +219,8 @@ export interface BoardDTO {
   cli_target_ids?: string[];
   /** Skill pack names available to this board's direct-CLI agents. */
   skill_ids?: string[];
+  /** Per-CLI-agent MCP config (owner-only; empty for non-owners). */
+  agent_mcp?: BoardAgentMcp;
   /** Reusable starter chat message offered as a one-click first message. */
   starter_prompt?: string;
   archived: boolean;
@@ -342,6 +367,8 @@ export interface PatchBoardBody {
   cli_target_ids?: string[];
   /** Skill pack names available to this board's direct-CLI agents. */
   skill_ids?: string[];
+  /** Per-CLI-agent MCP config keyed by `cli:<engine>` alias. */
+  agent_mcp?: BoardAgentMcp;
   /** Reusable starter chat message offered as a one-click first message. */
   starter_prompt?: string;
   archived?: boolean;

@@ -373,11 +373,18 @@ class DirectCliRun:
         thread_id: str,
         auto_approve: bool = True,
         idle_timeout_seconds: int = 0,
+        mcp_config: dict | None = None,
+        secrets: list[str] | None = None,
     ) -> None:
         self.engine = engine
         self.prompt = prompt
         self.cwd = cwd
         self.thread_id = thread_id
+        # Accepted for a uniform seam with the owned ACP engine but not honoured
+        # here: MCP pass-through and secret masking require the owned engine
+        # (``AGENT_TEAM_ACP_ENGINE=owned``); this legacy path ignores them.
+        self._mcp_config = mcp_config
+        self._secrets = secrets or []
         #: Whether to approve the agent's permission requests automatically.
         #: Unattended runs need ``True`` to proceed; ``False`` makes the agent
         #: read-only (the ACP manager answers requests with ``cancelled``).

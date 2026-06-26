@@ -197,6 +197,32 @@ async def update_board(
                 content={"detail": f"unknown skill pack(s): {', '.join(unknown)}"},
             )
         board.skills_json = json.dumps(payload.skill_ids)
+    if payload.agent_mcp is not None:
+        from agent_team.features.board.runtime.direct_acp import known_cli_aliases
+
+        known = known_cli_aliases()
+        cleaned: dict[str, dict] = {}
+        for alias, cfg in payload.agent_mcp.items():
+            if alias not in known:
+                return JSONResponse(
+                    status_code=422,
+                    content={"detail": f"unknown CLI target for MCP: {alias}"},
+                )
+            if not isinstance(cfg, dict):
+                return JSONResponse(
+                    status_code=422,
+                    content={"detail": f"MCP config for {alias} must be an object"},
+                )
+            servers = cfg.get("mcpServers", {})
+            if not isinstance(servers, dict):
+                return JSONResponse(
+                    status_code=422,
+                    content={"detail": f"mcpServers for {alias} must be an object"},
+                )
+            # Drop aliases configured with no servers so storage stays tidy.
+            if servers:
+                cleaned[alias] = {"mcpServers": servers}
+        board.agent_mcp_json = json.dumps(cleaned)
     if payload.starter_prompt is not None:
         board.starter_prompt = payload.starter_prompt.strip()
     if payload.archived is not None:

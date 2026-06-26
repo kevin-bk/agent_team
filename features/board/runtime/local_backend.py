@@ -117,6 +117,8 @@ class LocalRunBackend:
             thread_id=thread_id,
             role=WorkerRole.CHAT,
             usage=usage,
+            mcp_config=context.get("mcp_config"),
+            secrets=context.get("secrets") or [],
         )
         try:
             worker = resolve_worker(agent_alias, WorkerRole.CHAT)
@@ -313,6 +315,7 @@ def _load_run_context(run_id: str) -> dict | None:
         from agent_team.features.board.runtime import skills as skills_rt
 
         skills_manifest: list[dict] = []
+        board = None
         try:
             from agent_team.features.board.repositories import boards as boards_repo
 
@@ -337,6 +340,8 @@ def _load_run_context(run_id: str) -> dict | None:
                 logger.exception(
                     "agent_team: failed to materialise board wiki skill for %s", task.id
                 )
+        mcp_config: dict | None = None
+        secrets: list[str] = []
         if is_direct_cli_alias(run.agent_alias):
             # The CLI reads its context from files in the workspace
             # (``.agent-team/TASK.md`` via the CLAUDE.md / AGENTS.md / cursor-rule
@@ -351,6 +356,14 @@ def _load_run_context(run_id: str) -> dict | None:
             input_text = cli_context.build_prompt(
                 run.prompt or "", first_turn=full, has_new_notes=bool(notes)
             )
+            # Per-agent MCP config: this CLI alias may have its own MCP servers
+            # configured on the board. The owned ACP engine forwards them to the
+            # CLI; any auth/header/env values become secrets to mask in output.
+            if board is not None:
+                cfg = board.agent_mcp_for(run.agent_alias)
+                if cfg.get("mcpServers"):
+                    mcp_config = cfg
+                    secrets = _collect_mcp_secrets(cfg)
         else:
             # LLM run: the agent gets context via the prompt, but a coding
             # sub-agent it spawns over ACP runs in this workspace — Codex reads
@@ -375,9 +388,39 @@ def _load_run_context(run_id: str) -> dict | None:
             "board_id": task.board_id,
             "workspace_path": task.workspace_path,
             "actor_id": run.actor_id,
+            "mcp_config": mcp_config,
+            "secrets": secrets,
         }
     finally:
         db.close()
+
+
+def _collect_mcp_secrets(mcp_config: dict) -> list[str]:
+    """Gather sensitive string values from an MCP config to mask in output.
+
+    Conservatively treats every ``headers``/``env`` value and any string
+    ``auth`` (e.g. a bearer token) as a secret. Short values are skipped to
+    avoid masking incidental substrings of normal output.
+    """
+    secrets: set[str] = set()
+    servers = mcp_config.get("mcpServers")
+    if not isinstance(servers, dict):
+        return []
+
+    def _add(value: object) -> None:
+        if isinstance(value, str) and len(value.strip()) >= 6:
+            secrets.add(value.strip())
+
+    for server in servers.values():
+        if not isinstance(server, dict):
+            continue
+        _add(server.get("auth"))
+        for bucket in ("headers", "env"):
+            values = server.get(bucket)
+            if isinstance(values, dict):
+                for v in values.values():
+                    _add(v)
+    return sorted(secrets)
 
 
 def reconcile_orphans_sync() -> int:

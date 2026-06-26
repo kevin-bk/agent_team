@@ -117,6 +117,10 @@ class AgentTeamBoard(Base):
     #: JSON-encoded list of direct-CLI aliases (``cli:<engine>``) enabled on this
     #: board — tasks only show these CLIs. Empty (the default) = none.
     cli_targets_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    #: JSON object mapping a direct-CLI alias (``cli:<engine>``) to its own MCP
+    #: config (``{"mcpServers": {...}}``), so each CLI agent on the board can
+    #: connect to a different set of MCP servers. Empty object = no per-agent MCP.
+    agent_mcp_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     #: JSON-encoded list of skill pack names made available to direct-CLI agents
     #: on this board (materialised into each task workspace). Empty = no skills.
     skills_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
@@ -189,6 +193,21 @@ class AgentTeamBoard(Base):
         except (json.JSONDecodeError, TypeError):
             return []
         return [str(item) for item in value] if isinstance(value, list) else []
+
+    def agent_mcp(self) -> dict[str, dict]:
+        """Return the full ``alias -> mcp_config`` map (empty = no per-agent MCP)."""
+        try:
+            value = json.loads(self.agent_mcp_json or "{}")
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        if not isinstance(value, dict):
+            return {}
+        return {str(k): v for k, v in value.items() if isinstance(v, dict)}
+
+    def agent_mcp_for(self, alias: str) -> dict:
+        """Return the MCP config for one CLI alias (empty = none configured)."""
+        cfg = self.agent_mcp().get(alias)
+        return cfg if isinstance(cfg, dict) else {}
 
     def jira_mappings(self) -> dict:
         """Return the decoded Jira value-mapping object (empty = match by name)."""

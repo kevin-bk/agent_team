@@ -97,6 +97,8 @@ class AcpCliWorker:
             thread_id=ctx.thread_id,
             auto_approve=ctx.permission_mode != PermissionMode.READ_ONLY,
             idle_timeout_seconds=self.idle_timeout_seconds,
+            mcp_config=ctx.mcp_config,
+            secrets=ctx.secrets,
         )
         last_cancel_poll = 0.0
         async for event_type, data in run.stream_frames(cancel):
