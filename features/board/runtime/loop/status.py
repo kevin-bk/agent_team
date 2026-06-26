@@ -7,10 +7,13 @@ outcome onto it.
 
 State machine:
 
-    ReadyForAgent → Running → (Complete | NeedsRevision→Running | WaitingForHuman | Failed)
+    ReadyForAgent → [Planning] → Running → (Complete | NeedsRevision→Running |
+                                            WaitingForHuman | Failed)
 
-A guardrail stop (attempt cap, token/cost/runtime budget) or a ``needs_human``
-verdict routes to :attr:`LoopState.WAITING_FOR_HUMAN` — never a silent finish.
+An optional planning phase runs first (``Planning``) when the loop is started
+with a planner; it then transitions to ``Running``. A guardrail stop (attempt
+cap, token/cost/runtime budget) or a ``needs_human`` verdict routes to
+:attr:`LoopState.WAITING_FOR_HUMAN` — never a silent finish.
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ from enum import StrEnum
 class LoopState(StrEnum):
     """Persisted lifecycle state of a task's autonomous loop."""
 
+    PLANNING = "planning"
     RUNNING = "running"
     COMPLETE = "complete"
     WAITING_FOR_HUMAN = "waiting_for_human"

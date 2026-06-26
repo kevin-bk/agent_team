@@ -49,10 +49,20 @@ LoopStep = Continue | Done
 class LoopController:
     """Decides whether to keep iterating, given the latest attempt's verdict."""
 
-    def __init__(self, objective: str, *, max_attempts: int = 10) -> None:
+    def __init__(
+        self,
+        objective: str,
+        *,
+        max_attempts: int = 10,
+        plan_path: str | None = None,
+    ) -> None:
         self._objective = (objective or "").strip()
         self._max_attempts = max(1, max_attempts)
         self._attempts = 0
+        #: Workspace-relative path of a plan written by the planning phase. When
+        #: set, prompts point the generator at the file (handoff by reference)
+        #: instead of relying on the inline objective alone.
+        self._plan_path = (plan_path or "").strip() or None
 
     @property
     def attempts(self) -> int:
@@ -61,8 +71,15 @@ class LoopController:
     def start(self) -> str:
         """Return the opening generator prompt (the objective + a clear ask)."""
         objective = self._objective or "Complete the task described in the workspace."
+        plan_ref = (
+            f"A detailed implementation plan has been written to `{self._plan_path}`. "
+            "Read it first and implement every step in it.\n\n"
+            if self._plan_path
+            else ""
+        )
         return (
             f"{objective}\n\n"
+            f"{plan_ref}"
             "Work autonomously until every requirement is fully done and verified. "
             "Inspect the real current state of the workspace rather than relying on "
             "memory, and gather authoritative evidence by running the relevant "
@@ -83,12 +100,17 @@ class LoopController:
 
     def _followup(self, verdict: Verdict | None) -> str:
         missing = (verdict.missing if verdict is not None else "").strip()
+        plan_ref = (
+            f" Consult the plan in `{self._plan_path}` for the remaining steps."
+            if self._plan_path
+            else ""
+        )
         reinspect = (
             "Inspect the real current state of the workspace (do not rely on "
             "memory). For each remaining requirement, make concrete progress and "
             "gather authoritative evidence by running the relevant tests/build/"
             "checks. Keep the full objective intact and finish only once every "
-            "requirement is provably satisfied."
+            f"requirement is provably satisfied.{plan_ref}"
         )
         if missing:
             return (

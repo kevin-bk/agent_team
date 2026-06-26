@@ -8,6 +8,7 @@ import {
   Coins,
   Gauge,
   Hash,
+  ListChecks,
   Loader2,
   Play,
   RotateCcw,
@@ -343,6 +344,7 @@ function StartForm({
     agent_id: string;
     evaluator_id: string;
     objective: string;
+    planner_id: string | null;
     max_attempts: number;
     max_tokens: number | null;
     max_cost_usd: number | null;
@@ -371,6 +373,10 @@ function StartForm({
   const [objective, setObjective] = useState(
     task.objective || task.description || "",
   );
+  // Optional planning phase: an agent analyses the task and writes a plan the
+  // generator then works from. Defaults to the generator agent.
+  const [planFirst, setPlanFirst] = useState(false);
+  const [planner, setPlanner] = useState(generatorOptions[0]?.id ?? "");
   const [maxAttempts, setMaxAttempts] = useState("10");
   const [maxTokens, setMaxTokens] = useState("");
   const [maxCost, setMaxCost] = useState("");
@@ -432,6 +438,39 @@ function StartForm({
         />
       </Field>
 
+      {/* Optional planning phase */}
+      <div className="mt-3 rounded-lg border border-border bg-surface-1/40 p-3">
+        <label className="flex cursor-pointer items-start gap-2">
+          <input
+            type="checkbox"
+            checked={planFirst}
+            onChange={(e) => setPlanFirst(e.target.checked)}
+            className="mt-0.5 h-4 w-4 rounded border-input accent-primary"
+          />
+          <span className="min-w-0">
+            <span className="flex items-center gap-1.5 text-[13px] font-semibold text-foreground">
+              <ListChecks className="h-3.5 w-3.5 text-indigo-500" />
+              Plan first
+            </span>
+            <span className="mt-0.5 block text-[12px] text-muted-foreground">
+              A planner agent analyses the task and writes a structured{" "}
+              <code className="font-mono text-[11px]">PLAN.md</code> before any
+              work; the generator then implements that plan.
+            </span>
+          </span>
+        </label>
+        {planFirst && (
+          <Field label="Planner agent" className="mt-3">
+            <SelectMenu
+              value={planner}
+              onChange={setPlanner}
+              options={generatorOptions.map(toOpt)}
+              placeholder="Pick a planner"
+            />
+          </Field>
+        )}
+      </div>
+
       <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Field label="Max attempts">
           <Input
@@ -475,6 +514,7 @@ function StartForm({
               agent_id: generator,
               evaluator_id: evaluator,
               objective: objective.trim(),
+              planner_id: planFirst ? planner || generator : null,
               max_attempts: Math.max(1, Math.min(100, Number(maxAttempts) || 10)),
               max_tokens: num(maxTokens),
               max_cost_usd: num(maxCost),

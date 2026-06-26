@@ -199,6 +199,9 @@ class LoopStartCreate(BaseModel):
     agent_id: str = Field(min_length=1, max_length=255)
     evaluator_id: str = Field(min_length=1, max_length=255)
     objective: str | None = Field(default=None, max_length=20000)
+    #: Optional planning phase: a ``planner_id`` agent analyses the task and
+    #: writes a plan the generator works from. Omit to skip planning.
+    planner_id: str | None = Field(default=None, max_length=255)
     max_attempts: int = Field(default=10, ge=1, le=100)
     #: Resource guardrails (omit/0 = unbounded). Hitting any cap routes the task
     #: to human review rather than finishing silently.

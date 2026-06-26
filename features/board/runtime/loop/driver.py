@@ -19,6 +19,7 @@ from agent_team.features.board.repositories import attempts as attempts_repo
 from agent_team.features.board.runtime.loop.budget import LoopBudget, LoopLedger
 from agent_team.features.board.runtime.loop.controller import Done, LoopController
 from agent_team.features.board.runtime.loop.evaluator import Evaluator
+from agent_team.features.board.runtime.loop.planner import Planner
 from agent_team.features.board.runtime.loop.status import (
     LoopState,
     LoopStatus,
@@ -109,12 +110,18 @@ async def run_loop(
     workspace_path: str,
     run_generator: RunGeneratorFn,
     evaluator: Evaluator,
+    planner: Planner | None = None,
     max_attempts: int = 10,
     budget: LoopBudget | None = None,
     cancel: asyncio.Event | None = None,
     on_status: OnStatusFn | None = None,
 ) -> LoopOutcome:
     """Drive a task to a verified result; returns the terminal outcome.
+
+    When a ``planner`` is given, an optional planning phase runs first: it writes
+    a structured plan to the workspace and the generator is then pointed at that
+    file. Planning is fail-open — if it produces no plan, the loop proceeds from
+    the raw objective.
 
     Each iteration opens an attempt, runs the generator, evaluates it (fail-open:
     an evaluator error or unparseable verdict is treated as "keep going"), and
@@ -127,11 +134,11 @@ async def run_loop(
     attempt, and at the terminal state — so a caller can publish progress and
     persist the task's loop state.
     """
-    controller = LoopController(objective, max_attempts=max_attempts)
     ledger = LoopLedger(budget=budget or LoopBudget())
-    prompt = controller.start()
 
-    def _emit(state: LoopState, outcome: str | None = None) -> None:
+    def _publish(
+        state: LoopState, *, attempt: int, outcome: str | None = None
+    ) -> None:
         if on_status is None:
             return
         try:
@@ -139,7 +146,7 @@ async def run_loop(
                 LoopStatus(
                     task_id=task_id,
                     state=state,
-                    attempt=controller.attempts,
+                    attempt=attempt,
                     max_attempts=max_attempts,
                     objective=objective,
                     outcome=outcome,
@@ -148,6 +155,30 @@ async def run_loop(
             )
         except Exception:  # noqa: BLE001 — status is best-effort, never fatal
             logger.debug("loop status emit failed", exc_info=True)
+
+    # Optional planning phase. Hand the plan to the generator by reference (the
+    # opening prompt points at the file) rather than inlining it.
+    plan_path: str | None = None
+    if planner is not None:
+        if cancel is not None and cancel.is_set():
+            _publish(LoopState.CANCELLED, attempt=0, outcome=OUTCOME_CANCELLED)
+            return LoopOutcome(OUTCOME_CANCELLED, 0)
+        _publish(LoopState.PLANNING, attempt=0)
+        try:
+            plan_path = await planner.plan(
+                objective=objective, workspace_path=workspace_path
+            )
+        except Exception:  # noqa: BLE001 — fail-open: a broken planner must not wedge
+            logger.warning("loop planning failed for task %s", task_id, exc_info=True)
+            plan_path = None
+
+    controller = LoopController(
+        objective, max_attempts=max_attempts, plan_path=plan_path
+    )
+    prompt = controller.start()
+
+    def _emit(state: LoopState, outcome: str | None = None) -> None:
+        _publish(state, attempt=controller.attempts, outcome=outcome)
 
     def _finish(attempt_id: str, outcome: str) -> LoopOutcome:
         _close_attempt(attempt_id, outcome)

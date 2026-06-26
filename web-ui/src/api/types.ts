@@ -318,6 +318,7 @@ export interface TaskDTO {
 
 /** Persisted lifecycle state of a task's autonomous loop. */
 export type LoopState =
+  | "planning"
   | "running"
   | "complete"
   | "waiting_for_human"
@@ -665,6 +666,8 @@ export interface LoopStartBody {
   evaluator_id: string;
   /** Objective; falls back to the task's stored objective/description. */
   objective?: string | null;
+  /** Optional planner agent alias: analyses the task + writes a plan first. */
+  planner_id?: string | null;
   max_attempts?: number;
   /** Resource guardrails (omit/0 = unbounded). */
   max_tokens?: number | null;

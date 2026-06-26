@@ -57,8 +57,11 @@ TASK_EXEC_MODE_AUTONOMOUS = "autonomous"
 TASK_EXEC_MODES = frozenset({TASK_EXEC_MODE_CHAT, TASK_EXEC_MODE_AUTONOMOUS})
 
 #: Why a run was executed (its stage in the autonomous loop). A plain chat/mention
-#: run is ``chat``; the loop tags its runs ``generator`` / ``evaluator``.
+#: run is ``chat``; the loop tags its runs ``planner`` / ``generator`` /
+#: ``evaluator``. Stored in a plain VARCHAR(16) (no CHECK), so new roles need no
+#: migration.
 RUN_ROLE_CHAT = "chat"
+RUN_ROLE_PLANNER = "planner"
 RUN_ROLE_GENERATOR = "generator"
 RUN_ROLE_EVALUATOR = "evaluator"
 
@@ -372,8 +375,9 @@ class AgentTeamRun(Base):
     thread_id: Mapped[str] = mapped_column(String(255), nullable=False)
     #: How the run was started, e.g. ``mention`` or ``manual``.
     trigger: Mapped[str] = mapped_column(String(32), nullable=False, default="mention")
-    #: Stage in the autonomous loop: ``chat`` (default), ``generator`` or
-    #: ``evaluator``. Lets the cockpit label loop runs and the loop layer query them.
+    #: Stage in the autonomous loop: ``chat`` (default), ``planner``,
+    #: ``generator`` or ``evaluator``. Lets the cockpit label loop runs and the
+    #: loop layer query them.
     role: Mapped[str] = mapped_column(String(16), nullable=False, default=RUN_ROLE_CHAT)
     #: The loop attempt this run belongs to (null for chat runs).
     attempt_id: Mapped[str | None] = mapped_column(

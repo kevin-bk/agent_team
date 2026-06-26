@@ -135,6 +135,26 @@ def _mcp_capabilities(init_response: Any) -> Any:
     )
 
 
+def _agent_supports_fork(init_response: Any) -> bool:
+    """Whether the agent advertised the ``session.fork`` capability at init.
+
+    Fork branches a *new* session from the live one's current head (inheriting
+    the conversation so far) without touching the parent turn. It is optional in
+    ACP, so probe before relying on it and degrade gracefully when absent.
+    """
+    caps = getattr(init_response, "agent_capabilities", None) or getattr(
+        init_response, "agentCapabilities", None
+    )
+    if caps is None:
+        return False
+    session_caps = getattr(caps, "session_capabilities", None) or getattr(
+        caps, "sessionCapabilities", None
+    )
+    if session_caps is None:
+        return False
+    return getattr(session_caps, "fork", None) is not None
+
+
 class _SessionHandle:
     """One live ACP subprocess + session, owned by the background loop."""
 
@@ -145,6 +165,7 @@ class _SessionHandle:
         "session_id",
         "cwd",
         "auto_approve",
+        "supports_fork",
         "mask",
         "collector",
         "progress_q",
@@ -163,6 +184,7 @@ class _SessionHandle:
         session_id: Any,
         cwd: str | None,
         auto_approve: bool,
+        supports_fork: bool = False,
         mask: Callable[[str], str] | None = None,
     ) -> None:
         self.cm = cm
@@ -171,6 +193,7 @@ class _SessionHandle:
         self.session_id = session_id
         self.cwd = cwd
         self.auto_approve = auto_approve
+        self.supports_fork = supports_fork
         self.mask = mask
         self.collector: list[str] = []
         self.progress_q: queue.Queue | None = None
@@ -390,6 +413,7 @@ class AcpSessionManager:
             init = await conn.initialize(protocol_version=PROTOCOL_VERSION)
             mcp_servers = mcp_config_to_acp_servers(mcp_config, _mcp_capabilities(init))
             can_load = _agent_supports_load(init)
+            supports_fork = _agent_supports_fork(init)
             session_id: Any = None
             if resume_session_id and can_load:
                 try:
@@ -419,6 +443,7 @@ class AcpSessionManager:
             session_id=session_id,
             cwd=cwd,
             auto_approve=auto_approve,
+            supports_fork=supports_fork,
             mask=mask,
         )
         if session_id is not None:
@@ -619,6 +644,13 @@ class AcpSessionManager:
         """
         handle = self._sessions.get(key)
         if handle is None or handle.conn is None or handle.session_id is None:
+            return None
+        # Fork is optional in ACP. If the engine never advertised it at init,
+        # skip the round-trip and let the caller fall back instead of eating a
+        # RequestError. (A fork inherits the parent's context up to its current
+        # head and shares the same cwd — it is not an isolated workspace copy.)
+        if not handle.supports_fork:
+            logger.debug("acp engine does not support session fork; skipping ask()")
             return None
         from acp import text_block
 

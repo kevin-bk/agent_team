@@ -1363,6 +1363,145 @@ def test_loop_controller_decision_table():
     assert isinstance(c.on_attempt_finished(None), Continue)
 
 
+def test_loop_controller_references_plan_when_present():
+    from agent_team.features.board.runtime.loop.controller import LoopController
+    from agent_team.features.board.runtime.loop.verdict import LoopVerdict, Verdict
+
+    # No plan: the opening prompt carries the objective, no file reference.
+    plain = LoopController("obj", max_attempts=5).start()
+    assert "obj" in plain and "PLAN.md" not in plain
+
+    # With a plan: both the opening prompt and the follow-up point at the file.
+    c = LoopController("obj", max_attempts=5, plan_path=".agent-team/PLAN.md")
+    start = c.start()
+    assert ".agent-team/PLAN.md" in start
+    step = c.on_attempt_finished(Verdict(LoopVerdict.FAIL, missing="x"))
+    assert ".agent-team/PLAN.md" in step.followup
+
+
+def test_build_plan_prompt_has_structure_and_path():
+    from agent_team.features.board.runtime.loop.planner import (
+        PLAN_STRUCTURE,
+        build_plan_prompt,
+    )
+
+    prompt = build_plan_prompt("ship feature X", plan_path=".agent-team/PLAN.md")
+    assert "ship feature X" in prompt
+    assert ".agent-team/PLAN.md" in prompt
+    # Every section title must appear in the rendered structure.
+    for title, _ in PLAN_STRUCTURE:
+        assert title in prompt
+    # The planner must be told not to implement in this turn.
+    assert "Do NOT implement" in prompt
+
+
+async def test_run_loop_runs_planning_phase_first(db, monkeypatch):
+    from sqlalchemy.orm import sessionmaker
+
+    from agent_team.features.board.runtime.loop import driver
+    from agent_team.features.board.runtime.loop.driver import GeneratorTurn, run_loop
+    from agent_team.features.board.runtime.loop.status import LoopState
+    from agent_team.features.board.runtime.loop.verdict import LoopVerdict, Verdict
+
+    factory = sessionmaker(bind=db.get_bind(), autoflush=False, future=True)
+    monkeypatch.setattr(driver, "SessionLocal", factory)
+
+    board = boards_repo.create_board(db, name="B", description=None, columns=None, owner_id=None)
+    db.flush()
+    task = tasks_repo.create_task(
+        db, board_id=board.id, title="T", description=None, status="todo",
+        assignee_id=None, labels=None, priority=None, created_by=None,
+    )
+    db.commit()
+
+    states: list[LoopState] = []
+    prompts: list[str] = []
+
+    class FakePlanner:
+        def __init__(self):
+            self.called = False
+
+        async def plan(self, *, objective, workspace_path):
+            self.called = True
+            return ".agent-team/PLAN.md"
+
+    async def fake_generator(attempt_id, prompt):
+        prompts.append(prompt)
+        return GeneratorTurn(run_id=None, final_text="done", cancelled=False)
+
+    class PassEvaluator:
+        async def evaluate(self, *, objective, generator_summary, workspace_path):
+            return Verdict(LoopVerdict.PASS, score=1.0)
+
+    planner = FakePlanner()
+    outcome = await run_loop(
+        task_id=task.id,
+        objective="build it",
+        workspace_path="/tmp/ws",
+        run_generator=fake_generator,
+        evaluator=PassEvaluator(),
+        planner=planner,
+        max_attempts=5,
+        on_status=lambda s: states.append(s.state),
+    )
+
+    assert outcome.outcome == "complete"
+    assert planner.called
+    # Planning is published before the first run, and the generator is pointed
+    # at the plan file the planner wrote.
+    assert LoopState.PLANNING in states
+    assert ".agent-team/PLAN.md" in prompts[0]
+
+
+async def test_run_loop_planning_failopen(db, monkeypatch):
+    from sqlalchemy.orm import sessionmaker
+
+    from agent_team.features.board.runtime.loop import driver
+    from agent_team.features.board.runtime.loop.driver import GeneratorTurn, run_loop
+    from agent_team.features.board.runtime.loop.verdict import LoopVerdict, Verdict
+
+    factory = sessionmaker(bind=db.get_bind(), autoflush=False, future=True)
+    monkeypatch.setattr(driver, "SessionLocal", factory)
+
+    board = boards_repo.create_board(db, name="B", description=None, columns=None, owner_id=None)
+    db.flush()
+    task = tasks_repo.create_task(
+        db, board_id=board.id, title="T", description=None, status="todo",
+        assignee_id=None, labels=None, priority=None, created_by=None,
+    )
+    db.commit()
+
+    prompts: list[str] = []
+
+    class BrokenPlanner:
+        async def plan(self, *, objective, workspace_path):
+            raise RuntimeError("planner exploded")
+
+    async def fake_generator(attempt_id, prompt):
+        prompts.append(prompt)
+        return GeneratorTurn(run_id=None, final_text="done", cancelled=False)
+
+    class PassEvaluator:
+        async def evaluate(self, *, objective, generator_summary, workspace_path):
+            return Verdict(LoopVerdict.PASS, score=1.0)
+
+    outcome = await run_loop(
+        task_id=task.id,
+        objective="build it",
+        workspace_path="/tmp/ws",
+        run_generator=fake_generator,
+        evaluator=PassEvaluator(),
+        planner=BrokenPlanner(),
+        max_attempts=5,
+    )
+
+    # A broken planner must not wedge the loop: it proceeds from the raw
+    # objective with no plan reference.
+    assert outcome.outcome == "complete"
+    assert "build it" in prompts[0]
+    assert "PLAN.md" not in prompts[0]
+
+
 async def test_run_loop_drives_attempts_until_pass(db, monkeypatch):
     from sqlalchemy.orm import sessionmaker
 

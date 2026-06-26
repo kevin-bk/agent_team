@@ -19,6 +19,7 @@ from agent_team.features.board.board_events import get_board_bus
 from agent_team.features.board.models import (
     RUN_ROLE_EVALUATOR,
     RUN_ROLE_GENERATOR,
+    RUN_ROLE_PLANNER,
     AgentTeamTask,
 )
 from agent_team.features.board.repositories import conversations as conversations_repo
@@ -37,6 +38,7 @@ from agent_team.features.board.runtime.loop.evaluator import (
     Verdict,
     build_evaluator_prompt,
 )
+from agent_team.features.board.runtime.loop.planner import build_plan_prompt
 from agent_team.features.board.runtime.loop.status import LoopStatus
 from agent_team.features.board.runtime.loop.verdict import parse_verdict
 from core.database.base import SessionLocal
@@ -169,6 +171,50 @@ class BackendGenerator:
         )
 
 
+#: Workspace-relative path the planning phase writes its plan to. Stable (not
+#: per-run) so the generator's prompt can point at a known file.
+_PLAN_PATH = ".agent-team/PLAN.md"
+
+
+def _plan_written(workspace_path: str, rel_path: str) -> bool:
+    """Whether the planner actually produced a non-empty plan file."""
+    if not workspace_path:
+        return False
+    try:
+        with open(os.path.join(workspace_path, rel_path), encoding="utf-8") as fh:
+            return bool(fh.read().strip())
+    except OSError:
+        return False
+
+
+class WorkerPlanner:
+    """Runs an optional planning turn that writes a structured plan file.
+
+    Returns the workspace-relative plan path when the file was written, else
+    ``None`` (the loop then proceeds from the raw objective — fail-open).
+    """
+
+    def __init__(self, *, task_id: str, planner_alias: str) -> None:
+        self._task_id = task_id
+        self._planner_alias = planner_alias
+
+    async def plan(self, *, objective: str, workspace_path: str) -> str | None:
+        prompt = build_plan_prompt(objective, plan_path=_PLAN_PATH)
+        run_id = await asyncio.to_thread(
+            _create_loop_run,
+            task_id=self._task_id,
+            agent_alias=self._planner_alias,
+            prompt=prompt,
+            role=RUN_ROLE_PLANNER,
+            attempt_id=None,  # planning precedes the first attempt
+        )
+        result = await _drive_to_completion(run_id)
+        if result.status != RUN_DONE:
+            return None
+        written = await asyncio.to_thread(_plan_written, workspace_path, _PLAN_PATH)
+        return _PLAN_PATH if written else None
+
+
 #: Workspace-relative directory the evaluator drops its verdict file into.
 _VERDICT_DIR = ".agent-team/loop"
 
@@ -283,13 +329,23 @@ async def run_autonomous_loop(
     agent_alias: str,
     evaluator_alias: str,
     objective: str,
+    planner_alias: str | None = None,
     max_attempts: int = 10,
     budget: LoopBudget | None = None,
     cancel: asyncio.Event | None = None,
 ) -> LoopOutcome:
-    """Drive a task to a verified result using real generator + evaluator runs."""
+    """Drive a task to a verified result using real generator + evaluator runs.
+
+    When ``planner_alias`` is given, an optional planning turn runs first and
+    writes a structured plan the generator works from.
+    """
     workspace_path, board_id = await asyncio.to_thread(
         _task_workspace_and_board, task_id
+    )
+    planner = (
+        WorkerPlanner(task_id=task_id, planner_alias=planner_alias)
+        if planner_alias
+        else None
     )
     return await run_loop(
         task_id=task_id,
@@ -297,6 +353,7 @@ async def run_autonomous_loop(
         workspace_path=workspace_path,
         run_generator=BackendGenerator(task_id=task_id, agent_alias=agent_alias),
         evaluator=WorkerEvaluator(task_id=task_id, evaluator_alias=evaluator_alias),
+        planner=planner,
         max_attempts=max_attempts,
         budget=budget,
         cancel=cancel,
@@ -310,6 +367,7 @@ def start_autonomous_loop(
     agent_alias: str,
     evaluator_alias: str,
     objective: str,
+    planner_alias: str | None = None,
     max_attempts: int = 10,
     budget: LoopBudget | None = None,
 ) -> asyncio.Task:
@@ -331,6 +389,7 @@ def start_autonomous_loop(
                 agent_alias=agent_alias,
                 evaluator_alias=evaluator_alias,
                 objective=objective,
+                planner_alias=planner_alias,
                 max_attempts=max_attempts,
                 budget=budget,
                 cancel=cancel,

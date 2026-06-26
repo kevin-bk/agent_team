@@ -18,6 +18,12 @@ interface StateMeta {
 
 /** Visuals for each persisted loop state, reused by the chip and panel. */
 export const LOOP_STATE_META: Record<LoopState, StateMeta> = {
+  planning: {
+    label: "Planning",
+    tone: "bg-indigo-100 text-indigo-700 dark:bg-indigo-500/15 dark:text-indigo-300",
+    icon: Loader2,
+    active: true,
+  },
   running: {
     label: "Running",
     tone: "bg-sky-100 text-sky-700 dark:bg-sky-500/15 dark:text-sky-300",

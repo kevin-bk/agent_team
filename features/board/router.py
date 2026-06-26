@@ -1257,8 +1257,10 @@ async def start_task_loop(
     """Start an autonomous loop: a generator agent works, an evaluator grades.
 
     The loop drives generator turns and independent evaluations until the
-    objective is met (or a guardrail stops it), persisting each attempt. Plain
-    chat continues to work through ``/mentions`` and is unaffected.
+    objective is met (or a guardrail stops it), persisting each attempt. When a
+    ``planner_id`` is given, an optional planning phase runs first and writes a
+    plan the generator works from. Plain chat continues to work through
+    ``/mentions`` and is unaffected.
     """
     ctx, err = authz.guard_task(db, request, task_id, min_role="editor")
     if err:
@@ -1283,6 +1285,7 @@ async def start_task_loop(
         agent_alias=payload.agent_id,
         evaluator_alias=payload.evaluator_id,
         objective=objective,
+        planner_alias=payload.planner_id or None,
         max_attempts=payload.max_attempts,
         budget=LoopBudget(
             max_tokens=payload.max_tokens,
