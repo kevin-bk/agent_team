@@ -77,3 +77,13 @@ def list_attempts_for_task(db: Session, task_id: str) -> list[AgentTeamAttempt]:
         .order_by(AgentTeamAttempt.attempt_no.asc())
         .all()
     )
+
+
+def list_evaluations_for_task(db: Session, task_id: str) -> list[AgentTeamEvaluation]:
+    """Return a task's evaluator verdicts, oldest first."""
+    return (
+        db.query(AgentTeamEvaluation)
+        .filter(AgentTeamEvaluation.task_id == task_id)
+        .order_by(AgentTeamEvaluation.created_at.asc())
+        .all()
+    )

@@ -20,16 +20,37 @@ import os
 import time
 
 from agent_team.features.board.runtime import event_store
-from agent_team.features.board.runtime.direct_acp import (
-    DirectCliRun,
-    engine_for_alias,
-)
 from agent_team.features.board.runtime.workers.base import (
     EmitFn,
     PermissionMode,
     TurnContext,
     TurnResult,
 )
+
+
+def _load_direct_cli():
+    """Pick the ACP engine: the agent-team-owned one or the legacy ai_code base.
+
+    Selected by ``AGENT_TEAM_ACP_ENGINE`` (``owned`` | ``legacy``, default
+    ``legacy``). Both expose the identical ``DirectCliRun`` seam and
+    ``engine_for_alias`` helper, so flipping the flag is the only switch. Bound at
+    import as module globals so the choice is made once and stays patchable.
+    """
+    choice = (os.getenv("AGENT_TEAM_ACP_ENGINE") or "legacy").strip().lower()
+    if choice == "owned":
+        from agent_team.features.board.runtime.acp import (
+            DirectCliRun,
+            engine_for_alias,
+        )
+    else:
+        from agent_team.features.board.runtime.direct_acp import (
+            DirectCliRun,
+            engine_for_alias,
+        )
+    return DirectCliRun, engine_for_alias
+
+
+DirectCliRun, engine_for_alias = _load_direct_cli()
 
 #: How often to poll the DB for a cross-process cancel while streaming.
 _CANCEL_POLL_SECONDS = 2.0

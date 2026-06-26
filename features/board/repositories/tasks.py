@@ -112,4 +112,7 @@ def serialize_task(task: AgentTeamTask) -> TaskDTO:
         archived=task.archived,
         created_at=task.created_at.isoformat() if task.created_at else None,
         updated_at=task.updated_at.isoformat() if task.updated_at else None,
+        objective=task.objective,
+        execution_mode=task.execution_mode or "chat",
+        loop_state=task.loop_state,
     )

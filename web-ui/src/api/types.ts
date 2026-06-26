@@ -308,7 +308,21 @@ export interface TaskDTO {
   archived: boolean;
   created_at: string;
   updated_at: string;
+  /** Autonomous-loop objective, persisted when a loop is started. */
+  objective?: string | null;
+  /** "chat" (default) or "autonomous". */
+  execution_mode?: string;
+  /** Live loop lifecycle state (null on a plain chat task). */
+  loop_state?: LoopState | null;
 }
+
+/** Persisted lifecycle state of a task's autonomous loop. */
+export type LoopState =
+  | "running"
+  | "complete"
+  | "waiting_for_human"
+  | "failed"
+  | "cancelled";
 
 export interface CreateBoardBody {
   name: string;
@@ -640,6 +654,55 @@ export interface AttemptDTO {
   is_active: boolean;
   created_at: string;
   title?: string | null;
+}
+
+// ── Autonomous loop (generator + evaluator) ─────────────────────────
+
+export interface LoopStartBody {
+  /** Generator agent alias (does the work). */
+  agent_id: string;
+  /** Evaluator agent alias (independently grades each attempt). */
+  evaluator_id: string;
+  /** Objective; falls back to the task's stored objective/description. */
+  objective?: string | null;
+  max_attempts?: number;
+  /** Resource guardrails (omit/0 = unbounded). */
+  max_tokens?: number | null;
+  max_cost_usd?: number | null;
+  max_wall_seconds?: number | null;
+}
+
+export type LoopVerdict = "pass" | "fail" | "needs_human";
+
+export interface LoopEvaluationDTO {
+  id: string;
+  attempt_id: string;
+  run_id?: string | null;
+  verdict: LoopVerdict;
+  score: number;
+  missing: string;
+  created_at?: string | null;
+}
+
+export interface LoopAttemptDTO {
+  id: string;
+  attempt_no: number;
+  status: string;
+  /** Terminal loop outcome stamped on the attempt that ended the loop. */
+  outcome?: string | null;
+  created_at?: string | null;
+  ended_at?: string | null;
+  evaluations: LoopEvaluationDTO[];
+}
+
+export interface LoopInfoDTO {
+  task_id: string;
+  execution_mode: string;
+  loop_state?: LoopState | null;
+  objective?: string | null;
+  /** Whether a loop is actively running in-process right now. */
+  is_running: boolean;
+  attempts: LoopAttemptDTO[];
 }
 
 export interface CommentAttachment {

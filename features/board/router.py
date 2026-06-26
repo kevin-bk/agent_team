@@ -48,6 +48,9 @@ from agent_team.features.board.schemas import (
     JiraPreviewItem,
     JiraPreviewResponse,
     JiraSyncBody,
+    LoopAttemptDTO,
+    LoopEvaluationDTO,
+    LoopInfoDTO,
     LoopStartCreate,
     MentionCreate,
     MentionResponse,
@@ -59,7 +62,7 @@ from agent_team.features.board.schemas import (
     TaskUpdate,
     TypingBody,
 )
-from agent_team.web import API_PREFIX, auth_or_401, not_found
+from agent_team.web import API_PREFIX, auth_or_401, bad_request, not_found
 from core.database.base import SessionLocal, get_db
 
 
@@ -1288,6 +1291,88 @@ async def start_task_loop(
         ),
     )
     return {"ok": True, "task_id": task_id, "execution_mode": task.execution_mode}
+
+
+@router.get("/tasks/{task_id}/loop")
+async def get_task_loop(task_id: str, request: Request, db: Session = Depends(get_db)):
+    """Snapshot of a task's autonomous loop: state + attempts with verdicts.
+
+    Drives the cockpit's loop panel — the live state, the human-review banner,
+    and the attempt/evaluation timeline all read from here (refreshed on each
+    ``loop.status`` board event).
+    """
+    ctx, err = authz.guard_task(db, request, task_id, min_role="viewer")
+    if err:
+        return err
+    task = ctx.task
+
+    from agent_team.features.board.repositories import attempts as attempts_repo
+    from agent_team.features.board.runtime.loop.service import is_loop_running
+
+    attempts = attempts_repo.list_attempts_for_task(db, task_id)
+    evaluations = attempts_repo.list_evaluations_for_task(db, task_id)
+    by_attempt: dict[str, list] = {}
+    for ev in evaluations:
+        by_attempt.setdefault(ev.attempt_id, []).append(
+            LoopEvaluationDTO(
+                id=ev.id,
+                attempt_id=ev.attempt_id,
+                run_id=ev.run_id,
+                verdict=ev.verdict,
+                score=ev.score,
+                missing=ev.missing,
+                created_at=ev.created_at.isoformat() if ev.created_at else None,
+            )
+        )
+    return LoopInfoDTO(
+        task_id=task_id,
+        execution_mode=task.execution_mode or "chat",
+        loop_state=task.loop_state,
+        objective=task.objective,
+        is_running=is_loop_running(task_id),
+        attempts=[
+            LoopAttemptDTO(
+                id=a.id,
+                attempt_no=a.attempt_no,
+                status=a.status,
+                outcome=a.outcome,
+                created_at=a.created_at.isoformat() if a.created_at else None,
+                ended_at=a.ended_at.isoformat() if a.ended_at else None,
+                evaluations=by_attempt.get(a.id, []),
+            )
+            for a in attempts
+        ],
+    )
+
+
+@router.post("/tasks/{task_id}/loop/cancel")
+async def cancel_task_loop(task_id: str, request: Request, db: Session = Depends(get_db)):
+    """Ask a running loop to stop after its current attempt."""
+    _ctx, err = authz.guard_task(db, request, task_id, min_role="editor")
+    if err:
+        return err
+    from agent_team.features.board.runtime.loop.service import cancel_loop
+
+    return {"ok": cancel_loop(task_id), "task_id": task_id}
+
+
+@router.post("/tasks/{task_id}/loop/ack")
+async def ack_task_loop(task_id: str, request: Request, db: Session = Depends(get_db)):
+    """Acknowledge a finished loop, clearing its state from the cockpit.
+
+    Used after a human has reviewed a ``waiting_for_human``/``complete``/
+    ``failed`` outcome; refuses while a loop is still running.
+    """
+    ctx, err = authz.guard_task(db, request, task_id, min_role="editor")
+    if err:
+        return err
+    from agent_team.features.board.runtime.loop.service import is_loop_running
+
+    if is_loop_running(task_id):
+        return bad_request("The loop is still running — cancel it first.")
+    ctx.task.loop_state = None
+    db.commit()
+    return {"ok": True, "task_id": task_id}
 
 
 @router.get("/tasks/{task_id}/runs")

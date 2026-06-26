@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import uuid
 from dataclasses import dataclass
 
 from agent_team.features.board.board_events import get_board_bus
@@ -40,6 +42,39 @@ from agent_team.features.board.runtime.loop.verdict import parse_verdict
 from core.database.base import SessionLocal
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _RunningLoop:
+    """An in-process loop: its driving task and a cancel switch."""
+
+    task: asyncio.Task
+    cancel: asyncio.Event
+
+
+#: task_id → the loop currently driving it (so a second start is a no-op and the
+#: UI can cancel a live loop). Cleared when the loop's background task settles.
+_RUNNING_LOOPS: dict[str, _RunningLoop] = {}
+
+
+def is_loop_running(task_id: str) -> bool:
+    """Whether an autonomous loop is actively driving ``task_id`` right now."""
+    loop = _RUNNING_LOOPS.get(task_id)
+    return loop is not None and not loop.task.done()
+
+
+def cancel_loop(task_id: str) -> bool:
+    """Request a running loop to stop after its current attempt; ``False`` if idle.
+
+    The loop checks its cancel event between attempts and finishes as
+    ``cancelled`` (an in-flight generator run is left to complete so the
+    workspace is never abandoned mid-write).
+    """
+    loop = _RUNNING_LOOPS.get(task_id)
+    if loop is None or loop.task.done():
+        return False
+    loop.cancel.set()
+    return True
 
 
 def _create_loop_run(
@@ -134,6 +169,32 @@ class BackendGenerator:
         )
 
 
+#: Workspace-relative directory the evaluator drops its verdict file into.
+_VERDICT_DIR = ".agent-team/loop"
+
+
+def _read_verdict_file(workspace_path: str, rel_path: str) -> Verdict | None:
+    """Read and parse the evaluator's verdict file, deleting it afterwards.
+
+    The file is the authoritative channel; a per-evaluation token in its name
+    means a stale file from an earlier attempt is never mistaken for this one.
+    """
+    if not workspace_path:
+        return None
+    abs_path = os.path.join(workspace_path, rel_path)
+    try:
+        with open(abs_path, encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError:
+        return None
+    finally:
+        try:
+            os.remove(abs_path)
+        except OSError:
+            pass
+    return parse_verdict(text)
+
+
 class WorkerEvaluator:
     """Grades an attempt by running a separate evaluator agent over the task."""
 
@@ -144,7 +205,12 @@ class WorkerEvaluator:
     async def evaluate(
         self, *, objective: str, generator_summary: str, workspace_path: str
     ) -> Verdict | None:
-        prompt = build_evaluator_prompt(objective, generator_summary)
+        # Unique per evaluation so a leftover file from a prior attempt can never
+        # be read back as this attempt's verdict.
+        rel_path = f"{_VERDICT_DIR}/verdict-{uuid.uuid4().hex}.json"
+        prompt = build_evaluator_prompt(
+            objective, generator_summary, verdict_path=rel_path
+        )
         run_id = await asyncio.to_thread(
             _create_loop_run,
             task_id=self._task_id,
@@ -156,6 +222,13 @@ class WorkerEvaluator:
         result = await _drive_to_completion(run_id)
         if result.status != RUN_DONE:
             return None  # could not evaluate → fail-open
+        # Prefer the file the evaluator wrote (robust for noisy CLI stdout), then
+        # fall back to parsing the JSON it echoed in its reply.
+        verdict = await asyncio.to_thread(
+            _read_verdict_file, workspace_path, rel_path
+        )
+        if verdict is not None:
+            return verdict
         return parse_verdict(result.final_answer)
 
 
@@ -240,7 +313,16 @@ def start_autonomous_loop(
     max_attempts: int = 10,
     budget: LoopBudget | None = None,
 ) -> asyncio.Task:
-    """Launch the loop as a background task on the running event loop."""
+    """Launch the loop as a background task on the running event loop.
+
+    Starting a loop for a task that already has one running is a no-op (the
+    existing task is returned), so a double-click never spawns two drivers.
+    """
+    existing = _RUNNING_LOOPS.get(task_id)
+    if existing is not None and not existing.task.done():
+        return existing.task
+
+    cancel = asyncio.Event()
 
     async def _go() -> None:
         try:
@@ -251,6 +333,7 @@ def start_autonomous_loop(
                 objective=objective,
                 max_attempts=max_attempts,
                 budget=budget,
+                cancel=cancel,
             )
             logger.info(
                 "autonomous loop finished task=%s outcome=%s attempts=%s",
@@ -258,5 +341,11 @@ def start_autonomous_loop(
             )
         except Exception:  # noqa: BLE001 — never let the loop crash the event loop
             logger.exception("autonomous loop failed for task %s", task_id)
+        finally:
+            current = _RUNNING_LOOPS.get(task_id)
+            if current is not None and current.cancel is cancel:
+                _RUNNING_LOOPS.pop(task_id, None)
 
-    return asyncio.create_task(_go())
+    task = asyncio.create_task(_go())
+    _RUNNING_LOOPS[task_id] = _RunningLoop(task=task, cancel=cancel)
+    return task

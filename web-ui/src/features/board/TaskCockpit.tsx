@@ -99,6 +99,8 @@ import { Timeline } from "@/features/chat/Timeline";
 import { cn } from "@/lib/utils";
 import { useTaskAgentRun } from "./cockpit/useTaskAgentRun";
 import { useTypingIndicator } from "./cockpit/useTypingIndicator";
+import { LoopPanel } from "./cockpit/LoopPanel";
+import { LoopStatusChip } from "./cockpit/LoopStatusChip";
 import { FileViewerModal } from "./cockpit/FileViewerModal";
 import { NoteEditor } from "./cockpit/NoteEditor";
 import { RunChanges, changedFileCount } from "./cockpit/RunChanges";
@@ -110,6 +112,16 @@ import { statusColor } from "./statusColor";
 import { TaskScheduleDialog } from "./TaskScheduleDialog";
 
 const OVERVIEW = "__overview__";
+const LOOP = "__loop__";
+
+/** Short sub-labels for the loop thread item, by persisted loop state. */
+const LOOP_STATE_SUB: Record<string, string> = {
+  running: "running…",
+  complete: "complete",
+  waiting_for_human: "needs review",
+  failed: "failed",
+  cancelled: "cancelled",
+};
 
 /**
  * The issue-type glyph in the cockpit header. Read-only for viewers; editors
@@ -341,6 +353,15 @@ export function TaskCockpit({
                 / {task.jira_key}
               </span>
             ))}
+          {task.loop_state && (
+            <button
+              type="button"
+              onClick={() => selectThread(LOOP)}
+              title="Open the autonomous loop"
+            >
+              <LoopStatusChip state={task.loop_state} />
+            </button>
+          )}
           <div className="ml-auto flex shrink-0 items-center gap-2">
             <span
               className="hidden max-w-[14rem] items-center gap-1 truncate font-mono text-[11px] text-muted-foreground lg:inline-flex"
@@ -426,6 +447,21 @@ export function TaskCockpit({
               active={thread === OVERVIEW}
               onClick={() => selectThread(OVERVIEW)}
             />
+            <ThreadItem
+              icon={
+                <span className="flex h-6 w-6 items-center justify-center rounded bg-indigo-100 text-indigo-600 dark:bg-indigo-500/15 dark:text-indigo-300">
+                  <Gauge className="h-3.5 w-3.5" />
+                </span>
+              }
+              label="Autonomous loop"
+              sub={
+                task.loop_state
+                  ? LOOP_STATE_SUB[task.loop_state] ?? "loop"
+                  : "Run & verify"
+              }
+              active={thread === LOOP}
+              onClick={() => selectThread(LOOP)}
+            />
 
             <div className="px-2 pb-1 pt-3 text-[10.5px] font-semibold uppercase tracking-[0.06em] text-muted-foreground">
               Agents
@@ -507,6 +543,24 @@ export function TaskCockpit({
               canComment={canEdit}
               onViewFile={setFilePath}
             />
+          ) : thread === LOOP ? (
+            <>
+              <div className="flex items-center gap-2 border-b border-border px-4 py-2">
+                <span className="flex h-6 w-6 items-center justify-center rounded bg-indigo-100 text-indigo-600 dark:bg-indigo-500/15 dark:text-indigo-300">
+                  <Gauge className="h-3.5 w-3.5" />
+                </span>
+                <span className="text-sm font-semibold text-foreground">
+                  Autonomous loop
+                </span>
+                <LoopStatusChip state={task.loop_state} className="ml-1" />
+              </div>
+              <LoopPanel
+                task={task}
+                agents={mentionable}
+                cliAgents={cliAgents}
+                canEdit={canEdit}
+              />
+            </>
           ) : activeAgent ? (
             <>
               <div className="flex items-center gap-2 border-b border-border px-4 py-2">
