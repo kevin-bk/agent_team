@@ -20,6 +20,8 @@ import {
   type CsvImportResult,
   type JiraBatchResult,
   type JiraPreviewResponse,
+  type LoopInfoDTO,
+  type LoopStartBody,
   type Me,
   type MentionBody,
   type MentionResponse,
@@ -396,6 +398,29 @@ export class ApiClient {
       method: "POST",
       body: JSON.stringify(body),
     });
+  }
+
+  // ── autonomous loop (generator + evaluator) ──────────────────────
+  startTaskLoop(taskId: string, body: LoopStartBody) {
+    return this.request<{ ok: boolean; task_id: string; execution_mode: string }>(
+      `/api/tasks/${taskId}/loop`,
+      { method: "POST", body: JSON.stringify(body) },
+    );
+  }
+  getTaskLoop(taskId: string) {
+    return this.request<LoopInfoDTO>(`/api/tasks/${taskId}/loop`);
+  }
+  cancelTaskLoop(taskId: string) {
+    return this.request<{ ok: boolean; task_id: string }>(
+      `/api/tasks/${taskId}/loop/cancel`,
+      { method: "POST" },
+    );
+  }
+  ackTaskLoop(taskId: string) {
+    return this.request<{ ok: boolean; task_id: string }>(
+      `/api/tasks/${taskId}/loop/ack`,
+      { method: "POST" },
+    );
   }
   setTyping(taskId: string, agentId: string, state: "start" | "stop") {
     return this.request<{ ok: boolean }>(

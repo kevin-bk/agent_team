@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from agent_team.features.board.keys import RUN_KEY_PREFIX, next_human_key
 from agent_team.features.board.models import (
+    RUN_ROLE_CHAT,
     AgentTeamConversation,
     AgentTeamRun,
 )
@@ -22,6 +23,8 @@ def create_run(
     trigger: str,
     actor_id: str | None,
     prompt: str,
+    role: str = RUN_ROLE_CHAT,
+    attempt_id: str | None = None,
 ) -> AgentTeamRun:
     run = AgentTeamRun(
         human_key=next_human_key(db, RUN_KEY_PREFIX),
@@ -33,6 +36,8 @@ def create_run(
         actor_id=actor_id,
         status=RUN_QUEUED,
         prompt=prompt,
+        role=role,
+        attempt_id=attempt_id,
     )
     db.add(run)
     db.flush()

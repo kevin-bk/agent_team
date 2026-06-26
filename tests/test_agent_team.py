@@ -8,12 +8,14 @@ import pytest
 from agent_team.features.board.keys import next_human_key, slugify
 from agent_team.features.board.models import (
     AgentTeamActivity,
+    AgentTeamAttempt,
     AgentTeamAutopilot,
     AgentTeamTaskSchedule,
     AgentTeamBoard,
     AgentTeamBoardMember,
     AgentTeamComment,
     AgentTeamConversation,
+    AgentTeamEvaluation,
     AgentTeamKeySeq,
     AgentTeamRun,
     AgentTeamRunEvent,
@@ -44,6 +46,8 @@ _PLUGIN_MODELS = (
     AgentTeamBoardRepo,
     AgentTeamToolOutput,
     AgentTeamAutopilot,
+    AgentTeamAttempt,
+    AgentTeamEvaluation,
 )
 
 
@@ -111,6 +115,8 @@ def test_plugin_meta_models_and_menu():
         "plugin_agent_team_tool_output",
         "plugin_agent_team_autopilot",
         "plugin_agent_team_task_schedule",
+        "plugin_agent_team_attempt",
+        "plugin_agent_team_evaluation",
     ]
     menu = plugin.menu_items()
     assert len(menu) == 1
@@ -1138,6 +1144,7 @@ async def test_local_backend_drives_run_and_persists_events(db, monkeypatch, tmp
     from agent_team.features.board.repositories import runs as runs_repo
     from agent_team.features.board.runtime import event_store, local_backend, registry
     from agent_team.features.board.runtime import events as ev
+    from agent_team.features.board.runtime.workers import llm_graph
     from langchain_core.messages import AIMessage, ToolMessage
 
     monkeypatch.setenv("AGENT_TEAM_WORKSPACE_ROOT", str(tmp_path))
@@ -1177,8 +1184,8 @@ async def test_local_backend_drives_run_and_persists_events(db, monkeypatch, tmp
             ]
         )
 
-    monkeypatch.setattr(local_backend, "build_graph", fake_build_graph)
-    monkeypatch.setattr(local_backend, "make_checkpointer", lambda alias: (object(), _DummyCtx()))
+    monkeypatch.setattr(llm_graph, "build_graph", fake_build_graph)
+    monkeypatch.setattr(llm_graph, "make_checkpointer", lambda alias: (object(), _DummyCtx()))
 
     board = boards_repo.create_board(db, name="B", description=None, columns=None, owner_id=None)
     db.flush()
@@ -1230,6 +1237,441 @@ async def test_local_backend_drives_run_and_persists_events(db, monkeypatch, tmp
     assert refreshed.status == ev.RUN_DONE
     assert refreshed.final_answer == "All done"
     assert refreshed.total_tokens == 5
+
+
+# ---------------------------------------------------------------------------
+# Worker resolution + CLI run-control policies
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_worker_picks_path_by_alias():
+    from agent_team.features.board.runtime.workers import resolve_worker
+    from agent_team.features.board.runtime.workers.acp_cli import AcpCliWorker
+    from agent_team.features.board.runtime.workers.llm_graph import LlmGraphWorker
+
+    cli_worker = resolve_worker("cli:claude")
+    assert isinstance(cli_worker, AcpCliWorker)
+    assert cli_worker.engine == "claude"
+
+    llm_worker = resolve_worker("alice")
+    assert isinstance(llm_worker, LlmGraphWorker)
+
+
+async def test_acp_worker_threads_permission_and_idle(monkeypatch):
+    import asyncio
+
+    from agent_team.features.board.runtime.workers import acp_cli
+    from agent_team.features.board.runtime.workers.base import (
+        PermissionMode,
+        TurnContext,
+    )
+
+    captured: dict = {}
+
+    class _FakeRun:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.final_text = "hi"
+            self.cancelled = False
+            self.cli_usage_text = None
+            self.usage = {"total_tokens": 3}
+
+        async def stream_frames(self, cancel):
+            if False:  # pragma: no cover - generator with no frames
+                yield ("", {})
+
+    monkeypatch.setattr(acp_cli, "DirectCliRun", _FakeRun)
+
+    worker = acp_cli.AcpCliWorker(engine="claude", idle_timeout_seconds=42)
+    ctx = TurnContext(
+        run_id="r1",
+        agent_alias="cli:claude",
+        prompt="p",
+        workspace_path="/tmp/ws",
+        thread_id="t1",
+        permission_mode=PermissionMode.READ_ONLY,
+    )
+
+    async def emit(event_type, data):  # pragma: no cover - no frames emitted
+        pass
+
+    result = await worker.run_turn(ctx, emit, asyncio.Event())
+
+    assert captured["auto_approve"] is False
+    assert captured["idle_timeout_seconds"] == 42
+    assert result.final_text == "hi"
+    assert result.cancelled is False
+
+
+# ---------------------------------------------------------------------------
+# Autonomous loop layer (verdict / controller / driver)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_verdict_reads_trailing_json():
+    from agent_team.features.board.runtime.loop.verdict import LoopVerdict, parse_verdict
+
+    text = (
+        'Here is an example: {"verdict": "fail"}.\n'
+        "After verifying tests pass, my verdict:\n"
+        '{"verdict": "pass", "score": 0.9, "missing": "", '
+        '"evidence": {"checks": "pytest green"}}'
+    )
+    v = parse_verdict(text)
+    assert v is not None
+    # The last recognisable object wins over the earlier example.
+    assert v.verdict == LoopVerdict.PASS
+    assert v.score == 0.9
+    assert v.evidence == {"checks": "pytest green"}
+
+    assert parse_verdict("no json here") is None
+    assert parse_verdict("") is None
+
+
+def test_loop_controller_decision_table():
+    from agent_team.features.board.runtime.loop.controller import (
+        OUTCOME_CAPPED,
+        OUTCOME_COMPLETE,
+        OUTCOME_NEEDS_HUMAN,
+        Continue,
+        Done,
+        LoopController,
+    )
+    from agent_team.features.board.runtime.loop.verdict import LoopVerdict, Verdict
+
+    # pass -> complete
+    c = LoopController("obj", max_attempts=5)
+    assert "obj" in c.start()
+    step = c.on_attempt_finished(Verdict(LoopVerdict.PASS, score=1.0))
+    assert isinstance(step, Done) and step.outcome == OUTCOME_COMPLETE
+
+    # needs_human -> needs_human
+    c = LoopController("obj", max_attempts=5)
+    step = c.on_attempt_finished(Verdict(LoopVerdict.NEEDS_HUMAN))
+    assert isinstance(step, Done) and step.outcome == OUTCOME_NEEDS_HUMAN
+
+    # fail with budget left -> continue, carrying the missing text
+    c = LoopController("obj", max_attempts=2)
+    step = c.on_attempt_finished(Verdict(LoopVerdict.FAIL, missing="add tests"))
+    assert isinstance(step, Continue) and "add tests" in step.followup
+    # second fail hits the cap
+    step = c.on_attempt_finished(Verdict(LoopVerdict.FAIL))
+    assert isinstance(step, Done) and step.outcome == OUTCOME_CAPPED
+
+    # missing verdict (evaluator could not grade) -> fail-open continue
+    c = LoopController("obj", max_attempts=3)
+    assert isinstance(c.on_attempt_finished(None), Continue)
+
+
+def test_loop_controller_references_plan_when_present():
+    from agent_team.features.board.runtime.loop.controller import LoopController
+    from agent_team.features.board.runtime.loop.verdict import LoopVerdict, Verdict
+
+    # No plan: the opening prompt carries the objective, no file reference.
+    plain = LoopController("obj", max_attempts=5).start()
+    assert "obj" in plain and "PLAN.md" not in plain
+
+    # With a plan: both the opening prompt and the follow-up point at the file.
+    c = LoopController("obj", max_attempts=5, plan_path=".agent-team/PLAN.md")
+    start = c.start()
+    assert ".agent-team/PLAN.md" in start
+    step = c.on_attempt_finished(Verdict(LoopVerdict.FAIL, missing="x"))
+    assert ".agent-team/PLAN.md" in step.followup
+
+
+def test_build_plan_prompt_has_structure_and_path():
+    from agent_team.features.board.runtime.loop.planner import (
+        PLAN_STRUCTURE,
+        build_plan_prompt,
+    )
+
+    prompt = build_plan_prompt("ship feature X", plan_path=".agent-team/PLAN.md")
+    assert "ship feature X" in prompt
+    assert ".agent-team/PLAN.md" in prompt
+    # Every section title must appear in the rendered structure.
+    for title, _ in PLAN_STRUCTURE:
+        assert title in prompt
+    # The planner must be told not to implement in this turn.
+    assert "Do NOT implement" in prompt
+
+
+async def test_run_loop_runs_planning_phase_first(db, monkeypatch):
+    from sqlalchemy.orm import sessionmaker
+
+    from agent_team.features.board.runtime.loop import driver
+    from agent_team.features.board.runtime.loop.driver import GeneratorTurn, run_loop
+    from agent_team.features.board.runtime.loop.status import LoopState
+    from agent_team.features.board.runtime.loop.verdict import LoopVerdict, Verdict
+
+    factory = sessionmaker(bind=db.get_bind(), autoflush=False, future=True)
+    monkeypatch.setattr(driver, "SessionLocal", factory)
+
+    board = boards_repo.create_board(db, name="B", description=None, columns=None, owner_id=None)
+    db.flush()
+    task = tasks_repo.create_task(
+        db, board_id=board.id, title="T", description=None, status="todo",
+        assignee_id=None, labels=None, priority=None, created_by=None,
+    )
+    db.commit()
+
+    states: list[LoopState] = []
+    prompts: list[str] = []
+
+    class FakePlanner:
+        def __init__(self):
+            self.called = False
+
+        async def plan(self, *, objective, workspace_path):
+            self.called = True
+            return ".agent-team/PLAN.md"
+
+    async def fake_generator(attempt_id, prompt):
+        prompts.append(prompt)
+        return GeneratorTurn(run_id=None, final_text="done", cancelled=False)
+
+    class PassEvaluator:
+        async def evaluate(self, *, objective, generator_summary, workspace_path):
+            return Verdict(LoopVerdict.PASS, score=1.0)
+
+    planner = FakePlanner()
+    outcome = await run_loop(
+        task_id=task.id,
+        objective="build it",
+        workspace_path="/tmp/ws",
+        run_generator=fake_generator,
+        evaluator=PassEvaluator(),
+        planner=planner,
+        max_attempts=5,
+        on_status=lambda s: states.append(s.state),
+    )
+
+    assert outcome.outcome == "complete"
+    assert planner.called
+    # Planning is published before the first run, and the generator is pointed
+    # at the plan file the planner wrote.
+    assert LoopState.PLANNING in states
+    assert ".agent-team/PLAN.md" in prompts[0]
+
+
+async def test_run_loop_planning_failopen(db, monkeypatch):
+    from sqlalchemy.orm import sessionmaker
+
+    from agent_team.features.board.runtime.loop import driver
+    from agent_team.features.board.runtime.loop.driver import GeneratorTurn, run_loop
+    from agent_team.features.board.runtime.loop.verdict import LoopVerdict, Verdict
+
+    factory = sessionmaker(bind=db.get_bind(), autoflush=False, future=True)
+    monkeypatch.setattr(driver, "SessionLocal", factory)
+
+    board = boards_repo.create_board(db, name="B", description=None, columns=None, owner_id=None)
+    db.flush()
+    task = tasks_repo.create_task(
+        db, board_id=board.id, title="T", description=None, status="todo",
+        assignee_id=None, labels=None, priority=None, created_by=None,
+    )
+    db.commit()
+
+    prompts: list[str] = []
+
+    class BrokenPlanner:
+        async def plan(self, *, objective, workspace_path):
+            raise RuntimeError("planner exploded")
+
+    async def fake_generator(attempt_id, prompt):
+        prompts.append(prompt)
+        return GeneratorTurn(run_id=None, final_text="done", cancelled=False)
+
+    class PassEvaluator:
+        async def evaluate(self, *, objective, generator_summary, workspace_path):
+            return Verdict(LoopVerdict.PASS, score=1.0)
+
+    outcome = await run_loop(
+        task_id=task.id,
+        objective="build it",
+        workspace_path="/tmp/ws",
+        run_generator=fake_generator,
+        evaluator=PassEvaluator(),
+        planner=BrokenPlanner(),
+        max_attempts=5,
+    )
+
+    # A broken planner must not wedge the loop: it proceeds from the raw
+    # objective with no plan reference.
+    assert outcome.outcome == "complete"
+    assert "build it" in prompts[0]
+    assert "PLAN.md" not in prompts[0]
+
+
+async def test_run_loop_drives_attempts_until_pass(db, monkeypatch):
+    from sqlalchemy.orm import sessionmaker
+
+    from agent_team.features.board.repositories import attempts as attempts_repo
+    from agent_team.features.board.runtime.loop import driver
+    from agent_team.features.board.runtime.loop.driver import GeneratorTurn, run_loop
+    from agent_team.features.board.runtime.loop.verdict import LoopVerdict, Verdict
+
+    factory = sessionmaker(bind=db.get_bind(), autoflush=False, future=True)
+    monkeypatch.setattr(driver, "SessionLocal", factory)
+
+    board = boards_repo.create_board(db, name="B", description=None, columns=None, owner_id=None)
+    db.flush()
+    task = tasks_repo.create_task(
+        db, board_id=board.id, title="T", description=None, status="todo",
+        assignee_id=None, labels=None, priority=None, created_by=None,
+    )
+    db.commit()
+
+    prompts: list[str] = []
+
+    async def fake_generator(attempt_id, prompt):
+        prompts.append(prompt)
+        return GeneratorTurn(run_id=None, final_text="did work", cancelled=False)
+
+    class FakeEvaluator:
+        def __init__(self):
+            self.calls = 0
+
+        async def evaluate(self, *, objective, generator_summary, workspace_path):
+            self.calls += 1
+            # Fail the first attempt, pass the second.
+            if self.calls == 1:
+                return Verdict(LoopVerdict.FAIL, missing="write the function")
+            return Verdict(LoopVerdict.PASS, score=1.0)
+
+    outcome = await run_loop(
+        task_id=task.id,
+        objective="build the thing",
+        workspace_path="/tmp/ws",
+        run_generator=fake_generator,
+        evaluator=FakeEvaluator(),
+        max_attempts=5,
+    )
+
+    assert outcome.outcome == "complete"
+    assert outcome.attempts == 2
+    # First prompt seeds the objective; the follow-up carries the missing work.
+    assert "build the thing" in prompts[0]
+    assert "write the function" in prompts[1]
+
+    db.expire_all()
+    attempts = attempts_repo.list_attempts_for_task(db, task.id)
+    assert [a.attempt_no for a in attempts] == [1, 2]
+    assert attempts[-1].outcome == "complete"
+
+
+async def test_run_loop_caps_when_never_passing(db, monkeypatch):
+    from sqlalchemy.orm import sessionmaker
+
+    from agent_team.features.board.runtime.loop import driver
+    from agent_team.features.board.runtime.loop.driver import GeneratorTurn, run_loop
+
+    factory = sessionmaker(bind=db.get_bind(), autoflush=False, future=True)
+    monkeypatch.setattr(driver, "SessionLocal", factory)
+
+    board = boards_repo.create_board(db, name="B", description=None, columns=None, owner_id=None)
+    db.flush()
+    task = tasks_repo.create_task(
+        db, board_id=board.id, title="T", description=None, status="todo",
+        assignee_id=None, labels=None, priority=None, created_by=None,
+    )
+    db.commit()
+
+    async def fake_generator(attempt_id, prompt):
+        return GeneratorTurn(run_id=None, final_text="...", cancelled=False)
+
+    class BrokenEvaluator:
+        async def evaluate(self, *, objective, generator_summary, workspace_path):
+            raise RuntimeError("judge exploded")
+
+    outcome = await run_loop(
+        task_id=task.id,
+        objective="obj",
+        workspace_path="/tmp/ws",
+        run_generator=fake_generator,
+        evaluator=BrokenEvaluator(),
+        max_attempts=3,
+    )
+
+    # Fail-open: a broken judge never wedges the loop; the budget caps it.
+    assert outcome.outcome == "capped"
+    assert outcome.attempts == 3
+
+
+def test_loop_budget_ledger_caps():
+    from agent_team.features.board.runtime.loop.budget import LoopBudget, LoopLedger
+
+    ledger = LoopLedger(budget=LoopBudget(max_tokens=100))
+    assert ledger.exceeded() is None
+    ledger.add(tokens=60)
+    assert ledger.exceeded() is None
+    ledger.add(tokens=60)
+    assert ledger.exceeded() == "tokens"
+
+    # Unbounded budget never trips.
+    free = LoopLedger(budget=LoopBudget())
+    free.add(tokens=10_000_000, cost_usd=999.0)
+    assert free.exceeded() is None
+
+
+def test_outcome_to_state_routes_caps_to_human():
+    from agent_team.features.board.runtime.loop.status import LoopState, outcome_to_state
+
+    assert outcome_to_state("complete") == LoopState.COMPLETE
+    assert outcome_to_state("cancelled") == LoopState.CANCELLED
+    assert outcome_to_state("capped") == LoopState.WAITING_FOR_HUMAN
+    assert outcome_to_state("budget") == LoopState.WAITING_FOR_HUMAN
+    assert outcome_to_state("needs_human") == LoopState.WAITING_FOR_HUMAN
+    assert outcome_to_state("weird") == LoopState.FAILED
+
+
+async def test_run_loop_stops_on_token_budget(db, monkeypatch):
+    from sqlalchemy.orm import sessionmaker
+
+    from agent_team.features.board.runtime.loop import driver
+    from agent_team.features.board.runtime.loop.budget import LoopBudget
+    from agent_team.features.board.runtime.loop.driver import GeneratorTurn, run_loop
+    from agent_team.features.board.runtime.loop.status import LoopState
+    from agent_team.features.board.runtime.loop.verdict import LoopVerdict, Verdict
+
+    factory = sessionmaker(bind=db.get_bind(), autoflush=False, future=True)
+    monkeypatch.setattr(driver, "SessionLocal", factory)
+
+    board = boards_repo.create_board(db, name="B", description=None, columns=None, owner_id=None)
+    db.flush()
+    task = tasks_repo.create_task(
+        db, board_id=board.id, title="T", description=None, status="todo",
+        assignee_id=None, labels=None, priority=None, created_by=None,
+    )
+    db.commit()
+
+    async def fake_generator(attempt_id, prompt):
+        # Each turn burns 80 tokens; the 50-token budget trips after one turn.
+        return GeneratorTurn(run_id=None, final_text="...", cancelled=False, tokens=80)
+
+    class AlwaysFail:
+        async def evaluate(self, *, objective, generator_summary, workspace_path):
+            return Verdict(LoopVerdict.FAIL, missing="more")
+
+    statuses: list = []
+
+    outcome = await run_loop(
+        task_id=task.id,
+        objective="obj",
+        workspace_path="/tmp/ws",
+        run_generator=fake_generator,
+        evaluator=AlwaysFail(),
+        max_attempts=99,
+        budget=LoopBudget(max_tokens=50),
+        on_status=statuses.append,
+    )
+
+    # The attempt cap is high; the token budget is what stops it (after 1 turn).
+    assert outcome.outcome == "budget"
+    assert outcome.attempts == 1
+    # A terminal status routing to human review was published.
+    assert statuses[-1].state == LoopState.WAITING_FOR_HUMAN
+    assert statuses[-1].outcome == "budget"
+    assert statuses[0].state == LoopState.RUNNING
 
 
 # ---------------------------------------------------------------------------
@@ -3003,11 +3445,12 @@ def test_engine_runtime_reads_env(monkeypatch):
 
     monkeypatch.setenv("AI_CODE_CLAUDE_ACP_COMMAND", "/opt/claude")
     monkeypatch.setenv("AI_CODE_CLAUDE_ACP_ARGS", "acp --flag")
-    monkeypatch.setenv("AI_CODE_CLAUDE_ACP_TIMEOUT_SECONDS", "123")
     rt = dacp._engine_runtime("claude")
     assert rt.command == "/opt/claude"
     assert rt.args == ["acp", "--flag"]
-    assert rt.timeout_seconds == 123
+    # The per-turn timeout is intentionally hard-pinned (long-form CLI jobs run
+    # well past any env-derived default), so it is not read from the environment.
+    assert rt.timeout_seconds == dacp._DIRECT_ACP_TURN_TIMEOUT_SECONDS
     assert rt.label == "Claude ACP"
 
 
