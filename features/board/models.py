@@ -49,6 +49,31 @@ DEFAULT_BOARD_COLUMNS: list[dict[str, str]] = [
     {"key": "done", "name": "Done"},
 ]
 
+#: How a task is executed. ``chat`` = interactive single turns (the default);
+#: ``autonomous`` = the loop layer drives generator turns + independent
+#: evaluation until the objective is met or a guardrail stops it.
+TASK_EXEC_MODE_CHAT = "chat"
+TASK_EXEC_MODE_AUTONOMOUS = "autonomous"
+TASK_EXEC_MODES = frozenset({TASK_EXEC_MODE_CHAT, TASK_EXEC_MODE_AUTONOMOUS})
+
+#: Why a run was executed (its stage in the autonomous loop). A plain chat/mention
+#: run is ``chat``; the loop tags its runs ``planner`` / ``generator`` /
+#: ``evaluator``. Stored in a plain VARCHAR(16) (no CHECK), so new roles need no
+#: migration.
+RUN_ROLE_CHAT = "chat"
+RUN_ROLE_PLANNER = "planner"
+RUN_ROLE_GENERATOR = "generator"
+RUN_ROLE_EVALUATOR = "evaluator"
+
+#: Lifecycle of one loop attempt.
+ATTEMPT_RUNNING = "running"
+ATTEMPT_DONE = "done"
+
+#: Independent evaluator verdicts for an attempt.
+EVAL_PASS = "pass"
+EVAL_FAIL = "fail"
+EVAL_NEEDS_HUMAN = "needs_human"
+
 #: Allowed values for ``AgentTeamAutopilot.schedule_mode``.
 AUTOPILOT_SCHEDULE_OFF = "off"
 AUTOPILOT_SCHEDULE_INTERVAL = "interval"
@@ -92,6 +117,10 @@ class AgentTeamBoard(Base):
     #: JSON-encoded list of direct-CLI aliases (``cli:<engine>``) enabled on this
     #: board — tasks only show these CLIs. Empty (the default) = none.
     cli_targets_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    #: JSON object mapping a direct-CLI alias (``cli:<engine>``) to its own MCP
+    #: config (``{"mcpServers": {...}}``), so each CLI agent on the board can
+    #: connect to a different set of MCP servers. Empty object = no per-agent MCP.
+    agent_mcp_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     #: JSON-encoded list of skill pack names made available to direct-CLI agents
     #: on this board (materialised into each task workspace). Empty = no skills.
     skills_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
@@ -165,6 +194,21 @@ class AgentTeamBoard(Base):
             return []
         return [str(item) for item in value] if isinstance(value, list) else []
 
+    def agent_mcp(self) -> dict[str, dict]:
+        """Return the full ``alias -> mcp_config`` map (empty = no per-agent MCP)."""
+        try:
+            value = json.loads(self.agent_mcp_json or "{}")
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        if not isinstance(value, dict):
+            return {}
+        return {str(k): v for k, v in value.items() if isinstance(v, dict)}
+
+    def agent_mcp_for(self, alias: str) -> dict:
+        """Return the MCP config for one CLI alias (empty = none configured)."""
+        cfg = self.agent_mcp().get(alias)
+        return cfg if isinstance(cfg, dict) else {}
+
     def jira_mappings(self) -> dict:
         """Return the decoded Jira value-mapping object (empty = match by name)."""
         try:
@@ -222,6 +266,17 @@ class AgentTeamTask(Base):
     )
     title: Mapped[str] = mapped_column(String(512), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: Acceptance criteria for autonomous execution — what "done" means. The loop
+    #: layer's controller seeds the first prompt from this and the evaluator grades
+    #: against it. Null for plain chat tasks.
+    objective: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: ``chat`` (default, interactive single turns) or ``autonomous`` (loop layer).
+    execution_mode: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=TASK_EXEC_MODE_CHAT
+    )
+    #: Lifecycle state of the autonomous loop (running / complete /
+    #: waiting_for_human / failed / cancelled). Null for plain chat tasks.
+    loop_state: Mapped[str | None] = mapped_column(String(24), nullable=True)
     #: Jira-style issue type (task/story/bug/epic/subtask/agent); UI-driven.
     task_type: Mapped[str] = mapped_column(String(32), nullable=False, default="task")
     status: Mapped[str] = mapped_column(String(64), nullable=False, default="todo", index=True)
@@ -339,6 +394,17 @@ class AgentTeamRun(Base):
     thread_id: Mapped[str] = mapped_column(String(255), nullable=False)
     #: How the run was started, e.g. ``mention`` or ``manual``.
     trigger: Mapped[str] = mapped_column(String(32), nullable=False, default="mention")
+    #: Stage in the autonomous loop: ``chat`` (default), ``planner``,
+    #: ``generator`` or ``evaluator``. Lets the cockpit label loop runs and the
+    #: loop layer query them.
+    role: Mapped[str] = mapped_column(String(16), nullable=False, default=RUN_ROLE_CHAT)
+    #: The loop attempt this run belongs to (null for chat runs).
+    attempt_id: Mapped[str | None] = mapped_column(
+        String(32),
+        ForeignKey("plugin_agent_team_attempt.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     actor_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
@@ -479,6 +545,80 @@ class AgentTeamToolOutput(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False, default="")
     is_error: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class AgentTeamAttempt(Base):
+    """One iteration of the autonomous loop: a generator turn and its evaluation.
+
+    Attempts are numbered per task (``attempt_no``). The loop opens an attempt,
+    runs the generator, evaluates it, and either continues (a new attempt) or
+    finishes. Runs and evaluations reference their attempt.
+    """
+
+    __tablename__ = "plugin_agent_team_attempt"
+    __table_args__ = (
+        UniqueConstraint("task_id", "attempt_no", name="uq_agent_team_attempt_task_no"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    task_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("plugin_agent_team_task.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    attempt_no: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=ATTEMPT_RUNNING
+    )
+    #: ``complete`` / ``capped`` / ``needs_human`` / ``failed`` once the loop ends
+    #: (the attempt that ended the loop carries the outcome). Null while running.
+    outcome: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AgentTeamEvaluation(Base):
+    """An independent verdict on one attempt: did it meet the objective?
+
+    Produced by an evaluator run separate from the generator (so an agent never
+    grades its own work). ``evidence_json`` records what the evaluator checked.
+    """
+
+    __tablename__ = "plugin_agent_team_evaluation"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    task_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("plugin_agent_team_task.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    attempt_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("plugin_agent_team_attempt.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    #: The evaluator run that produced this verdict (null if graded inline).
+    run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    #: One of ``pass`` / ``fail`` / ``needs_human``.
+    verdict: Mapped[str] = mapped_column(String(16), nullable=False, default=EVAL_FAIL)
+    #: Confidence 0..1.
+    score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    #: What remains to be done (fed back into the next generator turn).
+    missing: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    #: JSON object of evidence (commands run, checks, outputs).
+    evidence_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+    def evidence(self) -> dict:
+        """Return the decoded evidence payload (empty on error)."""
+        try:
+            value = json.loads(self.evidence_json or "{}")
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        return value if isinstance(value, dict) else {}
 
 
 class AgentTeamAutopilot(Base):

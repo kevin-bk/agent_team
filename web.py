@@ -28,3 +28,7 @@ def auth_or_401(db: Session, request: Request):
 
 def not_found(detail: str) -> JSONResponse:
     return JSONResponse(status_code=404, content={"detail": detail})
+
+
+def bad_request(detail: str) -> JSONResponse:
+    return JSONResponse(status_code=400, content={"detail": detail})

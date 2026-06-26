@@ -183,6 +183,29 @@ export interface BoardColumn {
   name: string;
 }
 
+/** One MCP server entry (shape mirrors the agent MCP config the backend reads). */
+export interface McpServerConfig {
+  /** Remote (HTTP/SSE) server URL, e.g. "https://mcp.example.com/sse". */
+  url?: string;
+  /** Local stdio server command (mutually exclusive with `url`). */
+  command?: string;
+  args?: string[];
+  /** Bearer token or auth string for a remote server. */
+  auth?: string;
+  /** Extra HTTP headers for a remote server. */
+  headers?: Record<string, string>;
+  /** Environment variables for a local stdio server. */
+  env?: Record<string, string>;
+}
+
+/** A CLI agent's MCP config: a named map of servers. */
+export interface AgentMcpConfig {
+  mcpServers: Record<string, McpServerConfig>;
+}
+
+/** Per-CLI-agent MCP config keyed by the `cli:<engine>` alias. */
+export type BoardAgentMcp = Record<string, AgentMcpConfig>;
+
 export interface BoardDTO {
   id: string;
   slug: string;
@@ -196,6 +219,8 @@ export interface BoardDTO {
   cli_target_ids?: string[];
   /** Skill pack names available to this board's direct-CLI agents. */
   skill_ids?: string[];
+  /** Per-CLI-agent MCP config (owner-only; empty for non-owners). */
+  agent_mcp?: BoardAgentMcp;
   /** Reusable starter chat message offered as a one-click first message. */
   starter_prompt?: string;
   archived: boolean;
@@ -308,7 +333,22 @@ export interface TaskDTO {
   archived: boolean;
   created_at: string;
   updated_at: string;
+  /** Autonomous-loop objective, persisted when a loop is started. */
+  objective?: string | null;
+  /** "chat" (default) or "autonomous". */
+  execution_mode?: string;
+  /** Live loop lifecycle state (null on a plain chat task). */
+  loop_state?: LoopState | null;
 }
+
+/** Persisted lifecycle state of a task's autonomous loop. */
+export type LoopState =
+  | "planning"
+  | "running"
+  | "complete"
+  | "waiting_for_human"
+  | "failed"
+  | "cancelled";
 
 export interface CreateBoardBody {
   name: string;
@@ -327,6 +367,8 @@ export interface PatchBoardBody {
   cli_target_ids?: string[];
   /** Skill pack names available to this board's direct-CLI agents. */
   skill_ids?: string[];
+  /** Per-CLI-agent MCP config keyed by `cli:<engine>` alias. */
+  agent_mcp?: BoardAgentMcp;
   /** Reusable starter chat message offered as a one-click first message. */
   starter_prompt?: string;
   archived?: boolean;
@@ -640,6 +682,57 @@ export interface AttemptDTO {
   is_active: boolean;
   created_at: string;
   title?: string | null;
+}
+
+// ── Autonomous loop (generator + evaluator) ─────────────────────────
+
+export interface LoopStartBody {
+  /** Generator agent alias (does the work). */
+  agent_id: string;
+  /** Evaluator agent alias (independently grades each attempt). */
+  evaluator_id: string;
+  /** Objective; falls back to the task's stored objective/description. */
+  objective?: string | null;
+  /** Optional planner agent alias: analyses the task + writes a plan first. */
+  planner_id?: string | null;
+  max_attempts?: number;
+  /** Resource guardrails (omit/0 = unbounded). */
+  max_tokens?: number | null;
+  max_cost_usd?: number | null;
+  max_wall_seconds?: number | null;
+}
+
+export type LoopVerdict = "pass" | "fail" | "needs_human";
+
+export interface LoopEvaluationDTO {
+  id: string;
+  attempt_id: string;
+  run_id?: string | null;
+  verdict: LoopVerdict;
+  score: number;
+  missing: string;
+  created_at?: string | null;
+}
+
+export interface LoopAttemptDTO {
+  id: string;
+  attempt_no: number;
+  status: string;
+  /** Terminal loop outcome stamped on the attempt that ended the loop. */
+  outcome?: string | null;
+  created_at?: string | null;
+  ended_at?: string | null;
+  evaluations: LoopEvaluationDTO[];
+}
+
+export interface LoopInfoDTO {
+  task_id: string;
+  execution_mode: string;
+  loop_state?: LoopState | null;
+  objective?: string | null;
+  /** Whether a loop is actively running in-process right now. */
+  is_running: boolean;
+  attempts: LoopAttemptDTO[];
 }
 
 export interface CommentAttachment {

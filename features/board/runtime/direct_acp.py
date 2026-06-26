@@ -24,6 +24,7 @@ import logging
 import os
 import queue
 import shutil
+import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
@@ -363,14 +364,41 @@ class DirectCliRun:
     source of truth) exactly as for an LLM run.
     """
 
-    def __init__(self, *, engine: str, prompt: str, cwd: str, thread_id: str) -> None:
+    def __init__(
+        self,
+        *,
+        engine: str,
+        prompt: str,
+        cwd: str,
+        thread_id: str,
+        auto_approve: bool = True,
+        idle_timeout_seconds: int = 0,
+        mcp_config: dict | None = None,
+        secrets: list[str] | None = None,
+    ) -> None:
         self.engine = engine
         self.prompt = prompt
         self.cwd = cwd
         self.thread_id = thread_id
+        # Accepted for a uniform seam with the owned ACP engine but not honoured
+        # here: MCP pass-through and secret masking require the owned engine
+        # (``AGENT_TEAM_ACP_ENGINE=owned``); this legacy path ignores them.
+        self._mcp_config = mcp_config
+        self._secrets = secrets or []
+        #: Whether to approve the agent's permission requests automatically.
+        #: Unattended runs need ``True`` to proceed; ``False`` makes the agent
+        #: read-only (the ACP manager answers requests with ``cancelled``).
+        self.auto_approve = auto_approve
+        #: Stop the turn when no progress frame arrives for this many seconds
+        #: (``0`` disables). A working agent streams output continuously, so a
+        #: long silence means the subprocess is wedged; this bounds that wait
+        #: well below the ACP manager's absolute turn ceiling.
+        self.idle_timeout_seconds = max(0, idle_timeout_seconds)
         self.final_text = ""
         self.ok = True
         self.cancelled = False
+        #: Set when the turn was stopped by the idle timeout (vs a user cancel).
+        self.timed_out = False
         self._translator = _DirectAcpTranslator()
         #: Context-window gauge text seen during the turn (for display after end).
         self.cli_usage_text: str | None = None
@@ -415,7 +443,7 @@ class DirectCliRun:
                 command=runtime.command,
                 args=list(runtime.args),
                 env_overrides={},
-                auto_approve=True,
+                auto_approve=self.auto_approve,
                 timeout_seconds=runtime.timeout_seconds,
                 create_timeout=runtime.create_timeout_seconds,
                 progress_q=progress_q,
@@ -425,6 +453,7 @@ class DirectCliRun:
         )
         loop = asyncio.get_running_loop()
         result_fut = asyncio.wrap_future(future)
+        last_activity = time.monotonic()
         try:
             while not result_fut.done():
                 if cancel_event.is_set():
@@ -436,6 +465,27 @@ class DirectCliRun:
                 deltas = await loop.run_in_executor(
                     None, _drain_queue, progress_q, _DRAIN_TIMEOUT_SECONDS
                 )
+                if deltas:
+                    last_activity = time.monotonic()
+                elif self.idle_timeout_seconds and (
+                    time.monotonic() - last_activity > self.idle_timeout_seconds
+                ):
+                    # No output for the idle window: treat the run as wedged,
+                    # stop the subprocess, and surface a clear reason.
+                    self.cancelled = True
+                    self.timed_out = True
+                    self.ok = False
+                    self.final_text = (
+                        f"{runtime.label} produced no output for "
+                        f"{self.idle_timeout_seconds}s; the run was stopped."
+                    )
+                    future.cancel()
+                    await asyncio.to_thread(cancel_acp_sessions, self.thread_id)
+                    yield ev.error(
+                        error_class="IdleTimeout", message=self.final_text
+                    )
+                    self._capture_usage()
+                    return
                 for delta in deltas:
                     for frame in self._translator.on_delta(delta):
                         yield frame

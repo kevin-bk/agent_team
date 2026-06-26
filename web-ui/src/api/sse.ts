@@ -99,6 +99,11 @@ export interface BoardEvent {
   /** "agent.typing" presence: who is typing + start/stop. */
   user_name?: string;
   state?: string;
+  /** "loop.status" progress fields. */
+  attempt?: number;
+  max_attempts?: number;
+  outcome?: string | null;
+  total_tokens?: number;
 }
 
 /**

@@ -7,7 +7,7 @@ import {
   useSkills,
   useUpdateBoard,
 } from "@/api/hooks";
-import type { BoardDTO } from "@/api/types";
+import type { BoardAgentMcp, BoardDTO } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -41,12 +41,16 @@ export function BoardAgentsDialog({
   const [agentIds, setAgentIds] = useState<string[]>(board.agent_ids ?? []);
   const [cliIds, setCliIds] = useState<string[]>(board.cli_target_ids ?? []);
   const [skillIds, setSkillIds] = useState<string[]>(board.skill_ids ?? []);
+  // Per-CLI-agent MCP config kept as editable raw text (the `mcpServers` map),
+  // keyed by the `cli:<engine>` alias; parsed on save.
+  const [mcpText, setMcpText] = useState<Record<string, string>>({});
 
   useEffect(() => {
     if (open) {
       setAgentIds(board.agent_ids ?? []);
       setCliIds(board.cli_target_ids ?? []);
       setSkillIds(board.skill_ids ?? []);
+      setMcpText(serializeAgentMcp(board.agent_mcp));
     }
   }, [open, board]);
 
@@ -66,11 +70,20 @@ export function BoardAgentsDialog({
     );
 
   const save = async () => {
+    let agentMcp: BoardAgentMcp;
+    try {
+      // Only persist MCP for CLI agents that are still enabled on the board.
+      agentMcp = parseAgentMcp(mcpText, cliIds);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Invalid MCP config");
+      return;
+    }
     try {
       await update.mutateAsync({
         agent_ids: agentIds,
         cli_target_ids: cliIds,
         skill_ids: skillIds,
+        agent_mcp: agentMcp,
       });
       toast.success("Board agents updated");
       onClose();
@@ -81,11 +94,12 @@ export function BoardAgentsDialog({
 
   return (
     <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="grid max-h-[88vh] w-full max-w-3xl grid-rows-[auto_minmax(0,1fr)_auto]">
         <DialogHeader>
           <DialogTitle>Board agents</DialogTitle>
         </DialogHeader>
 
+        <div className="grid gap-4 overflow-y-auto pr-1">
         <div className="grid gap-1.5 pt-1">
           <span className="text-[12.5px] text-muted-foreground/80">
             Pick which agents staff this board — only the selected ones appear as
@@ -100,7 +114,7 @@ export function BoardAgentsDialog({
               No agents are registered yet.
             </div>
           ) : (
-            <div className="mt-1 grid max-h-[55vh] gap-1 overflow-y-auto pr-1">
+            <div className="mt-1 grid gap-1 sm:grid-cols-2">
               {(agents.data ?? []).map((a) => {
                 const c = statusColor(a.id);
                 const checked = agentIds.includes(a.id);
@@ -149,7 +163,7 @@ export function BoardAgentsDialog({
                   </label>
                 );
               })}
-              <span className="pt-0.5 text-[12px] text-muted-foreground">
+              <span className="pt-0.5 text-[12px] text-muted-foreground sm:col-span-2">
                 {agentIds.length === 0
                   ? "No agents selected — tasks on this board won't show any agent."
                   : `${agentIds.length} agent${agentIds.length === 1 ? "" : "s"} selected.`}
@@ -171,7 +185,7 @@ export function BoardAgentsDialog({
               <Spinner className="h-3 w-3" /> loading…
             </div>
           ) : (
-            <div className="mt-1 grid gap-1">
+            <div className="mt-1 grid gap-1 sm:grid-cols-2">
               {(cliTargets.data ?? []).map((t) => {
                 const checked = cliIds.includes(t.id);
                 return (
@@ -213,6 +227,42 @@ export function BoardAgentsDialog({
           )}
         </div>
 
+        {cliIds.length > 0 && (
+          <div className="grid gap-1.5 border-t border-border pt-3">
+            <span className="text-[11px] font-semibold uppercase tracking-[0.06em] text-muted-foreground">
+              MCP servers (per CLI agent)
+            </span>
+            <span className="text-[12.5px] text-muted-foreground/80">
+              Give each enabled CLI agent its own MCP servers. Paste the{" "}
+              <code className="rounded bg-surface-3 px-1 py-0.5 text-[11px]">
+                mcpServers
+              </code>{" "}
+              map as JSON. Leave blank for none.
+            </span>
+            <div className="mt-1 grid gap-2.5 sm:grid-cols-2">
+              {(cliTargets.data ?? [])
+                .filter((t) => cliIds.includes(t.id))
+                .map((t) => (
+                  <div key={t.id} className="grid gap-1">
+                    <span className="text-[12px] font-medium text-foreground">
+                      {t.label} (direct)
+                    </span>
+                    <textarea
+                      value={mcpText[t.id] ?? ""}
+                      onChange={(e) =>
+                        setMcpText((prev) => ({ ...prev, [t.id]: e.target.value }))
+                      }
+                      spellCheck={false}
+                      rows={4}
+                      placeholder={MCP_PLACEHOLDER}
+                      className="w-full resize-y rounded border border-border bg-surface-1 px-2.5 py-1.5 font-mono text-[11.5px] leading-relaxed text-foreground outline-none focus:border-primary"
+                    />
+                  </div>
+                ))}
+            </div>
+          </div>
+        )}
+
         <div className="grid gap-1.5 border-t border-border pt-3">
           <span className="text-[11px] font-semibold uppercase tracking-[0.06em] text-muted-foreground">
             Skills
@@ -231,7 +281,7 @@ export function BoardAgentsDialog({
               No skill packs are available. Add some under Skill Packs first.
             </div>
           ) : (
-            <div className="mt-1 grid max-h-[40vh] gap-1 overflow-y-auto pr-1">
+            <div className="mt-1 grid gap-1 sm:grid-cols-2">
               {(skills.data ?? []).map((s) => {
                 const checked = skillIds.includes(s.name);
                 return (
@@ -277,6 +327,7 @@ export function BoardAgentsDialog({
             </div>
           )}
         </div>
+        </div>
 
         <DialogFooter>
           <Button variant="secondary" onClick={onClose} disabled={update.isPending}>
@@ -289,4 +340,50 @@ export function BoardAgentsDialog({
       </DialogContent>
     </Dialog>
   );
+}
+
+const MCP_PLACEHOLDER = `{
+  "context7": {
+    "url": "https://mcp.context7.com/sse",
+    "auth": "<token>"
+  }
+}`;
+
+/** Turn the board's stored MCP config into an editable text map (alias → JSON). */
+function serializeAgentMcp(agentMcp?: BoardAgentMcp): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [alias, cfg] of Object.entries(agentMcp ?? {})) {
+    const servers = cfg?.mcpServers ?? {};
+    if (Object.keys(servers).length > 0) {
+      out[alias] = JSON.stringify(servers, null, 2);
+    }
+  }
+  return out;
+}
+
+/**
+ * Parse the per-alias text editors back into a {@link BoardAgentMcp}. Only
+ * aliases still enabled (in `cliIds`) with non-empty, valid JSON are kept; an
+ * invalid entry throws so the caller can surface a clear error.
+ */
+function parseAgentMcp(
+  text: Record<string, string>,
+  cliIds: string[],
+): BoardAgentMcp {
+  const out: BoardAgentMcp = {};
+  for (const alias of cliIds) {
+    const raw = (text[alias] ?? "").trim();
+    if (!raw) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new Error(`MCP config for ${alias} is not valid JSON`);
+    }
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      throw new Error(`MCP config for ${alias} must be a JSON object`);
+    }
+    out[alias] = { mcpServers: parsed as BoardAgentMcp[string]["mcpServers"] };
+  }
+  return out;
 }

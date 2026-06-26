@@ -10,6 +10,7 @@ import type {
   CreateBoardBody,
   CreateCronBody,
   CreateTaskBody,
+  LoopStartBody,
   MoveTaskBody,
   PatchAutopilotBody,
   PatchBoardBody,
@@ -60,6 +61,7 @@ export const qk = {
     ["task-file", taskId, path] as const,
   taskComments: (taskId: string) => ["task-comments", taskId] as const,
   taskActivity: (taskId: string) => ["task-activity", taskId] as const,
+  taskLoop: (taskId: string) => ["task-loop", taskId] as const,
   users: (q: string) => ["users", q] as const,
   repos: ["repos"] as const,
   boardRepos: (id: string) => ["board-repos", id] as const,
@@ -673,6 +675,50 @@ export function useDeleteTaskComment(taskId: string) {
       client.deleteTaskComment(taskId, commentId),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: qk.taskComments(taskId) });
+    },
+  });
+}
+
+// ── autonomous loop (generator + evaluator) ────────────────────────
+
+export function useTaskLoop(taskId: string | undefined, enabled = true) {
+  const { client } = useApi();
+  return useQuery({
+    queryKey: qk.taskLoop(taskId ?? "_"),
+    queryFn: () => client.getTaskLoop(taskId as string),
+    enabled: !!taskId && enabled,
+  });
+}
+
+export function useStartTaskLoop(boardId: string, taskId: string) {
+  const { client } = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: LoopStartBody) => client.startTaskLoop(taskId, body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: qk.taskLoop(taskId) });
+      void qc.invalidateQueries({ queryKey: qk.boardTasks(boardId) });
+    },
+  });
+}
+
+export function useCancelTaskLoop(taskId: string) {
+  const { client } = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => client.cancelTaskLoop(taskId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.taskLoop(taskId) }),
+  });
+}
+
+export function useAckTaskLoop(boardId: string, taskId: string) {
+  const { client } = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => client.ackTaskLoop(taskId),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: qk.taskLoop(taskId) });
+      void qc.invalidateQueries({ queryKey: qk.boardTasks(boardId) });
     },
   });
 }

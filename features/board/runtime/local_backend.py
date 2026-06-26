@@ -1,16 +1,16 @@
 """In-process run backend: drives an agent and persists its stream as events.
 
-The agent graph is built through ``graph_builder.build_graph`` so the run
-inherits the agent's full capability set. Every frame the agent produces is
-translated and appended to the event store (the source of truth), so the SSE
-endpoint can replay and tail a run regardless of which process started it.
+The per-engine drive is delegated to an ``AgentWorker`` (a LangGraph agent or a
+direct coding CLI), resolved from the agent alias. The backend only resolves the
+worker, persists each frame it emits to the event store (the source of truth),
+and applies the run's terminal status — so the SSE endpoint can replay and tail a
+run regardless of which worker produced it or which process started it.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from datetime import UTC, datetime
 
 from agent_team.features.board.board_events import get_board_bus
@@ -29,32 +29,22 @@ from agent_team.features.board.runtime.context import (
     build_task_context,
     prepare_workspace,
 )
-from agent_team.features.board.runtime.direct_acp import (
-    DirectCliRun,
-    engine_for_alias,
-    is_direct_cli_alias,
-)
+from agent_team.features.board.runtime.direct_acp import is_direct_cli_alias
 from agent_team.features.board.runtime.events import (
     RUN_CANCELLED,
     RUN_DONE,
     RUN_ERROR,
     TERMINAL_RUN_STATUSES,
 )
-from agent_team.features.board.runtime.graph_builder import (
-    build_graph,
-    make_checkpointer,
-)
 from agent_team.features.board.runtime.registry import RunHandle
-from agent_team.features.board.runtime.translator import (
-    StreamTranslator,
-    extract_usage,
+from agent_team.features.board.runtime.workers import (
+    TurnContext,
+    WorkerRole,
+    resolve_worker,
 )
 from core.database.base import SessionLocal
 
 logger = logging.getLogger(__name__)
-
-#: How often to poll the DB for a cross-process cancel while streaming.
-_CANCEL_POLL_SECONDS = 2.0
 
 
 class LocalRunBackend:
@@ -108,29 +98,34 @@ class LocalRunBackend:
         await asyncio.to_thread(
             event_store.append_event, run_id, *ev.run_start(agent_alias=agent_alias)
         )
+
+        async def emit(event_type: str, data: dict) -> None:
+            """Persist one streamed frame (offloading large tool output)."""
+            data = await _persist_tool_output(run_id, event_type, data)
+            await asyncio.to_thread(
+                event_store.append_event, run_id, event_type, data
+            )
+
+        # The worker owns the per-engine drive (graph vs direct CLI); the backend
+        # only persists frames and applies the run's terminal status. ``usage`` is
+        # accumulated in place on the context so partial totals survive a cancel.
+        ctx = TurnContext(
+            run_id=run_id,
+            agent_alias=agent_alias,
+            prompt=input_text,
+            workspace_path=workspace_path,
+            thread_id=thread_id,
+            role=WorkerRole.CHAT,
+            usage=usage,
+            mcp_config=context.get("mcp_config"),
+            secrets=context.get("secrets") or [],
+        )
         try:
-            # A ``cli:<engine>`` alias talks straight to a coding CLI over ACP;
-            # any other alias is a regular agent driven through its graph.
-            if is_direct_cli_alias(agent_alias):
-                final_text, cancelled, cli_usage_text = await self._run_direct_cli(
-                    run_id,
-                    handle,
-                    agent_alias=agent_alias,
-                    prompt=input_text,
-                    workspace_path=workspace_path,
-                    thread_id=thread_id,
-                    usage=usage,
-                )
-            else:
-                final_text, cancelled = await self._run_graph(
-                    run_id,
-                    handle,
-                    agent_alias=agent_alias,
-                    input_text=input_text,
-                    workspace_path=workspace_path,
-                    thread_id=thread_id,
-                    usage=usage,
-                )
+            worker = resolve_worker(agent_alias, WorkerRole.CHAT)
+            result = await worker.run_turn(ctx, emit, handle.cancel_event)
+            final_text = result.final_text
+            cancelled = result.cancelled
+            cli_usage_text = result.cli_usage_text
 
             if cancelled:
                 await self._finish_cancelled(
@@ -175,118 +170,6 @@ class LocalRunBackend:
             )
         finally:
             registry.unregister(run_id)
-
-    async def _run_graph(
-        self,
-        run_id: str,
-        handle: RunHandle,
-        *,
-        agent_alias: str,
-        input_text: str,
-        workspace_path: str,
-        thread_id: str,
-        usage: dict,
-    ) -> tuple[str, bool]:
-        """Drive a regular agent through its graph; returns ``(final_text, cancelled)``.
-
-        Builds the agent's full capability set, streams it token-by-token, and
-        persists each translated frame. ``usage`` is accumulated in place. The
-        checkpointer context is owned here so it is always released when the
-        graph finishes, even on cancellation.
-        """
-        cancelled = False
-        cp_ctx = None
-        try:
-            checkpointer, cp_ctx = await asyncio.to_thread(make_checkpointer, agent_alias)
-            agent = await build_graph(
-                agent_alias, checkpointer, workspace_path=workspace_path
-            )
-            translator = StreamTranslator()
-            stream = agent.astream(
-                {"messages": [{"role": "user", "content": input_text}]},
-                {"configurable": {"thread_id": thread_id}},
-                subgraphs=True,
-                # ``messages`` streams the model output token-by-token (text +
-                # thinking); ``updates`` carries the structured tool frames and
-                # the final-answer snapshot; ``custom`` carries AI-coding
-                # sub-agent live progress.
-                stream_mode=["messages", "updates", "custom"],
-            )
-            last_cancel_poll = 0.0
-            try:
-                async for raw_chunk in stream:
-                    if handle.cancel_event.is_set():
-                        cancelled = True
-                        break
-                    now = time.monotonic()
-                    if now - last_cancel_poll >= _CANCEL_POLL_SECONDS:
-                        last_cancel_poll = now
-                        if await asyncio.to_thread(event_store.is_cancel_requested, run_id):
-                            cancelled = True
-                            break
-                    for event_type, data in translator.translate(raw_chunk):
-                        data = await _persist_tool_output(run_id, event_type, data)
-                        await asyncio.to_thread(
-                            event_store.append_event, run_id, event_type, data
-                        )
-                    chunk_usage = extract_usage(raw_chunk)
-                    usage["input_tokens"] += chunk_usage["input_tokens"]
-                    usage["output_tokens"] += chunk_usage["output_tokens"]
-                    usage["cache_read_tokens"] += chunk_usage["cache_read_tokens"]
-            finally:
-                try:
-                    await stream.aclose()
-                except Exception:
-                    pass
-
-            usage["total_tokens"] = usage["input_tokens"] + usage["output_tokens"]
-            return translator.final_text, cancelled
-        finally:
-            if cp_ctx is not None:
-                try:
-                    cp_ctx.__exit__(None, None, None)
-                except Exception:
-                    pass
-
-    async def _run_direct_cli(
-        self,
-        run_id: str,
-        handle: RunHandle,
-        *,
-        agent_alias: str,
-        prompt: str,
-        workspace_path: str,
-        thread_id: str,
-        usage: dict,
-    ) -> tuple[str, bool, str | None]:
-        """Drive a direct CLI conversation over ACP.
-
-        Returns ``(final_text, cancelled, cli_usage_text)``. Streams the coding
-        agent's progress as ``AgentEvent`` frames and persists each one exactly
-        like a graph run. Token totals come from ACP's ``PromptResponse.usage``
-        (authoritative, cumulative across the session) when the engine reports
-        it, else a best-effort fallback to the context-window gauge; both are
-        copied into ``usage`` in place. A cross-process cancel request flips the
-        in-memory cancel event, which the ACP stream observes and acts on.
-        """
-        run = DirectCliRun(
-            engine=engine_for_alias(agent_alias),
-            prompt=prompt,
-            cwd=workspace_path,
-            thread_id=thread_id,
-        )
-        last_cancel_poll = 0.0
-        async for event_type, data in run.stream_frames(handle.cancel_event):
-            now = time.monotonic()
-            if now - last_cancel_poll >= _CANCEL_POLL_SECONDS:
-                last_cancel_poll = now
-                if await asyncio.to_thread(event_store.is_cancel_requested, run_id):
-                    handle.cancel_event.set()
-            data = await _persist_tool_output(run_id, event_type, data)
-            await asyncio.to_thread(event_store.append_event, run_id, event_type, data)
-        cancelled = run.cancelled or handle.cancel_event.is_set()
-        usage.update(run.usage)
-        return run.final_text, cancelled, run.cli_usage_text
 
     async def _finish_done(
         self,
@@ -432,6 +315,7 @@ def _load_run_context(run_id: str) -> dict | None:
         from agent_team.features.board.runtime import skills as skills_rt
 
         skills_manifest: list[dict] = []
+        board = None
         try:
             from agent_team.features.board.repositories import boards as boards_repo
 
@@ -456,6 +340,8 @@ def _load_run_context(run_id: str) -> dict | None:
                 logger.exception(
                     "agent_team: failed to materialise board wiki skill for %s", task.id
                 )
+        mcp_config: dict | None = None
+        secrets: list[str] = []
         if is_direct_cli_alias(run.agent_alias):
             # The CLI reads its context from files in the workspace
             # (``.agent-team/TASK.md`` via the CLAUDE.md / AGENTS.md / cursor-rule
@@ -470,6 +356,14 @@ def _load_run_context(run_id: str) -> dict | None:
             input_text = cli_context.build_prompt(
                 run.prompt or "", first_turn=full, has_new_notes=bool(notes)
             )
+            # Per-agent MCP config: this CLI alias may have its own MCP servers
+            # configured on the board. The owned ACP engine forwards them to the
+            # CLI; any auth/header/env values become secrets to mask in output.
+            if board is not None:
+                cfg = board.agent_mcp_for(run.agent_alias)
+                if cfg.get("mcpServers"):
+                    mcp_config = cfg
+                    secrets = _collect_mcp_secrets(cfg)
         else:
             # LLM run: the agent gets context via the prompt, but a coding
             # sub-agent it spawns over ACP runs in this workspace — Codex reads
@@ -494,9 +388,39 @@ def _load_run_context(run_id: str) -> dict | None:
             "board_id": task.board_id,
             "workspace_path": task.workspace_path,
             "actor_id": run.actor_id,
+            "mcp_config": mcp_config,
+            "secrets": secrets,
         }
     finally:
         db.close()
+
+
+def _collect_mcp_secrets(mcp_config: dict) -> list[str]:
+    """Gather sensitive string values from an MCP config to mask in output.
+
+    Conservatively treats every ``headers``/``env`` value and any string
+    ``auth`` (e.g. a bearer token) as a secret. Short values are skipped to
+    avoid masking incidental substrings of normal output.
+    """
+    secrets: set[str] = set()
+    servers = mcp_config.get("mcpServers")
+    if not isinstance(servers, dict):
+        return []
+
+    def _add(value: object) -> None:
+        if isinstance(value, str) and len(value.strip()) >= 6:
+            secrets.add(value.strip())
+
+    for server in servers.values():
+        if not isinstance(server, dict):
+            continue
+        _add(server.get("auth"))
+        for bucket in ("headers", "env"):
+            values = server.get(bucket)
+            if isinstance(values, dict):
+                for v in values.values():
+                    _add(v)
+    return sorted(secrets)
 
 
 def reconcile_orphans_sync() -> int:

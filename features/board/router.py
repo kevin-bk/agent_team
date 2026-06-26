@@ -11,8 +11,7 @@ from fastapi import APIRouter, Body, Depends, File, Request, UploadFile
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from sqlalchemy.orm import Session
 
-from agent_team.features.board import attachments
-from agent_team.features.board import authz
+from agent_team.features.board import attachments, authz
 from agent_team.features.board import workspace as ws_module
 from agent_team.features.board.board_events import get_board_bus
 from agent_team.features.board.jira import service as jira_service
@@ -49,6 +48,10 @@ from agent_team.features.board.schemas import (
     JiraPreviewItem,
     JiraPreviewResponse,
     JiraSyncBody,
+    LoopAttemptDTO,
+    LoopEvaluationDTO,
+    LoopInfoDTO,
+    LoopStartCreate,
     MentionCreate,
     MentionResponse,
     SkillPackDTO,
@@ -59,7 +62,7 @@ from agent_team.features.board.schemas import (
     TaskUpdate,
     TypingBody,
 )
-from agent_team.web import API_PREFIX, auth_or_401, not_found
+from agent_team.web import API_PREFIX, auth_or_401, bad_request, not_found
 from core.database.base import SessionLocal, get_db
 
 
@@ -194,6 +197,32 @@ async def update_board(
                 content={"detail": f"unknown skill pack(s): {', '.join(unknown)}"},
             )
         board.skills_json = json.dumps(payload.skill_ids)
+    if payload.agent_mcp is not None:
+        from agent_team.features.board.runtime.direct_acp import known_cli_aliases
+
+        known = known_cli_aliases()
+        cleaned: dict[str, dict] = {}
+        for alias, cfg in payload.agent_mcp.items():
+            if alias not in known:
+                return JSONResponse(
+                    status_code=422,
+                    content={"detail": f"unknown CLI target for MCP: {alias}"},
+                )
+            if not isinstance(cfg, dict):
+                return JSONResponse(
+                    status_code=422,
+                    content={"detail": f"MCP config for {alias} must be an object"},
+                )
+            servers = cfg.get("mcpServers", {})
+            if not isinstance(servers, dict):
+                return JSONResponse(
+                    status_code=422,
+                    content={"detail": f"mcpServers for {alias} must be an object"},
+                )
+            # Drop aliases configured with no servers so storage stays tidy.
+            if servers:
+                cleaned[alias] = {"mcpServers": servers}
+        board.agent_mcp_json = json.dumps(cleaned)
     if payload.starter_prompt is not None:
         board.starter_prompt = payload.starter_prompt.strip()
     if payload.archived is not None:
@@ -1245,6 +1274,134 @@ async def create_mention(
         conversation_id=conversation_id or "",
         stream_url=f"{API_PREFIX}/runs/{run.id}/events",
     )
+
+
+@router.post("/tasks/{task_id}/loop")
+async def start_task_loop(
+    task_id: str, payload: LoopStartCreate, request: Request, db: Session = Depends(get_db)
+):
+    """Start an autonomous loop: a generator agent works, an evaluator grades.
+
+    The loop drives generator turns and independent evaluations until the
+    objective is met (or a guardrail stops it), persisting each attempt. When a
+    ``planner_id`` is given, an optional planning phase runs first and writes a
+    plan the generator works from. Plain chat continues to work through
+    ``/mentions`` and is unaffected.
+    """
+    ctx, err = authz.guard_task(db, request, task_id, min_role="editor")
+    if err:
+        return err
+    task = ctx.task
+
+    from agent_team.features.board.models import TASK_EXEC_MODE_AUTONOMOUS
+
+    objective = (payload.objective or task.objective or task.description or "").strip()
+    # Persist the objective + autonomous mode so a later run reuses them.
+    task.objective = objective
+    task.execution_mode = TASK_EXEC_MODE_AUTONOMOUS
+    db.commit()
+
+    from agent_team.features.board.runtime.dispatch import capture_main_loop
+    from agent_team.features.board.runtime.loop.budget import LoopBudget
+    from agent_team.features.board.runtime.loop.service import start_autonomous_loop
+
+    capture_main_loop()
+    start_autonomous_loop(
+        task_id=task_id,
+        agent_alias=payload.agent_id,
+        evaluator_alias=payload.evaluator_id,
+        objective=objective,
+        planner_alias=payload.planner_id or None,
+        max_attempts=payload.max_attempts,
+        budget=LoopBudget(
+            max_tokens=payload.max_tokens,
+            max_cost_usd=payload.max_cost_usd,
+            max_wall_seconds=payload.max_wall_seconds,
+        ),
+    )
+    return {"ok": True, "task_id": task_id, "execution_mode": task.execution_mode}
+
+
+@router.get("/tasks/{task_id}/loop")
+async def get_task_loop(task_id: str, request: Request, db: Session = Depends(get_db)):
+    """Snapshot of a task's autonomous loop: state + attempts with verdicts.
+
+    Drives the cockpit's loop panel — the live state, the human-review banner,
+    and the attempt/evaluation timeline all read from here (refreshed on each
+    ``loop.status`` board event).
+    """
+    ctx, err = authz.guard_task(db, request, task_id, min_role="viewer")
+    if err:
+        return err
+    task = ctx.task
+
+    from agent_team.features.board.repositories import attempts as attempts_repo
+    from agent_team.features.board.runtime.loop.service import is_loop_running
+
+    attempts = attempts_repo.list_attempts_for_task(db, task_id)
+    evaluations = attempts_repo.list_evaluations_for_task(db, task_id)
+    by_attempt: dict[str, list] = {}
+    for ev in evaluations:
+        by_attempt.setdefault(ev.attempt_id, []).append(
+            LoopEvaluationDTO(
+                id=ev.id,
+                attempt_id=ev.attempt_id,
+                run_id=ev.run_id,
+                verdict=ev.verdict,
+                score=ev.score,
+                missing=ev.missing,
+                created_at=ev.created_at.isoformat() if ev.created_at else None,
+            )
+        )
+    return LoopInfoDTO(
+        task_id=task_id,
+        execution_mode=task.execution_mode or "chat",
+        loop_state=task.loop_state,
+        objective=task.objective,
+        is_running=is_loop_running(task_id),
+        attempts=[
+            LoopAttemptDTO(
+                id=a.id,
+                attempt_no=a.attempt_no,
+                status=a.status,
+                outcome=a.outcome,
+                created_at=a.created_at.isoformat() if a.created_at else None,
+                ended_at=a.ended_at.isoformat() if a.ended_at else None,
+                evaluations=by_attempt.get(a.id, []),
+            )
+            for a in attempts
+        ],
+    )
+
+
+@router.post("/tasks/{task_id}/loop/cancel")
+async def cancel_task_loop(task_id: str, request: Request, db: Session = Depends(get_db)):
+    """Ask a running loop to stop after its current attempt."""
+    _ctx, err = authz.guard_task(db, request, task_id, min_role="editor")
+    if err:
+        return err
+    from agent_team.features.board.runtime.loop.service import cancel_loop
+
+    return {"ok": cancel_loop(task_id), "task_id": task_id}
+
+
+@router.post("/tasks/{task_id}/loop/ack")
+async def ack_task_loop(task_id: str, request: Request, db: Session = Depends(get_db)):
+    """Acknowledge a finished loop, clearing its state from the cockpit.
+
+    Used after a human has reviewed a ``waiting_for_human``/``complete``/
+    ``failed`` outcome; refuses while a loop is still running.
+    """
+    ctx, err = authz.guard_task(db, request, task_id, min_role="editor")
+    if err:
+        return err
+    from agent_team.features.board.runtime.loop.service import is_loop_running
+
+    if is_loop_running(task_id):
+        return bad_request("The loop is still running — cancel it first.")
+    ctx.task.loop_state = None
+    db.commit()
+    return {"ok": True, "task_id": task_id}
 
 
 @router.get("/tasks/{task_id}/runs")

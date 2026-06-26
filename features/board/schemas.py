@@ -32,6 +32,9 @@ class BoardUpdate(BaseModel):
     cli_target_ids: list[str] | None = None
     #: Skill pack names made available to direct-CLI agents on this board.
     skill_ids: list[str] | None = None
+    #: Per-CLI-agent MCP config: ``{"cli:<engine>": {"mcpServers": {...}}}``.
+    #: Each enabled CLI agent can connect to a different set of MCP servers.
+    agent_mcp: dict | None = None
     #: Reusable starter chat message offered as a one-click first message.
     starter_prompt: str | None = None
     archived: bool | None = None
@@ -64,6 +67,10 @@ class BoardDTO(BaseModel):
     cli_target_ids: list[str] = Field(default_factory=list)
     #: Skill pack names made available to direct-CLI agents on this board.
     skill_ids: list[str] = Field(default_factory=list)
+    #: Per-CLI-agent MCP config (``{"cli:<engine>": {"mcpServers": {...}}}``).
+    #: Returned only to board owners; redacted to ``{}`` for everyone else
+    #: because the config may embed auth tokens.
+    agent_mcp: dict = Field(default_factory=dict)
     #: Reusable starter chat message offered as a one-click first message.
     starter_prompt: str = ""
     archived: bool
@@ -176,6 +183,10 @@ class TaskDTO(BaseModel):
     archived: bool
     created_at: str | None
     updated_at: str | None
+    #: Autonomous-loop fields (null on a plain chat task).
+    objective: str | None = None
+    execution_mode: str = "chat"
+    loop_state: str | None = None
 
 
 class MentionCreate(BaseModel):
@@ -183,6 +194,65 @@ class MentionCreate(BaseModel):
     agent_id: str = Field(min_length=1, max_length=255)
     body: str = Field(min_length=1, max_length=20000)
     attachment_ids: list[str] | None = None
+
+
+class LoopStartCreate(BaseModel):
+    """Start an autonomous loop on a task.
+
+    The generator agent does the work; an independent evaluator agent grades each
+    attempt. ``objective`` falls back to the task's stored objective when omitted.
+    """
+
+    agent_id: str = Field(min_length=1, max_length=255)
+    evaluator_id: str = Field(min_length=1, max_length=255)
+    objective: str | None = Field(default=None, max_length=20000)
+    #: Optional planning phase: a ``planner_id`` agent analyses the task and
+    #: writes a plan the generator works from. Omit to skip planning.
+    planner_id: str | None = Field(default=None, max_length=255)
+    max_attempts: int = Field(default=10, ge=1, le=100)
+    #: Resource guardrails (omit/0 = unbounded). Hitting any cap routes the task
+    #: to human review rather than finishing silently.
+    max_tokens: int | None = Field(default=None, ge=0)
+    max_cost_usd: float | None = Field(default=None, ge=0)
+    max_wall_seconds: int | None = Field(default=None, ge=0)
+
+
+class LoopEvaluationDTO(BaseModel):
+    """One evaluator verdict on an attempt."""
+
+    id: str
+    attempt_id: str
+    run_id: str | None = None
+    verdict: str
+    score: float
+    missing: str
+    created_at: str | None
+
+
+class LoopAttemptDTO(BaseModel):
+    """One generator attempt, with its evaluator verdicts (newest grade wins)."""
+
+    id: str
+    attempt_no: int
+    status: str
+    outcome: str | None = None
+    created_at: str | None
+    ended_at: str | None
+    evaluations: list[LoopEvaluationDTO] = Field(default_factory=list)
+
+
+class LoopInfoDTO(BaseModel):
+    """Snapshot of a task's autonomous loop for the cockpit."""
+
+    task_id: str
+    execution_mode: str
+    #: Persisted lifecycle state (``running``/``complete``/``waiting_for_human``/
+    #: ``failed``/``cancelled``), or null for a task that never ran a loop.
+    loop_state: str | None = None
+    objective: str | None = None
+    #: Whether a loop is actively running in-process right now.
+    is_running: bool = False
+    attempts: list[LoopAttemptDTO] = Field(default_factory=list)
 
 
 class CommentCreate(BaseModel):

@@ -92,6 +92,9 @@ def serialize_board(
         agent_ids=board.agent_ids(),
         cli_target_ids=board.cli_target_ids(),
         skill_ids=board.skill_ids(),
+        # MCP config may carry auth tokens, so expose it only to owners (who edit
+        # it in board settings); everyone else sees an empty map.
+        agent_mcp=board.agent_mcp() if my_role == "owner" else {},
         starter_prompt=board.starter_prompt or "",
         archived=board.archived,
         task_count=task_count,

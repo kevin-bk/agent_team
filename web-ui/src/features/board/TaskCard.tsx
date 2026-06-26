@@ -13,6 +13,7 @@ import { useEffect, useRef, useState } from "react";
 import type { BoardMemberDTO, TaskDTO } from "@/api/types";
 import { IssueTypeIcon, JiraAvatar, taskIssueType } from "@/components/jira";
 import { cn } from "@/lib/utils";
+import { LoopStatusChip } from "./cockpit/LoopStatusChip";
 import { labelClass } from "./labels";
 import { PriorityIcon } from "./priority";
 
@@ -118,6 +119,12 @@ export function TaskCard({
         >
           {task.title}
         </p>
+
+        {task.loop_state && (
+          <div className="mb-2">
+            <LoopStatusChip state={task.loop_state} />
+          </div>
+        )}
 
         {task.labels.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-1">

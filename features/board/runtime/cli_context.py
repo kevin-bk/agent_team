@@ -46,8 +46,7 @@ _POINTER_BODY = (
 #: First-turn nudge appended to the user's message so the agent always knows
 #: where the brief is, even if its native context files were not auto-loaded.
 _FIRST_TURN_NUDGE = (
-    "(If the user asks about the task, read `.agent-team/TASK.md` for the full "
-    "context of this task.)"
+    "(Read `.agent-team/TASK.md` for the full context of this task.)"
 )
 
 #: Follow-up nudge used when the user added task notes since the previous turn.
