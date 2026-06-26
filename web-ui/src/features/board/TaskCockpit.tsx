@@ -204,7 +204,7 @@ export function TaskCockpit({
       .filter((t) => enabled.includes(t.id))
       .map((t) => ({
         id: t.id,
-        display_name: `${t.label} (direct)`,
+        display_name: t.label,
         description: "Chat directly with the CLI — no LLM orchestrator.",
         avatar_url: null,
         model: null,

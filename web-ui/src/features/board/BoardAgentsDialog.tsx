@@ -200,7 +200,7 @@ export function BoardAgentsDialog({
                           checked ? "text-primary" : "text-foreground",
                         )}
                       >
-                        {t.label} (direct)
+                        {t.label}
                       </span>
                       <span className="block truncate text-[11.5px] text-muted-foreground">
                         {t.available ? "no LLM" : "not installed on host"}
