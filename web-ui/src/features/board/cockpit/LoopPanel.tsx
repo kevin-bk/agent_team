@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
   AlertTriangle,
   Bot,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   CircleSlash,
   Coins,
   Gauge,
@@ -32,6 +34,7 @@ import { SelectMenu } from "@/components/ui/select-menu";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { useBoardEventListener } from "../BoardEventsContext";
+import { GoalTranscript } from "./GoalTranscript";
 import {
   LOOP_OUTCOME_LABEL,
   LOOP_STATE_META,
@@ -49,10 +52,12 @@ interface LiveStatus {
 
 /**
  * Subscribe to ``loop.status`` board events for one task. Returns the most
- * recent snapshot, so the panel updates instantly without waiting for the
- * React-Query refetch the same event triggers.
+ * recent snapshot (so the panel updates instantly without waiting for the
+ * React-Query refetch the same event triggers) plus a ``clear`` to drop it —
+ * needed after an acknowledge, which clears the server state without emitting a
+ * new ``loop.status`` event.
  */
-function useLoopLiveStatus(taskId: string): LiveStatus | null {
+function useLoopLiveStatus(taskId: string): [LiveStatus | null, () => void] {
   const [status, setStatus] = useState<LiveStatus | null>(null);
   useBoardEventListener((e) => {
     if (e.type !== "loop.status" || e.task_id !== taskId) return;
@@ -66,7 +71,8 @@ function useLoopLiveStatus(taskId: string): LiveStatus | null {
   });
   // Drop a stale snapshot when switching tasks.
   useEffect(() => setStatus(null), [taskId]);
-  return status;
+  const clear = useCallback(() => setStatus(null), []);
+  return [status, clear];
 }
 
 const TERMINAL_STATES: LoopState[] = [
@@ -93,7 +99,7 @@ export function LoopPanel({
   canEdit: boolean;
 }) {
   const loop = useTaskLoop(task.id);
-  const live = useLoopLiveStatus(task.id);
+  const [live, clearLive] = useLoopLiveStatus(task.id);
   const start = useStartTaskLoop(task.board_id, task.id);
   const cancel = useCancelTaskLoop(task.id);
   const ack = useAckTaskLoop(task.board_id, task.id);
@@ -141,6 +147,10 @@ export function LoopPanel({
               onRunAgain={() => setShowForm(true)}
               onAck={() => {
                 ack.mutate(undefined, {
+                  // The ack clears server state without emitting a loop.status
+                  // event, so drop the live SSE snapshot too — otherwise the
+                  // banner would linger until the task is reopened.
+                  onSuccess: () => clearLive(),
                   onError: (err) =>
                     toast.error(
                       err instanceof Error ? err.message : "Could not acknowledge",
@@ -156,7 +166,7 @@ export function LoopPanel({
           <div className="flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2">
             <Loader2 className="h-4 w-4 animate-spin text-sky-500" />
             <span className="text-[13px] text-muted-foreground">
-              The loop is working autonomously…
+              Working on the goal autonomously…
             </span>
             <Button
               variant="outline"
@@ -166,8 +176,8 @@ export function LoopPanel({
                 cancel.mutate(undefined, {
                   onSuccess: (r) =>
                     r.ok
-                      ? toast.success("Stopping after the current attempt")
-                      : toast.message("No running loop to stop"),
+                      ? toast.success("Stopping after the current iteration")
+                      : toast.message("No running goal to stop"),
                 })
               }
               disabled={cancel.isPending}
@@ -189,11 +199,11 @@ export function LoopPanel({
               start.mutate(body, {
                 onSuccess: () => {
                   setShowForm(false);
-                  toast.success("Autonomous loop started");
+                  toast.success("Goal started");
                 },
                 onError: (err) =>
                   toast.error(
-                    err instanceof Error ? err.message : "Could not start the loop",
+                    err instanceof Error ? err.message : "Could not start the goal",
                   ),
               });
             }}
@@ -203,8 +213,20 @@ export function LoopPanel({
         {/* Idle with history but form closed → quick start button */}
         {canEdit && !formOpen && !running && hasHistory && (
           <Button variant="outline" size="sm" onClick={() => setShowForm(true)}>
-            <Play className="h-4 w-4" /> Start a new loop
+            <Play className="h-4 w-4" /> Start a new goal
           </Button>
+        )}
+
+        {/* The agent's full work transcript across iterations (live + history) */}
+        {info?.generator_conversation_id && (
+          <GoalWork
+            taskId={task.id}
+            conversationId={info.generator_conversation_id}
+            activeRunId={
+              attempts.find((a) => a.status === "running")?.run_id ?? null
+            }
+            running={running}
+          />
         )}
 
         {/* Attempt / evaluation timeline */}
@@ -212,7 +234,7 @@ export function LoopPanel({
 
         {!canEdit && !state && (
           <p className="text-[13px] text-muted-foreground">
-            No autonomous loop has run on this task yet.
+            No goal has run on this task yet.
           </p>
         )}
       </div>
@@ -243,7 +265,7 @@ function StatusBanner({
     >
       <Icon className={cn("h-5 w-5 shrink-0", meta.active && "animate-spin")} />
       <div className="min-w-0 flex-1">
-        <p className="text-[13px] font-semibold">Autonomous loop · {meta.label}</p>
+        <p className="text-[13px] font-semibold">Goal · {meta.label}</p>
         {info?.objective && (
           <p className="mt-0.5 truncate text-[12px] opacity-80" title={info.objective}>
             {info.objective}
@@ -252,7 +274,7 @@ function StatusBanner({
       </div>
       <div className="flex shrink-0 items-center gap-3 text-[12px] font-medium tabular-nums">
         {attempt > 0 && (
-          <span className="inline-flex items-center gap-1" title="Attempts">
+          <span className="inline-flex items-center gap-1" title="Iterations">
             <Hash className="h-3.5 w-3.5" />
             {attempt}
             {maxAttempts ? `/${maxAttempts}` : ""}
@@ -298,10 +320,10 @@ function ReviewActions({
             {needsHuman
               ? "Needs a human decision"
               : state === "complete"
-                ? "Objective verified complete"
+                ? "Goal verified complete"
                 : state === "failed"
-                  ? "The loop failed"
-                  : "The loop was cancelled"}
+                  ? "The goal failed"
+                  : "The goal was cancelled"}
           </p>
           {needsHuman && missing && (
             <p className="mt-1 whitespace-pre-wrap text-[12.5px] text-muted-foreground">
@@ -310,8 +332,9 @@ function ReviewActions({
           )}
           {needsHuman && !missing && (
             <p className="mt-1 text-[12.5px] text-muted-foreground">
-              The loop stopped at a guardrail (attempt or resource cap) or asked
-              for review. Inspect the latest attempt below, then continue or close.
+              The goal stopped at a guardrail (iteration or resource cap) or
+              asked for review. Inspect the latest iteration below, then continue
+              or close.
             </p>
           )}
         </div>
@@ -400,17 +423,17 @@ function StartForm({
       <div className="mb-3 flex items-center gap-1.5">
         <Sparkles className="h-4 w-4 text-primary" />
         <span className="text-[13px] font-semibold text-foreground">
-          Start an autonomous loop
+          Start a goal
         </span>
       </div>
       <p className="mb-3 text-[12px] text-muted-foreground">
-        The generator works the task; an independent evaluator grades each
-        attempt and the loop repeats until the objective is verified or a
-        guardrail routes it to you for review.
+        The agent works the task; an independent critic grades each iteration
+        and the goal repeats until it is verified complete or a guardrail routes
+        it to you for review.
       </p>
 
       <div className="grid grid-cols-2 gap-3">
-        <Field label="Generator agent">
+        <Field label="Agent">
           <SelectMenu
             value={generator}
             onChange={setGenerator}
@@ -418,12 +441,12 @@ function StartForm({
             placeholder="Pick an agent"
           />
         </Field>
-        <Field label="Evaluator agent">
+        <Field label="Critic">
           <SelectMenu
             value={evaluator}
             onChange={setEvaluator}
             options={evaluatorOptions.map(toOpt)}
-            placeholder="Pick an evaluator"
+            placeholder="Pick a critic"
           />
         </Field>
       </div>
@@ -472,7 +495,7 @@ function StartForm({
       </div>
 
       <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <Field label="Max attempts">
+        <Field label="Max iterations">
           <Input
             value={maxAttempts}
             onChange={(e) => setMaxAttempts(e.target.value)}
@@ -527,7 +550,7 @@ function StartForm({
           ) : (
             <Play className="h-4 w-4" />
           )}
-          Start loop
+          Start goal
         </Button>
         {onCancel && (
           <Button variant="ghost" size="sm" onClick={onCancel}>
@@ -561,11 +584,57 @@ function Field({
   );
 }
 
+/**
+ * Collapsible wrapper around the agent's work transcript. Open by default so a
+ * human sees what the agent is doing; its own scroll region keeps the live
+ * auto-scroll contained instead of hijacking the whole panel.
+ */
+function GoalWork({
+  taskId,
+  conversationId,
+  activeRunId,
+  running,
+}: {
+  taskId: string;
+  conversationId: string;
+  activeRunId: string | null;
+  running: boolean;
+}) {
+  const [open, setOpen] = useState(true);
+  return (
+    <div className="rounded-lg border border-border bg-card">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-1.5 px-3 py-2 text-[13px] font-semibold text-foreground"
+      >
+        {open ? (
+          <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
+        ) : (
+          <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
+        )}
+        <Bot className="h-3.5 w-3.5 text-muted-foreground" /> Agent work
+        {running && <Loader2 className="h-3 w-3 animate-spin text-sky-500" />}
+      </button>
+      {open && (
+        <div className="max-h-[60vh] overflow-auto border-t border-border scrollbar-thin">
+          <GoalTranscript
+            taskId={taskId}
+            conversationId={conversationId}
+            activeRunId={activeRunId}
+            running={running}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AttemptTimeline({ attempts }: { attempts: LoopAttemptDTO[] }) {
   return (
     <div>
       <div className="mb-2 flex items-center gap-1.5 text-[13px] font-semibold text-foreground">
-        <Gauge className="h-3.5 w-3.5 text-muted-foreground" /> Attempts
+        <Gauge className="h-3.5 w-3.5 text-muted-foreground" /> Iterations
       </div>
       <ul className="space-y-2">
         {[...attempts].reverse().map((a) => {
@@ -593,10 +662,10 @@ function AttemptTimeline({ attempts }: { attempts: LoopAttemptDTO[] }) {
                     )}
                   >
                     {vMeta.label}
-                    {verdict && verdict.score > 0
-                      ? ` · ${Math.round(verdict.score * 100)}%`
-                      : ""}
                   </span>
+                )}
+                {verdict && (
+                  <ScoreStars score={verdict.score} />
                 )}
                 {a.outcome && (
                   <span className="ml-auto text-[11px] font-medium text-muted-foreground">
@@ -604,15 +673,96 @@ function AttemptTimeline({ attempts }: { attempts: LoopAttemptDTO[] }) {
                   </span>
                 )}
               </div>
-              {verdict?.missing && (
-                <p className="mt-1.5 whitespace-pre-wrap text-[12px] text-muted-foreground">
-                  {verdict.missing}
-                </p>
-              )}
+              {verdict && <VerdictDetail verdict={verdict} />}
             </li>
           );
         })}
       </ul>
     </div>
   );
+}
+
+/** A 5-star rating derived from the critic's 0–1 score, with the % alongside. */
+function ScoreStars({ score }: { score: number }) {
+  const pct = Math.round(Math.min(1, Math.max(0, score)) * 100);
+  const filled = Math.round((pct / 100) * 5);
+  return (
+    <span
+      className="ml-auto inline-flex items-center gap-1 text-[11px] font-medium tabular-nums text-muted-foreground"
+      title={`Critic score: ${pct}%`}
+    >
+      <span aria-hidden className="tracking-[1px] text-amber-500">
+        {"★".repeat(filled)}
+        <span className="text-muted-foreground/30">{"★".repeat(5 - filled)}</span>
+      </span>
+      {pct}%
+    </span>
+  );
+}
+
+/**
+ * The richer body of one critic verdict: what's still missing and the evidence
+ * the critic gathered (commands it ran, checks it saw). Evidence is collapsed
+ * behind a disclosure so the timeline stays scannable.
+ */
+function VerdictDetail({
+  verdict,
+}: {
+  verdict: import("@/api/types").LoopEvaluationDTO;
+}) {
+  const [open, setOpen] = useState(false);
+  const evidence = verdict.evidence ?? {};
+  const evidenceRows = useMemo(
+    () =>
+      Object.entries(evidence)
+        .map(([k, v]) => [k, stringifyEvidence(v)] as const)
+        .filter(([, v]) => v.trim().length > 0),
+    [evidence],
+  );
+  return (
+    <>
+      {verdict.missing && (
+        <p className="mt-1.5 whitespace-pre-wrap text-[12px] text-muted-foreground">
+          {verdict.missing}
+        </p>
+      )}
+      {evidenceRows.length > 0 && (
+        <div className="mt-1.5">
+          <button
+            type="button"
+            onClick={() => setOpen((v) => !v)}
+            className="inline-flex items-center gap-1 text-[11px] font-medium text-muted-foreground hover:text-foreground"
+          >
+            <ListChecks className="h-3 w-3" />
+            {open ? "Hide evidence" : "Show evidence"}
+          </button>
+          {open && (
+            <dl className="mt-1.5 space-y-1.5 rounded-md border border-dashed border-border bg-surface-1/40 p-2.5">
+              {evidenceRows.map(([key, value]) => (
+                <div key={key}>
+                  <dt className="text-[10.5px] font-semibold uppercase tracking-[0.04em] text-muted-foreground">
+                    {key}
+                  </dt>
+                  <dd className="mt-0.5 whitespace-pre-wrap break-words font-mono text-[11.5px] text-foreground/90">
+                    {value}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          )}
+        </div>
+      )}
+    </>
+  );
+}
+
+/** Render one evidence value (string as-is, objects/arrays as compact JSON). */
+function stringifyEvidence(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value == null) return "";
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
 }

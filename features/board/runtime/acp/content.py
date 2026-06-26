@@ -8,6 +8,7 @@ tries both attribute and key access and tolerates missing fields.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from typing import Any
 
 #: Upper bound (chars) on the params summary carried inline on a stream event.
@@ -27,6 +28,17 @@ _TOOL_INPUT_KEYS = (
 )
 
 _PLAN_ICONS = {"completed": "✓", "in_progress": "▶", "pending": "☐"}
+
+#: Map an ACP plan-entry status to the three states the checklist UI renders.
+_PLAN_STATUS = {
+    "completed": "done",
+    "done": "done",
+    "in_progress": "in_progress",
+    "in-progress": "in_progress",
+    "running": "in_progress",
+    "pending": "todo",
+    "todo": "todo",
+}
 
 
 def text_from_content_block(block: Any) -> str:
@@ -134,6 +146,30 @@ def format_plan_entries(entries: Any) -> str:
         if title:
             lines.append(f"{_PLAN_ICONS.get(status, '☐')} {title}")
     return "\n".join(lines)
+
+
+def plan_entries(
+    entries: Any, *, mask: Callable[[str], str] | None = None
+) -> list[dict]:
+    """Normalise ACP plan entries into ``[{"title", "status"}]`` for the UI.
+
+    Status is collapsed to the three states the checklist renders
+    (``todo`` / ``in_progress`` / ``done``); unknown statuses default to
+    ``todo``. ``mask`` (when given) is applied to each title so secrets that
+    leaked into a plan item never reach the stream.
+    """
+    out: list[dict] = []
+    for entry in entries or []:
+        raw_status = str(getattr(entry, "status", "") or "").strip().lower()
+        title = str(
+            getattr(entry, "title", "") or getattr(entry, "description", "") or ""
+        ).strip()
+        if not title:
+            continue
+        if mask is not None:
+            title = mask(title)
+        out.append({"title": title, "status": _PLAN_STATUS.get(raw_status, "todo")})
+    return out
 
 
 # --- permission option selection ------------------------------------------

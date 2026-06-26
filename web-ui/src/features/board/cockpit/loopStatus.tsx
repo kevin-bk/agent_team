@@ -75,8 +75,8 @@ export const LOOP_VERDICT_META: Record<LoopVerdict, VerdictMeta> = {
 
 /** Human-readable summary of a terminal loop outcome (attempt badge). */
 export const LOOP_OUTCOME_LABEL: Record<string, string> = {
-  complete: "Objective met",
-  capped: "Hit attempt cap",
+  complete: "Goal met",
+  capped: "Hit iteration cap",
   budget: "Hit resource budget",
   needs_human: "Escalated to human",
   cancelled: "Cancelled",

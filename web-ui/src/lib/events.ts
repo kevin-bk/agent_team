@@ -62,6 +62,16 @@ export interface ToolUseEndEvent extends BaseEvent {
   /** Final params (e.g. a command revealed mid-run); merged into the card. */
   input?: Record<string, unknown> | null;
 }
+/** One entry of a live task/plan checklist a CLI agent is working through. */
+export interface PlanEntry {
+  title: string;
+  status: "todo" | "in_progress" | "done";
+}
+export interface PlanUpdateEvent extends BaseEvent {
+  type: "plan_update";
+  /** The agent's current *full* list (re-sent on every change). */
+  entries: PlanEntry[];
+}
 export interface CompactionEvent extends BaseEvent {
   type: "compaction";
   strategy: string;
@@ -216,6 +226,7 @@ export type AgentEvent =
   | ToolUseStartEvent
   | ToolUseProgressEvent
   | ToolUseEndEvent
+  | PlanUpdateEvent
   | CompactionEvent
   | SubagentSpawnedEvent
   | SubagentProgressEvent

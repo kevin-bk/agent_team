@@ -357,7 +357,7 @@ export function TaskCockpit({
             <button
               type="button"
               onClick={() => selectThread(LOOP)}
-              title="Open the autonomous loop"
+              title="Open the goal"
             >
               <LoopStatusChip state={task.loop_state} />
             </button>
@@ -453,10 +453,10 @@ export function TaskCockpit({
                   <Gauge className="h-3.5 w-3.5" />
                 </span>
               }
-              label="Autonomous loop"
+              label="Goal"
               sub={
                 task.loop_state
-                  ? LOOP_STATE_SUB[task.loop_state] ?? "loop"
+                  ? LOOP_STATE_SUB[task.loop_state] ?? "goal"
                   : "Run & verify"
               }
               active={thread === LOOP}
@@ -550,7 +550,7 @@ export function TaskCockpit({
                   <Gauge className="h-3.5 w-3.5" />
                 </span>
                 <span className="text-sm font-semibold text-foreground">
-                  Autonomous loop
+                  Goal
                 </span>
                 <LoopStatusChip state={task.loop_state} className="ml-1" />
               </div>

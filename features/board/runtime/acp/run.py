@@ -10,6 +10,7 @@ above (the worker, backend, runs, loop) depends on — its constructor, the
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import queue
 import time
@@ -94,8 +95,10 @@ class _DirectAcpTranslator:
     def _on_event(self, key: str, value: str) -> list[tuple[str, dict]]:
         if key == _KEY_PROGRESS:
             return [ev.text_delta(value)]
-        if key in (_KEY_THOUGHT, _KEY_PLAN):
+        if key == _KEY_THOUGHT:
             return [ev.thinking(value)]
+        if key == _KEY_PLAN:
+            return self._plan(value)
         if key == _KEY_TOOL_START:
             return self._tool_start(value)
         if key == _KEY_TOOL_PROGRESS:
@@ -106,6 +109,20 @@ class _DirectAcpTranslator:
         if key == _KEY_USAGE_FINAL:
             self.totals = _usage.parse_totals(value)
             return []
+        return []
+
+    def _plan(self, value: str) -> list[tuple[str, dict]]:
+        """Decode the JSON-encoded plan checklist into a ``plan_update`` frame.
+
+        Older payloads were plain text (one line per entry); those are not JSON
+        and fall back to a thinking frame so nothing is lost.
+        """
+        try:
+            entries = json.loads(value)
+        except (ValueError, TypeError):
+            return [ev.thinking(value)]
+        if isinstance(entries, list) and entries:
+            return [ev.plan_update(entries)]
         return []
 
     def _tool_start(self, value: str) -> list[tuple[str, dict]]:

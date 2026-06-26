@@ -31,6 +31,7 @@ EVENT_THINKING = "thinking"
 EVENT_TOOL_USE_START = "tool_use_start"
 EVENT_TOOL_USE_PROGRESS = "tool_use_progress"
 EVENT_TOOL_USE_END = "tool_use_end"
+EVENT_PLAN_UPDATE = "plan_update"
 EVENT_USAGE = "usage"
 EVENT_ERROR = "error"
 EVENT_FINAL_ANSWER = "final_answer"
@@ -107,6 +108,16 @@ def tool_use_end(
     if tool_input:
         data["input"] = tool_input
     return EVENT_TOOL_USE_END, data
+
+
+def plan_update(entries: list[dict]) -> tuple[str, dict]:
+    """A live task/plan checklist the agent is working through.
+
+    ``entries`` is the agent's *current full* list (it re-sends the whole list
+    on every change), each ``{"title": str, "status": "todo"|"in_progress"|
+    "done"}``. The frontend renders it as one checklist that updates in place.
+    """
+    return EVENT_PLAN_UPDATE, {"entries": entries}
 
 
 def usage(usage_dict: dict) -> tuple[str, dict]:

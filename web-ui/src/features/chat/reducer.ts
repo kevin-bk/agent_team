@@ -361,6 +361,28 @@ function applyEvent(state: RunState, ev: AgentEvent): RunState {
       return { ...state, blocks };
     }
 
+    case "plan_update": {
+      // The agent re-sends its full checklist on each change, so keep a single
+      // plan block per run and replace its entries in place rather than stacking
+      // a new card for every tick.
+      const entries = Array.isArray(ev.entries) ? ev.entries : [];
+      if (entries.length === 0) return state;
+      const idx = findPlan(blocks, ev.run_id);
+      if (idx >= 0) {
+        const b = blocks[idx];
+        if (b.kind === "plan") blocks[idx] = { ...b, entries };
+      } else {
+        blocks.push({
+          kind: "plan",
+          id: nid("plan"),
+          runId: ev.run_id,
+          entries,
+          createdAtMs: Date.now(),
+        });
+      }
+      return { ...state, blocks };
+    }
+
     case "subagent_spawned": {
       blocks.push({
         kind: "subagent",
@@ -519,6 +541,14 @@ function findTool(blocks: Block[], toolId: string): number {
   for (let i = blocks.length - 1; i >= 0; i--) {
     const b = blocks[i];
     if (b.kind === "tool" && b.toolId === toolId) return i;
+  }
+  return -1;
+}
+
+function findPlan(blocks: Block[], runId: string): number {
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const b = blocks[i];
+    if (b.kind === "plan" && b.runId === runId) return i;
   }
   return -1;
 }

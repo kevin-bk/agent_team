@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import uuid
 
 from sqlalchemy.orm import Session
 
@@ -14,6 +15,18 @@ def _thread_id(task_id: str, agent_alias: str, attempt: int) -> str:
     """Build the checkpointer thread id for a conversation attempt."""
     safe_alias = re.sub(r"[^a-zA-Z0-9_-]+", "_", agent_alias).strip("_") or "agent"
     return f"agentteam:{task_id}:{safe_alias}:{attempt}"
+
+
+def _loop_alias(agent_alias: str, role: str) -> str:
+    """Synthetic conversation alias that isolates a loop role's thread/session.
+
+    Loop runs keep their *real* ``agent_alias`` on the run row (so the worker
+    still resolves the right engine), but their conversation — and therefore the
+    ``thread_id`` that keys the agent session — is scoped per role so the
+    planner, generator and evaluator never share one process. The bare alias
+    stays reserved for the user's manual direct chat.
+    """
+    return f"{agent_alias}::loop:{role}"
 
 
 def get_conversation(db: Session, conv_id: str) -> AgentTeamConversation | None:
@@ -51,6 +64,41 @@ def get_or_create_active_conversation(
         agent_alias=agent_alias,
         attempt=1,
         thread_id=_thread_id(task_id, agent_alias, 1),
+        is_active=True,
+    )
+    db.add(conv)
+    db.flush()
+    return conv
+
+
+def get_or_create_loop_conversation(
+    db: Session, *, task_id: str, agent_alias: str, role: str, fresh: bool = False
+) -> AgentTeamConversation:
+    """Return a role-scoped conversation for an autonomous-loop run.
+
+    Each loop role gets its own thread (and therefore its own agent session),
+    isolated from the others and from the manual direct chat:
+
+    * ``fresh=False`` reuses a persistent per-role thread — used by the
+      generator (one session carried across attempts) and the planner.
+    * ``fresh=True`` opens a brand-new isolated thread on every call — used by
+      the evaluator so each grading runs with clean eyes, never sharing context
+      with the generation it is judging or with a prior verdict.
+    """
+    scoped = _loop_alias(agent_alias, role)
+    if not fresh:
+        return get_or_create_active_conversation(
+            db, task_id=task_id, agent_alias=scoped
+        )
+    # A token in the scoped alias makes every fresh call a distinct row (the
+    # ``(task, agent_alias, attempt)`` uniqueness holds) and a distinct thread,
+    # so each evaluation runs in its own isolated session.
+    unique = f"{scoped}:{uuid.uuid4().hex[:8]}"
+    conv = AgentTeamConversation(
+        task_id=task_id,
+        agent_alias=unique,
+        attempt=1,
+        thread_id=_thread_id(task_id, unique, 1),
         is_active=True,
     )
     db.add(conv)

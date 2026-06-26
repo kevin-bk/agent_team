@@ -1,6 +1,8 @@
 import {
   AlertTriangle,
   Brain,
+  CheckCircle2,
+  Circle,
   Clock,
   Download,
   FileText,
@@ -42,7 +44,12 @@ interface Turn {
 }
 
 function blockRunId(b: Block): string | null {
-  if (b.kind === "assistant" || b.kind === "thinking" || b.kind === "tool") {
+  if (
+    b.kind === "assistant" ||
+    b.kind === "thinking" ||
+    b.kind === "tool" ||
+    b.kind === "plan"
+  ) {
     return b.runId ?? null;
   }
   return null;
@@ -336,6 +343,8 @@ function BlockView({
           <ToolCard block={block} onOpenFile={onOpenFile} />
         </div>
       );
+    case "plan":
+      return <PlanChecklist block={block} />;
     case "subagent":
       return <SubagentView block={block} />;
     case "attachment":
@@ -550,6 +559,62 @@ function AttachmentView({
       </a>
     </div>
   );
+}
+
+/**
+ * Live task checklist a CLI agent is working through. The agent re-sends its
+ * whole list on each change, so this renders the current snapshot with a
+ * done/total progress count and a per-row status icon.
+ */
+function PlanChecklist({ block }: { block: import("./types").PlanBlock }) {
+  const entries = block.entries ?? [];
+  if (entries.length === 0) return null;
+  const done = entries.filter((e) => e.status === "done").length;
+  return (
+    <div className="pl-11">
+      <div className="rounded-xl border border-border bg-card/60 p-3">
+        <div className="mb-2 flex items-center gap-2 text-xs font-medium text-muted-foreground">
+          <ListChecks className="h-3.5 w-3.5 text-primary" />
+          <span>Plan</span>
+          <span className="ml-auto tabular-nums">
+            {done}/{entries.length}
+          </span>
+        </div>
+        <ul className="flex flex-col gap-1.5">
+          {entries.map((e, i) => (
+            <li key={i} className="flex items-start gap-2 text-sm">
+              <PlanStatusIcon status={e.status} />
+              <span
+                className={cn(
+                  "leading-snug",
+                  e.status === "done" && "text-muted-foreground line-through",
+                  e.status === "in_progress" && "font-medium text-foreground",
+                )}
+              >
+                {e.title}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+function PlanStatusIcon({
+  status,
+}: {
+  status: import("./types").PlanEntry["status"];
+}) {
+  if (status === "done") {
+    return (
+      <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" />
+    );
+  }
+  if (status === "in_progress") {
+    return <Spinner className="mt-0.5 h-4 w-4 shrink-0 text-primary" />;
+  }
+  return <Circle className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground/60" />;
 }
 
 function PlanUpdateMarker() {

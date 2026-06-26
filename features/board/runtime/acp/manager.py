@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import json
 import logging
 import os
 import queue
@@ -35,7 +36,7 @@ from agent_team.features.board.runtime.acp import usage as _usage
 from agent_team.features.board.runtime.acp.client import build_manager_client
 from agent_team.features.board.runtime.acp.content import (
     TOOL_PARAM_LIMIT,
-    format_plan_entries,
+    plan_entries,
     strip_nul,
     text_from_content_block,
     tool_input_summary,
@@ -300,9 +301,12 @@ class AcpSessionManager:
                     )
                 }
         elif update_type == "AgentPlanUpdate":
-            text = _mask(format_plan_entries(getattr(update, "entries", None)))
-            if text:
-                return {"claude_acp_plan": text}
+            # Emit the *structured* checklist (title + status) JSON-encoded so the
+            # frontend can render a live checklist that updates in place, rather
+            # than flattening it to a block of thinking text. Titles are masked.
+            items = plan_entries(getattr(update, "entries", None), mask=_mask)
+            if items:
+                return {"claude_acp_plan": json.dumps(items, ensure_ascii=False)}
         elif update_type == "UsageUpdate":
             used = int(getattr(update, "used", 0) or 0)
             size = int(getattr(update, "size", 0) or 0)

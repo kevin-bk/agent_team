@@ -711,6 +711,8 @@ export interface LoopEvaluationDTO {
   verdict: LoopVerdict;
   score: number;
   missing: string;
+  /** Free-form evidence the critic recorded (e.g. `{ checks: "..." }`). */
+  evidence?: Record<string, unknown>;
   created_at?: string | null;
 }
 
@@ -722,6 +724,10 @@ export interface LoopAttemptDTO {
   outcome?: string | null;
   created_at?: string | null;
   ended_at?: string | null;
+  /** Generator run that did this iteration's work (used to stream it live). */
+  run_id?: string | null;
+  /** Conversation holding the iteration's transcript. */
+  conversation_id?: string | null;
   evaluations: LoopEvaluationDTO[];
 }
 
@@ -732,6 +738,8 @@ export interface LoopInfoDTO {
   objective?: string | null;
   /** Whether a loop is actively running in-process right now. */
   is_running: boolean;
+  /** Conversation with the generator's continuous transcript across iterations. */
+  generator_conversation_id?: string | null;
   attempts: LoopAttemptDTO[];
 }
 

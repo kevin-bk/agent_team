@@ -4400,3 +4400,78 @@ def test_serialize_board_hides_agent_mcp_from_non_owner(db):
     }
     viewer_dto = boards_repo.serialize_board(board, my_role="viewer")
     assert viewer_dto.agent_mcp == {}
+
+
+# ---------------------------------------------------------------------------
+# Loop session isolation (planner / generator / evaluator)
+# ---------------------------------------------------------------------------
+
+
+def _loop_board_task(db):
+    board = boards_repo.create_board(
+        db, name="Loop", description=None, columns=None, owner_id="u1"
+    )
+    db.flush()
+    task = tasks_repo.create_task(
+        db, board_id=board.id, title="T", description=None, status="todo",
+        assignee_id=None, labels=None, priority=None, created_by=None,
+    )
+    db.flush()
+    return board, task
+
+
+def test_loop_roles_get_isolated_sessions(db):
+    """Planner/generator/evaluator never share the chat alias's thread."""
+    from agent_team.features.board.repositories import conversations as conv_repo
+
+    _, task = _loop_board_task(db)
+    alias = "cli:claude"
+
+    chat = conv_repo.get_or_create_active_conversation(
+        db, task_id=task.id, agent_alias=alias
+    )
+    gen = conv_repo.get_or_create_loop_conversation(
+        db, task_id=task.id, agent_alias=alias, role="generator"
+    )
+    plan = conv_repo.get_or_create_loop_conversation(
+        db, task_id=task.id, agent_alias=alias, role="planner"
+    )
+    db.flush()
+
+    # Each role's thread is distinct from the manual chat and from each other.
+    threads = {chat.thread_id, gen.thread_id, plan.thread_id}
+    assert len(threads) == 3
+    # The real engine alias is recoverable (synthetic alias is a scoped prefix).
+    assert gen.agent_alias.startswith(alias)
+    assert plan.agent_alias != gen.agent_alias
+
+
+def test_loop_generator_session_is_stable_evaluator_is_fresh(db):
+    """Generator reuses one thread across attempts; evaluator gets a new one."""
+    from agent_team.features.board.repositories import conversations as conv_repo
+
+    _, task = _loop_board_task(db)
+    alias = "cli:claude"
+
+    gen1 = conv_repo.get_or_create_loop_conversation(
+        db, task_id=task.id, agent_alias=alias, role="generator"
+    )
+    db.flush()
+    gen2 = conv_repo.get_or_create_loop_conversation(
+        db, task_id=task.id, agent_alias=alias, role="generator"
+    )
+    db.flush()
+    # Generator: same persistent thread carried across attempts.
+    assert gen1.thread_id == gen2.thread_id
+
+    ev1 = conv_repo.get_or_create_loop_conversation(
+        db, task_id=task.id, agent_alias=alias, role="evaluator", fresh=True
+    )
+    db.flush()
+    ev2 = conv_repo.get_or_create_loop_conversation(
+        db, task_id=task.id, agent_alias=alias, role="evaluator", fresh=True
+    )
+    db.flush()
+    # Evaluator: a brand-new isolated thread every grading.
+    assert ev1.thread_id != ev2.thread_id
+    assert ev1.thread_id != gen1.thread_id

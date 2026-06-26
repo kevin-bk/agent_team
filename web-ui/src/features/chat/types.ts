@@ -59,6 +59,18 @@ export interface ToolBlock {
   durationMs?: number;
   createdAtMs?: number;
 }
+/** One row of a live plan/task checklist (from a CLI agent's plan updates). */
+export interface PlanEntry {
+  title: string;
+  status: "todo" | "in_progress" | "done";
+}
+export interface PlanBlock {
+  kind: "plan";
+  id: string;
+  runId: string;
+  entries: PlanEntry[];
+  createdAtMs?: number;
+}
 export interface SubagentBlock {
   kind: "subagent";
   id: string;
@@ -93,6 +105,7 @@ export type Block =
   | AssistantBlock
   | ThinkingBlock
   | ToolBlock
+  | PlanBlock
   | SubagentBlock
   | AttachmentBlock
   | NoticeBlock;

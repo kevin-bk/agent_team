@@ -25,7 +25,7 @@ export function LoopStatusChip({
     meta.active && typeof attempt === "number" && attempt > 0;
   return (
     <span
-      title={`Autonomous loop: ${meta.label}`}
+      title={`Goal: ${meta.label}`}
       className={cn(
         "inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[10.5px] font-semibold uppercase tracking-[0.03em]",
         meta.tone,

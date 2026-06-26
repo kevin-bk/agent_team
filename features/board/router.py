@@ -1335,11 +1335,21 @@ async def get_task_loop(task_id: str, request: Request, db: Session = Depends(ge
         return err
     task = ctx.task
 
+    from agent_team.features.board.models import RUN_ROLE_GENERATOR
     from agent_team.features.board.repositories import attempts as attempts_repo
+    from agent_team.features.board.repositories import runs as runs_repo
     from agent_team.features.board.runtime.loop.service import is_loop_running
 
     attempts = attempts_repo.list_attempts_for_task(db, task_id)
     evaluations = attempts_repo.list_evaluations_for_task(db, task_id)
+    # Link each iteration to the generator run that did its work + the
+    # conversation holding the transcript, so the cockpit can embed it inline.
+    gen_run_by_attempt = {
+        a.id: runs_repo.get_attempt_run(
+            db, attempt_id=a.id, role=RUN_ROLE_GENERATOR
+        )
+        for a in attempts
+    }
     by_attempt: dict[str, list] = {}
     for ev in evaluations:
         by_attempt.setdefault(ev.attempt_id, []).append(
@@ -1350,15 +1360,28 @@ async def get_task_loop(task_id: str, request: Request, db: Session = Depends(ge
                 verdict=ev.verdict,
                 score=ev.score,
                 missing=ev.missing,
+                evidence=ev.evidence(),
                 created_at=ev.created_at.isoformat() if ev.created_at else None,
             )
         )
+    # The generator reuses one conversation across all iterations, so any
+    # iteration's generator run points at the same continuous transcript; take
+    # the most recent one available.
+    generator_conversation_id = next(
+        (
+            run.conversation_id
+            for a in reversed(attempts)
+            if (run := gen_run_by_attempt.get(a.id)) is not None
+        ),
+        None,
+    )
     return LoopInfoDTO(
         task_id=task_id,
         execution_mode=task.execution_mode or "chat",
         loop_state=task.loop_state,
         objective=task.objective,
         is_running=is_loop_running(task_id),
+        generator_conversation_id=generator_conversation_id,
         attempts=[
             LoopAttemptDTO(
                 id=a.id,
@@ -1367,6 +1390,12 @@ async def get_task_loop(task_id: str, request: Request, db: Session = Depends(ge
                 outcome=a.outcome,
                 created_at=a.created_at.isoformat() if a.created_at else None,
                 ended_at=a.ended_at.isoformat() if a.ended_at else None,
+                run_id=(gr.id if (gr := gen_run_by_attempt.get(a.id)) else None),
+                conversation_id=(
+                    gr.conversation_id
+                    if (gr := gen_run_by_attempt.get(a.id))
+                    else None
+                ),
                 evaluations=by_attempt.get(a.id, []),
             )
             for a in attempts

@@ -57,6 +57,25 @@ def list_runs_for_task(
     return query.order_by(AgentTeamRun.created_at.desc()).all()
 
 
+def get_attempt_run(
+    db: Session, *, attempt_id: str, role: str
+) -> AgentTeamRun | None:
+    """Return the run of a given loop ``role`` for one attempt (latest), or None.
+
+    Used to link a loop iteration to the conversation that holds the agent's
+    work transcript, so the cockpit can show what the agent did inside it.
+    """
+    return (
+        db.query(AgentTeamRun)
+        .filter(
+            AgentTeamRun.attempt_id == attempt_id,
+            AgentTeamRun.role == role,
+        )
+        .order_by(AgentTeamRun.created_at.desc())
+        .first()
+    )
+
+
 def list_runs_for_conversation(db: Session, conversation_id: str) -> list[AgentTeamRun]:
     """Return a conversation's runs oldest-first (transcript order)."""
     return (

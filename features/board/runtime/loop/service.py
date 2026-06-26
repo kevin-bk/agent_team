@@ -82,11 +82,21 @@ def cancel_loop(task_id: str) -> bool:
 def _create_loop_run(
     *, task_id: str, agent_alias: str, prompt: str, role: str, attempt_id: str | None
 ) -> str:
-    """Create a queued run tagged with its loop role + attempt (own session)."""
+    """Create a queued run tagged with its loop role + attempt (own session).
+
+    The conversation is scoped per role so the planner, generator and evaluator
+    each run in their own agent session — never one shared process. The
+    evaluator gets a brand-new thread every time (``fresh``) so each grading is
+    independent of the generation it judges and of any prior verdict.
+    """
     db = SessionLocal()
     try:
-        conv = conversations_repo.get_or_create_active_conversation(
-            db, task_id=task_id, agent_alias=agent_alias
+        conv = conversations_repo.get_or_create_loop_conversation(
+            db,
+            task_id=task_id,
+            agent_alias=agent_alias,
+            role=role,
+            fresh=role == RUN_ROLE_EVALUATOR,
         )
         run = runs_repo.create_run(
             db,

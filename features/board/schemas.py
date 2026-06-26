@@ -226,6 +226,9 @@ class LoopEvaluationDTO(BaseModel):
     verdict: str
     score: float
     missing: str
+    #: Free-form evidence the evaluator recorded (e.g. ``{"checks": "..."}``):
+    #: what it ran and saw. Shown in the verdict card so a human can see *why*.
+    evidence: dict = Field(default_factory=dict)
     created_at: str | None
 
 
@@ -238,6 +241,11 @@ class LoopAttemptDTO(BaseModel):
     outcome: str | None = None
     created_at: str | None
     ended_at: str | None
+    #: The generator run that did this iteration's work (for the live stream),
+    #: and the conversation holding its transcript — so the cockpit can show
+    #: exactly what the agent did inside the iteration.
+    run_id: str | None = None
+    conversation_id: str | None = None
     evaluations: list[LoopEvaluationDTO] = Field(default_factory=list)
 
 
@@ -252,6 +260,10 @@ class LoopInfoDTO(BaseModel):
     objective: str | None = None
     #: Whether a loop is actively running in-process right now.
     is_running: bool = False
+    #: Conversation holding the generator's *continuous* work transcript across
+    #: every iteration (the generator reuses one session), so the cockpit embeds
+    #: it inline. Null until the first generator run exists.
+    generator_conversation_id: str | None = None
     attempts: list[LoopAttemptDTO] = Field(default_factory=list)
 
 
