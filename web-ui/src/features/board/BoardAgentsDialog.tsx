@@ -245,7 +245,7 @@ export function BoardAgentsDialog({
                 .map((t) => (
                   <div key={t.id} className="grid gap-1">
                     <span className="text-[12px] font-medium text-foreground">
-                      {t.label} (direct)
+                      {t.label}
                     </span>
                     <textarea
                       value={mcpText[t.id] ?? ""}

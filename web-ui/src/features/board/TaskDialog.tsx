@@ -130,7 +130,7 @@ export function TaskDialog({
       if (enabledClis.has(t.id))
         opts.push({
           value: t.id,
-          label: `${t.label} (direct)`,
+          label: t.label,
           icon: <TerminalSquare className="h-4 w-4" />,
         });
     }

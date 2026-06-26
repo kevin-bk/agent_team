@@ -60,7 +60,7 @@ export function TaskScheduleDialog({
       if (enabledAgents.has(a.id)) out.push({ id: a.id, label: a.display_name });
     for (const t of cliTargets.data ?? [])
       if (enabledClis.has(t.id))
-        out.push({ id: t.id, label: `${t.label} (direct)` });
+        out.push({ id: t.id, label: t.label });
     return out;
   }, [board.agent_ids, board.cli_target_ids, agents.data, cliTargets.data]);
 
