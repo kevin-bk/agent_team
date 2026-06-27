@@ -376,6 +376,7 @@ async def run_autonomous_loop(
     cancel: asyncio.Event | None = None,
     strict: bool = False,
     task_graph: bool = False,
+    resume_note: str | None = None,
 ) -> LoopOutcome:
     """Drive a task to a verified result using real generator + evaluator runs.
 
@@ -391,11 +392,15 @@ async def run_autonomous_loop(
     generator = BackendGenerator(task_id=task_id, agent_alias=agent_alias)
     on_status = _make_status_sink(board_id)
     # In strict mode the generator can pause execution by writing the
-    # plan-change-request marker; detect it after each turn.
+    # plan-change-request marker, or by raising blocking questions; detect both
+    # after each turn.
     replan = (
         (lambda: artifacts.exists(workspace_path, artifacts.PLAN_CHANGE_REQUEST_PATH))
         if strict
         else None
+    )
+    questions = (
+        (lambda: artifacts.questions_pending(workspace_path)) if strict else None
     )
 
     if strict and task_graph and artifacts.task_list(workspace_path):
@@ -421,6 +426,18 @@ async def run_autonomous_loop(
             on_status=on_status,
             final_verify=True,
             replan_requested=replan,
+            questions_pending=questions,
+            extra_preamble=resume_note,
+        )
+
+    # On resume after a question pause, fold the human's answers into the
+    # generator preamble so the continuing thread proceeds with them.
+    generator_preamble = planning_prompts.GENERATOR_STRICT_PREAMBLE if strict else None
+    if resume_note and resume_note.strip():
+        generator_preamble = (
+            f"{generator_preamble}\n\n{resume_note.strip()}"
+            if generator_preamble
+            else resume_note.strip()
         )
 
     return await run_loop(
@@ -436,8 +453,9 @@ async def run_autonomous_loop(
         cancel=cancel,
         on_status=on_status,
         plan_path=artifacts.PLAN_PATH if strict else None,
-        preamble=planning_prompts.GENERATOR_STRICT_PREAMBLE if strict else None,
+        preamble=generator_preamble,
         replan_requested=replan,
+        questions_pending=questions,
     )
 
 
@@ -451,6 +469,7 @@ def start_autonomous_loop(
     budget: LoopBudget | None = None,
     strict: bool = False,
     task_graph: bool = False,
+    resume_note: str | None = None,
 ) -> asyncio.Task:
     """Launch the loop as a background task on the running event loop.
 
@@ -475,6 +494,7 @@ def start_autonomous_loop(
                 cancel=cancel,
                 strict=strict,
                 task_graph=task_graph,
+                resume_note=resume_note,
             )
             logger.info(
                 "autonomous loop finished task=%s outcome=%s attempts=%s",

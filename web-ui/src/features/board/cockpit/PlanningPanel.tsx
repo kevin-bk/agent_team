@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   Bot,
   CheckCircle2,
+  HelpCircle,
   ListChecks,
   Loader2,
   Pencil,
@@ -11,6 +12,7 @@ import {
   Send,
 } from "@/components/icons";
 import {
+  useAnswerTaskPlanning,
   useApproveAndRunTaskPlanning,
   useEditTaskPlanningArtifact,
   useRequestTaskPlanningChanges,
@@ -20,6 +22,7 @@ import type {
   AgentDTO,
   PlanningArtifactDTO,
   PlanningInfoDTO,
+  PlanningQuestion,
   TaskDTO,
 } from "@/api/types";
 import { Button } from "@/components/ui/button";
@@ -636,6 +639,213 @@ function ApprovalBar({
             </Button>
           </div>
         </div>
+      )}
+    </div>
+  );
+}
+
+/* ───────────────────────────  QUESTIONS (pause)  ──────────────────────── */
+
+const OTHER = "__other__";
+
+/**
+ * The agent (planner or generator) raised blocking questions and paused. Show
+ * one card per question — suggested options plus an always-present "Other"
+ * free-text choice — and an overall note. Answering resumes the paused phase
+ * (re-plan or continue the build) with the decisions folded into its prompt.
+ */
+export function QuestionStage({
+  task,
+  info,
+  canEdit,
+}: {
+  task: TaskDTO;
+  info: PlanningInfoDTO;
+  canEdit: boolean;
+}) {
+  const questions = useMemo(
+    () => (info.questions ?? []).filter((q) => q.blocking !== false),
+    [info.questions],
+  );
+  // For each question: the chosen option (or the OTHER sentinel) and the
+  // free-text typed for an "Other" answer or an option-less question.
+  const [choice, setChoice] = useState<Record<string, string>>({});
+  const [otherText, setOtherText] = useState<Record<string, string>>({});
+  const [note, setNote] = useState("");
+  const answer = useAnswerTaskPlanning(task.board_id, task.id);
+
+  const answerFor = makeAnswerResolver(choice, otherText);
+  const allAnswered = questions.every((q) => answerFor(q).trim().length > 0);
+
+  if (questions.length === 0) {
+    return (
+      <div className="rounded-lg border border-border bg-card p-3.5 text-[13px] text-muted-foreground">
+        The agent is waiting for answers, but no questions were found.
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-lg border border-amber-300 bg-amber-50/60 p-3.5 dark:border-amber-500/30 dark:bg-amber-500/5">
+      <div className="mb-1 flex items-center gap-1.5">
+        <HelpCircle className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+        <span className="text-[13px] font-semibold text-foreground">
+          The agent needs your input
+        </span>
+      </div>
+      <p className="mb-3 text-[12px] text-muted-foreground">
+        It paused instead of guessing. Answer the questions below to continue —
+        your answers are passed straight to the agent.
+      </p>
+
+      <div className="space-y-3">
+        {questions.map((q) => (
+          <QuestionCard
+            key={q.id}
+            q={q}
+            disabled={!canEdit}
+            choice={choice[q.id]}
+            otherText={otherText[q.id] ?? ""}
+            onChoice={(v) => setChoice((s) => ({ ...s, [q.id]: v }))}
+            onOther={(v) => setOtherText((s) => ({ ...s, [q.id]: v }))}
+          />
+        ))}
+      </div>
+
+      <div className="mt-3">
+        <Field label="Note" hint="optional — anything beyond the questions">
+          <textarea
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            rows={2}
+            disabled={!canEdit}
+            placeholder="Extra context or constraints for the agent…"
+            className="block w-full resize-y rounded border border-input bg-card px-2.5 py-1.5 text-[12.5px] text-foreground placeholder:text-muted-foreground/50 focus:border-primary focus:outline-none disabled:opacity-60"
+          />
+        </Field>
+      </div>
+
+      {canEdit && (
+        <div className="mt-3 flex items-center gap-2">
+          <Button
+            size="sm"
+            disabled={!allAnswered || answer.isPending}
+            onClick={() => {
+              const answers: Record<string, string> = {};
+              for (const q of questions) answers[q.id] = answerFor(q).trim();
+              answer.mutate(
+                { answers, note: note.trim() || null },
+                {
+                  onSuccess: (r) =>
+                    toast.success(
+                      r.resumed === "execution"
+                        ? "Answered — resuming the build"
+                        : "Answered — re-planning",
+                    ),
+                  onError: (err) =>
+                    toast.error(
+                      err instanceof Error ? err.message : "Could not submit",
+                    ),
+                },
+              );
+            }}
+          >
+            {answer.isPending ? (
+              <Spinner className="h-4 w-4" />
+            ) : (
+              <Send className="h-4 w-4" />
+            )}
+            Submit answers
+          </Button>
+          {!allAnswered && (
+            <span className="text-[11.5px] text-muted-foreground">
+              Answer every question to continue.
+            </span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Resolve the effective answer string for a question from the form state. */
+function makeAnswerResolver(
+  choice: Record<string, string>,
+  otherText: Record<string, string>,
+) {
+  return (q: PlanningQuestion): string => {
+    const c = choice[q.id];
+    // Option-less questions, or an explicit "Other", use the free-text input.
+    if (!q.options || q.options.length === 0 || c === OTHER) {
+      return otherText[q.id] ?? "";
+    }
+    return c ?? "";
+  };
+}
+
+function QuestionCard({
+  q,
+  disabled,
+  choice,
+  otherText,
+  onChoice,
+  onOther,
+}: {
+  q: PlanningQuestion;
+  disabled: boolean;
+  choice: string | undefined;
+  otherText: string;
+  onChoice: (v: string) => void;
+  onOther: (v: string) => void;
+}) {
+  const hasOptions = !!q.options && q.options.length > 0;
+  const showOther = !hasOptions || choice === OTHER;
+  return (
+    <div className="rounded-md border border-border bg-card p-2.5">
+      <p className="text-[12.5px] font-medium text-foreground">{q.question}</p>
+      {q.reason && (
+        <p className="mt-0.5 text-[11.5px] text-muted-foreground">{q.reason}</p>
+      )}
+      {hasOptions && (
+        <div className="mt-2 space-y-1">
+          {q.options!.map((opt) => (
+            <label
+              key={opt}
+              className="flex items-center gap-2 text-[12.5px] text-foreground"
+            >
+              <input
+                type="radio"
+                name={`q-${q.id}`}
+                checked={choice === opt}
+                disabled={disabled}
+                onChange={() => onChoice(opt)}
+                className="h-3.5 w-3.5 accent-primary"
+              />
+              {opt}
+            </label>
+          ))}
+          <label className="flex items-center gap-2 text-[12.5px] text-foreground">
+            <input
+              type="radio"
+              name={`q-${q.id}`}
+              checked={choice === OTHER}
+              disabled={disabled}
+              onChange={() => onChoice(OTHER)}
+              className="h-3.5 w-3.5 accent-primary"
+            />
+            Other…
+          </label>
+        </div>
+      )}
+      {showOther && (
+        <input
+          type="text"
+          value={otherText}
+          disabled={disabled}
+          onChange={(e) => onOther(e.target.value)}
+          placeholder={hasOptions ? "Your answer…" : "Type your answer…"}
+          className="mt-2 block w-full rounded border border-input bg-card px-2.5 py-1.5 text-[12.5px] text-foreground placeholder:text-muted-foreground/50 focus:border-primary focus:outline-none disabled:opacity-60"
+        />
       )}
     </div>
   );

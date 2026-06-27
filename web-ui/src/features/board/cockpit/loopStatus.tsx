@@ -2,6 +2,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   CircleSlash,
+  HelpCircle,
   Loader2,
   Pencil,
   XCircle,
@@ -39,6 +40,11 @@ export const LOOP_STATE_META: Record<LoopState, StateMeta> = {
     label: "Plan change requested",
     tone: "bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300",
     icon: AlertTriangle,
+  },
+  waiting_answers: {
+    label: "Waiting for answers",
+    tone: "bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300",
+    icon: HelpCircle,
   },
   running: {
     label: "Running",
@@ -96,5 +102,6 @@ export const LOOP_OUTCOME_LABEL: Record<string, string> = {
   budget: "Hit resource budget",
   needs_human: "Escalated to human",
   plan_change: "Plan change requested",
+  needs_answers: "Waiting for answers",
   cancelled: "Cancelled",
 };

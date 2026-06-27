@@ -55,9 +55,11 @@ from agent_team.features.board.schemas import (
     LoopTaskDTO,
     MentionCreate,
     MentionResponse,
+    PlanningAnswerCreate,
     PlanningArtifactDTO,
     PlanningArtifactEdit,
     PlanningInfoDTO,
+    PlanningQuestionDTO,
     PlanningRunCreate,
     PlanningStartCreate,
     SkillPackDTO,
@@ -1451,7 +1453,8 @@ def _planning_info(task) -> PlanningInfoDTO:
     # Editable artifacts plus the change-request note carry their text so the
     # cockpit can render/edit them (the note is read-only, shown as an alert).
     readable = set(artifacts.EDITABLE_ARTIFACTS.values()) | {
-        artifacts.PLAN_CHANGE_REQUEST_PATH
+        artifacts.PLAN_CHANGE_REQUEST_PATH,
+        artifacts.QUESTIONS_PATH,
     }
     for m in artifacts.all_metadata(task.workspace_path):
         content = (
@@ -1481,6 +1484,17 @@ def _planning_info(task) -> PlanningInfoDTO:
         review_verdict=meta.get("review_verdict"),
         last_error=meta.get("last_error"),
         artifacts=dtos,
+        questions=[
+            PlanningQuestionDTO(
+                id=q["id"],
+                question=q["question"],
+                reason=q["reason"],
+                blocking=q["blocking"],
+                options=q["options"],
+                answer=q["answer"],
+            )
+            for q in artifacts.read_questions(task.workspace_path)
+        ],
     )
 
 
@@ -1715,6 +1729,21 @@ async def approve_and_run_task_planning(
     if approve_err:
         return approve_err
 
+    # Remember the run parameters so an execution-phase question pause can resume
+    # the loop with the same agents/budget once the human answers.
+    meta = task.planning_meta()
+    meta["run_params"] = {
+        "agent_id": payload.agent_id,
+        "evaluator_id": payload.evaluator_id,
+        "task_graph": payload.task_graph,
+        "max_attempts": payload.max_attempts,
+        "max_tokens": payload.max_tokens,
+        "max_cost_usd": payload.max_cost_usd,
+        "max_wall_seconds": payload.max_wall_seconds,
+    }
+    task.planning_meta_json = json.dumps(meta, ensure_ascii=False)
+    db.commit()
+
     from agent_team.features.board.runtime.dispatch import capture_main_loop
     from agent_team.features.board.runtime.loop.budget import LoopBudget
     from agent_team.features.board.runtime.loop.service import start_autonomous_loop
@@ -1735,6 +1764,101 @@ async def approve_and_run_task_planning(
         task_graph=payload.task_graph,
     )
     return {"ok": True, "task_id": task_id}
+
+
+@router.post("/tasks/{task_id}/planning/answer")
+async def answer_task_planning(
+    task_id: str,
+    payload: PlanningAnswerCreate,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Answer an agent's blocking questions, then resume the paused phase.
+
+    Persists the answers into ``QUESTIONS.json``, archives it (clearing the
+    gate), and resumes: a planning-phase pause re-plans with the answers in
+    context; an execution-phase pause restarts the loop with the remembered run
+    parameters. The answered Q&A (plus an optional note) is injected into the
+    agent's prompt so it proceeds with the human's decisions.
+    """
+    ctx, err = authz.guard_task(db, request, task_id, min_role="editor")
+    if err:
+        return err
+    task = ctx.task
+
+    from agent_team.features.board.runtime.loop import planning_artifacts as artifacts
+    from agent_team.features.board.runtime.loop import planning_prompts
+    from agent_team.features.board.runtime.loop.service import is_loop_running
+    from agent_team.features.board.runtime.loop.status import LoopState
+
+    if task.loop_state != LoopState.WAITING_ANSWERS.value:
+        return bad_request("This task is not waiting for answers.")
+    if is_loop_running(task_id):
+        return bad_request("A loop is still running for this task.")
+
+    artifacts.answer_questions(task.workspace_path, payload.answers)
+    still_open = artifacts.open_questions(task.workspace_path)
+    if still_open:
+        ids = ", ".join(q["id"] for q in still_open)
+        return bad_request(f"Please answer all blocking questions first: {ids}")
+
+    answered = [q for q in artifacts.read_questions(task.workspace_path) if q["answer"]]
+    addendum = planning_prompts.build_answers_addendum(answered, payload.note)
+
+    meta = task.planning_meta()
+    # Execution-phase answers only reach the generator's prompt, so also fold
+    # them into SPEC.md as approved scope — otherwise the evaluator (which grades
+    # against the SPEC) would never see the human's decisions. Re-planning
+    # (planning phase) regenerates the SPEC, so it does not need this.
+    if meta.get("approved") and meta.get("run_params"):
+        artifacts.append_clarifications(task.workspace_path, answered, payload.note)
+
+    # Archive the answered questionnaire so the resumed phase does not re-pause.
+    artifacts.archive_questions(task.workspace_path)
+
+    from agent_team.features.board.runtime.dispatch import capture_main_loop
+
+    capture_main_loop()
+    if meta.get("approved") and meta.get("run_params"):
+        # Execution-phase pause: resume the loop with the remembered parameters.
+        # The answers ride along as a resume note (folded into the generator
+        # preamble) so they reach even per-task prompts in task-graph mode.
+        from agent_team.features.board.runtime.loop.budget import LoopBudget
+        from agent_team.features.board.runtime.loop.service import start_autonomous_loop
+
+        rp = meta["run_params"]
+        start_autonomous_loop(
+            task_id=task_id,
+            agent_alias=rp["agent_id"],
+            evaluator_alias=rp["evaluator_id"],
+            objective=task.objective or "",
+            max_attempts=int(rp.get("max_attempts", 10)),
+            budget=LoopBudget(
+                max_tokens=rp.get("max_tokens"),
+                max_cost_usd=rp.get("max_cost_usd"),
+                max_wall_seconds=rp.get("max_wall_seconds"),
+            ),
+            strict=True,
+            task_graph=bool(rp.get("task_graph", True)),
+            resume_note=addendum,
+        )
+        return {"ok": True, "task_id": task_id, "resumed": "execution"}
+
+    # Planning-phase pause: re-plan with the answers folded into the objective.
+    objective = f"{task.objective or ''}\n\n{addendum}".strip()
+    planner_id = meta.get("planner_id")
+    if not planner_id:
+        return bad_request("No planner is set for this task; start planning first.")
+
+    from agent_team.features.board.runtime.loop.planning import start_planning_job
+
+    start_planning_job(
+        task_id=task_id,
+        planner_alias=planner_id,
+        objective=objective,
+        reviewer_alias=meta.get("reviewer_id") or None,
+    )
+    return {"ok": True, "task_id": task_id, "resumed": "planning"}
 
 
 @router.get("/tasks/{task_id}/runs")

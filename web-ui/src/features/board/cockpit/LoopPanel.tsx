@@ -38,7 +38,7 @@ import { cn } from "@/lib/utils";
 import { useBoardEventListener } from "../BoardEventsContext";
 import { GoalStepper, type GoalStage } from "./GoalStepper";
 import { GoalTranscript } from "./GoalTranscript";
-import { PlanStage, ReviewStage } from "./PlanningPanel";
+import { PlanStage, QuestionStage, ReviewStage } from "./PlanningPanel";
 import {
   LOOP_OUTCOME_LABEL,
   LOOP_STATE_META,
@@ -86,10 +86,17 @@ const REVIEW_STATES: LoopState[] = [
 ];
 
 /** Map the persisted loop state (plus a restart intent) to one wizard stage. */
-function stageFor(state: LoopState | null, restarting: boolean): GoalStage {
+function stageFor(
+  state: LoopState | null,
+  restarting: boolean,
+  approved: boolean,
+): GoalStage {
   if (state === "planning") return "plan";
   if (state && REVIEW_STATES.includes(state)) return "review";
   if (state === "running") return "run";
+  // A question pause sits in whichever phase raised it: planning (before the
+  // plan is approved) shows under review, execution (after) shows under run.
+  if (state === "waiting_answers") return approved ? "run" : "review";
   // Terminal or unset: a restart sends the user back to drafting a new plan.
   if (restarting || !state) return "plan";
   return "result";
@@ -139,7 +146,8 @@ export function LoopPanel({
     if (state === "planning" || state === "running") setRestarting(false);
   }, [state]);
 
-  const stage = stageFor(state, restarting);
+  const awaitingAnswers = state === "waiting_answers";
+  const stage = stageFor(state, restarting, !!pinfo?.approved);
 
   if (loop.isLoading && planning.isLoading) {
     return (
@@ -154,7 +162,11 @@ export function LoopPanel({
       <div className="mx-auto max-w-3xl space-y-4 px-4 py-4">
         <GoalStepper current={stage} />
 
-        {stage === "plan" && (
+        {awaitingAnswers && pinfo && (
+          <QuestionStage task={task} info={pinfo} canEdit={canEdit} />
+        )}
+
+        {!awaitingAnswers && stage === "plan" && (
           <PlanStage
             task={task}
             agents={agents}
@@ -165,7 +177,7 @@ export function LoopPanel({
           />
         )}
 
-        {stage === "review" && pinfo && (
+        {!awaitingAnswers && stage === "review" && pinfo && (
           <ReviewStage
             task={task}
             agents={agents}
@@ -175,7 +187,7 @@ export function LoopPanel({
           />
         )}
 
-        {stage === "run" && state && (
+        {!awaitingAnswers && stage === "run" && state && (
           <>
             <StatusBanner state={state} live={live} info={info} />
             {running && canEdit && (
@@ -205,7 +217,7 @@ export function LoopPanel({
           </>
         )}
 
-        {stage === "result" && state && (
+        {!awaitingAnswers && stage === "result" && state && (
           <>
             <StatusBanner state={state} live={live} info={info} />
             {canEdit && (
@@ -231,8 +243,10 @@ export function LoopPanel({
           </>
         )}
 
-        {/* Live task-graph progress (when executing task-by-task) */}
-        {info?.tasks && info.tasks.length > 0 && (
+        {/* Live task-graph progress (only when executing task-by-task — i.e. at
+            least one task has moved off `pending`; a plain TASKS.json sitting
+            unused in whole-objective mode stays hidden). */}
+        {info?.tasks && info.tasks.some((t) => t.status !== "pending") && (
           <TaskGraphProgress tasks={info.tasks} />
         )}
 

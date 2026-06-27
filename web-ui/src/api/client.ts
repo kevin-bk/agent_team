@@ -21,6 +21,7 @@ import {
   type JiraBatchResult,
   type JiraPreviewResponse,
   type LoopInfoDTO,
+  type PlanningAnswerBody,
   type PlanningInfoDTO,
   type PlanningRunBody,
   type PlanningStartBody,
@@ -444,6 +445,12 @@ export class ApiClient {
   approveAndRunTaskPlanning(taskId: string, body: PlanningRunBody) {
     return this.request<{ ok: boolean; task_id: string }>(
       `/api/tasks/${taskId}/planning/approve-and-run`,
+      { method: "POST", body: JSON.stringify(body) },
+    );
+  }
+  answerTaskPlanning(taskId: string, body: PlanningAnswerBody) {
+    return this.request<{ ok: boolean; task_id: string; resumed: string }>(
+      `/api/tasks/${taskId}/planning/answer`,
       { method: "POST", body: JSON.stringify(body) },
     );
   }

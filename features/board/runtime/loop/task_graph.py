@@ -52,6 +52,9 @@ OUTCOME_NEEDS_HUMAN = "needs_human"
 OUTCOME_CANCELLED = "cancelled"
 OUTCOME_BUDGET = "budget"
 OUTCOME_PLAN_CHANGE = "plan_change"
+#: Outcome when the per-task generator raised blocking questions and paused for
+#: a human to answer them.
+OUTCOME_NEEDS_ANSWERS = "needs_answers"
 
 
 async def run_task_graph(
@@ -67,6 +70,8 @@ async def run_task_graph(
     on_status: OnStatusFn | None = None,
     final_verify: bool = True,
     replan_requested: Callable[[], bool] | None = None,
+    questions_pending: Callable[[], bool] | None = None,
+    extra_preamble: str | None = None,
 ) -> LoopOutcome:
     """Execute ``TASKS.json`` task-by-task; return the terminal outcome.
 
@@ -109,7 +114,22 @@ async def run_task_graph(
         _publish(state, outcome=outcome)
         return LoopOutcome(outcome, _completed())
 
+    # A prior run may have crashed mid-task, leaving an ``in_progress`` marker on
+    # disk. Reset those to ``pending`` so the scheduler can pick them up again
+    # instead of wedging behind a task nothing is driving.
+    for r in artifacts.task_list(workspace_path):
+        if r["status"] == "in_progress":
+            await asyncio.to_thread(
+                artifacts.set_task_status, workspace_path, r["id"], "pending"
+            )
+
     _publish(LoopState.RUNNING)
+
+    # On resume after a question pause, the human's answers ride along in the
+    # per-task preamble so the shared generator thread proceeds with them.
+    task_preamble = planning_prompts.TASK_GRAPH_PREAMBLE
+    if extra_preamble and extra_preamble.strip():
+        task_preamble = f"{task_preamble}\n\n{extra_preamble.strip()}"
 
     # Schedule and execute tasks until none remain runnable.
     while True:
@@ -143,8 +163,9 @@ async def run_task_graph(
             cancel=cancel,
             on_status=None,  # the orchestrator owns the overall lifecycle state
             plan_path=artifacts.PLAN_PATH,
-            preamble=planning_prompts.TASK_GRAPH_PREAMBLE,
+            preamble=task_preamble,
             replan_requested=replan_requested,
+            questions_pending=questions_pending,
             ledger=ledger,  # share the budget across every task
         )
 
@@ -158,6 +179,10 @@ async def run_task_graph(
             return _terminal(LoopState.CANCELLED, OUTCOME_CANCELLED)
         if outcome.outcome == "plan_change":
             return _terminal(LoopState.PLAN_CHANGE_REQUESTED, OUTCOME_PLAN_CHANGE)
+        if outcome.outcome == "needs_answers":
+            # The task is left ``in_progress``: once the human answers, resuming
+            # the graph re-runs this same task (now with the answers in context).
+            return _terminal(LoopState.WAITING_ANSWERS, OUTCOME_NEEDS_ANSWERS)
         # capped / budget / needs_human — this task could not be verified.
         await asyncio.to_thread(
             artifacts.set_task_status, workspace_path, nxt["id"], "blocked"

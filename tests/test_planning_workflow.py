@@ -283,3 +283,146 @@ def test_plan_change_outcome_maps_to_change_requested_state():
     )
 
     assert outcome_to_state(OUTCOME_PLAN_CHANGE) == LoopState.PLAN_CHANGE_REQUESTED
+
+
+# ── structured Q&A (QUESTIONS.json) ──────────────────────────────────────────
+def _write_questions(ws: str, questions: list[dict]) -> None:
+    A.write_text(ws, A.QUESTIONS_PATH, json.dumps({"version": 1, "questions": questions}))
+
+
+def test_read_questions_normalises_and_defaults(tmp_path):
+    ws = str(tmp_path)
+    _write_questions(
+        ws,
+        [
+            {"id": "Q1", "question": "Which DB?", "options": ["pg", "sqlite"]},
+            {"id": "Q2", "question": "Non-blocking?", "blocking": False},
+            {"id": "", "question": "skipme"},  # invalid id → dropped
+            {"question": "no id"},  # dropped
+            "garbage",  # dropped
+        ],
+    )
+    rows = A.read_questions(ws)
+    assert [r["id"] for r in rows] == ["Q1", "Q2"]
+    q1 = rows[0]
+    assert q1["blocking"] is True  # defaults to blocking
+    assert q1["options"] == ["pg", "sqlite"]
+    assert q1["answer"] == ""
+    assert rows[1]["blocking"] is False
+
+
+def test_open_questions_and_pending(tmp_path):
+    ws = str(tmp_path)
+    _write_questions(
+        ws,
+        [
+            {"id": "Q1", "question": "blocking unanswered"},
+            {"id": "Q2", "question": "non-blocking", "blocking": False},
+        ],
+    )
+    assert A.questions_pending(ws) is True
+    assert [q["id"] for q in A.open_questions(ws)] == ["Q1"]
+
+
+def test_answer_questions_clears_gate_and_archives(tmp_path):
+    ws = str(tmp_path)
+    _write_questions(
+        ws,
+        [
+            {"id": "Q1", "question": "blocking", "options": ["a", "b"]},
+            {"id": "Q2", "question": "free text"},
+        ],
+    )
+    # Partial answer leaves a blocking question open.
+    assert A.answer_questions(ws, {"Q1": "a"}) == 1
+    assert A.questions_pending(ws) is True
+    # Blank / unknown answers are ignored.
+    assert A.answer_questions(ws, {"Q2": "  ", "Qx": "nope"}) == 0
+    assert A.answer_questions(ws, {"Q2": "my custom answer"}) == 1
+    assert A.questions_pending(ws) is False
+
+    answered = [q for q in A.read_questions(ws) if q["answer"]]
+    assert {q["id"]: q["answer"] for q in answered} == {
+        "Q1": "a",
+        "Q2": "my custom answer",
+    }
+
+    dest = A.archive_questions(ws)
+    assert dest is not None and "archive/questions/" in dest
+    # Marker cleared so a resumed phase does not re-pause.
+    assert A.read_questions(ws) == []
+    assert A.questions_pending(ws) is False
+
+
+def test_append_clarifications_folds_answers_into_spec(tmp_path):
+    ws = str(tmp_path)
+    A.write_text(ws, A.SPEC_PATH, "# SPEC\n\n## Goal\nbuild\n\n## Risks\nnone\n")
+    wrote = A.append_clarifications(
+        ws,
+        [
+            {"id": "Q1", "question": "Which DB?", "answer": "SQLite (other)"},
+            {"id": "Q2", "question": "skip", "answer": ""},  # blank → omitted
+        ],
+        note="Keep deps minimal.",
+    )
+    assert wrote is True
+    spec = A.read_text(ws, A.SPEC_PATH)
+    assert A.CLARIFICATIONS_HEADING in spec
+    # The chosen/free-text answer and the overall note are persisted verbatim.
+    assert "Which DB?" in spec and "SQLite (other)" in spec
+    assert "Keep deps minimal." in spec
+    assert "Q2" not in spec  # blank answer dropped
+
+    # A second round appends under the same heading (header added once).
+    A.append_clarifications(ws, [{"id": "Q3", "question": "Port?", "answer": "8080"}])
+    spec2 = A.read_text(ws, A.SPEC_PATH)
+    assert spec2.count(A.CLARIFICATIONS_HEADING) == 1
+    assert "8080" in spec2
+
+    # Nothing to write → no-op.
+    assert A.append_clarifications(ws, [], note="  ") is False
+
+
+def test_strict_evaluator_prompts_reference_clarifications():
+    ev = P.build_strict_evaluator_prompt(
+        objective="x", generator_summary="y", verdict_path=A.EVIDENCE_PATH
+    )
+    assert A.CLARIFICATIONS_HEADING in ev
+    tev = P.build_task_evaluator_prompt(
+        task={"id": "T1", "title": "t", "acceptance": [], "validation": []},
+        generator_summary="y",
+        verdict_path=A.EVIDENCE_PATH,
+    )
+    assert A.CLARIFICATIONS_HEADING in tev
+
+
+def test_needs_answers_outcome_maps_to_waiting_answers_state():
+    from agent_team.features.board.runtime.loop.driver import OUTCOME_NEEDS_ANSWERS
+    from agent_team.features.board.runtime.loop.status import (
+        LoopState,
+        outcome_to_state,
+    )
+
+    assert outcome_to_state(OUTCOME_NEEDS_ANSWERS) == LoopState.WAITING_ANSWERS
+
+
+def test_build_answers_addendum_renders_qa_and_note():
+    addendum = P.build_answers_addendum(
+        [
+            {"id": "Q1", "question": "Which DB?", "answer": "Postgres"},
+            {"id": "Q2", "question": "Skipped?", "answer": ""},  # blank → omitted
+        ],
+        note="Keep it simple.",
+    )
+    assert "Which DB?" in addendum and "Postgres" in addendum
+    assert "Skipped?" not in addendum
+    assert "Keep it simple." in addendum
+    assert "Do not re-ask" in addendum
+
+
+def test_ask_questions_instruction_in_planner_and_generator_prompts():
+    assert A.QUESTIONS_PATH in P.PLANNER_SYSTEM or A.QUESTIONS_PATH in P.ASK_QUESTIONS_INSTRUCTION
+    assert A.QUESTIONS_PATH in P.GENERATOR_STRICT_PREAMBLE
+    assert A.QUESTIONS_PATH in P.TASK_GRAPH_PREAMBLE
+    prompt = P.build_planning_prompt("do x", task_id="t1", workspace_path="/ws")
+    assert A.QUESTIONS_PATH in prompt

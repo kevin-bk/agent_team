@@ -121,6 +121,23 @@ async def run_planning_job(
     )
     result = await _drive_to_completion(run_id)
 
+    # The planner may stop early to ask the human blocking questions instead of
+    # guessing. Honour that before treating missing artifacts as a failure: park
+    # for answers and remember the agents so the answer endpoint can re-plan.
+    if await asyncio.to_thread(artifacts.questions_pending, workspace_path):
+        _persist_planning(
+            task_id,
+            state=LoopState.WAITING_ANSWERS,
+            meta_updates={
+                "approved": False,
+                "last_error": None,
+                "planner_id": planner_alias,
+                "reviewer_id": reviewer_alias,
+            },
+            board_id=board_id,
+        )
+        return LoopState.WAITING_ANSWERS
+
     missing = await asyncio.to_thread(artifacts.missing_required, workspace_path)
     if result.status != RUN_DONE or missing:
         error = (

@@ -350,6 +350,7 @@ export type LoopState =
   | "complete"
   | "waiting_for_human"
   | "plan_change_requested"
+  | "waiting_answers"
   | "failed"
   | "cancelled";
 
@@ -366,6 +367,18 @@ export interface PlanningArtifactDTO {
   content?: string | null;
 }
 
+/** One structured question an agent raised for the human. */
+export interface PlanningQuestion {
+  id: string;
+  question: string;
+  reason?: string;
+  blocking?: boolean;
+  /** Suggested choices; the UI always adds an "Other" free-text option. */
+  options?: string[];
+  /** The human's answer once given ("" while unanswered). */
+  answer?: string;
+}
+
 /** Snapshot of a task's strict planning phase for the cockpit. */
 export interface PlanningInfoDTO {
   task_id: string;
@@ -379,6 +392,16 @@ export interface PlanningInfoDTO {
   review_verdict?: string | null;
   last_error?: string | null;
   artifacts: PlanningArtifactDTO[];
+  /** Blocking questions an agent raised, shown as cards when waiting for answers. */
+  questions?: PlanningQuestion[];
+}
+
+/** Body to answer an agent's blocking questions and resume the paused phase. */
+export interface PlanningAnswerBody {
+  /** Map of question id → chosen option or free text (an "Other" answer). */
+  answers: Record<string, string>;
+  /** Optional overall remark carried into the agent's resume/re-plan prompt. */
+  note?: string | null;
 }
 
 /** Body to start the strict planning phase. */

@@ -29,6 +29,10 @@ TASKS_PATH = f"{ARTIFACT_DIR}/TASKS.json"
 PLAN_REVIEW_PATH = f"{ARTIFACT_DIR}/PLAN_REVIEW.json"
 EVIDENCE_PATH = f"{ARTIFACT_DIR}/EVIDENCE.json"
 PLAN_CHANGE_REQUEST_PATH = f"{ARTIFACT_DIR}/PLAN_CHANGE_REQUEST.md"
+#: Structured questions an agent (planner or generator) raises for a human. A
+#: blocking, unanswered question gates the planning/execution phase until the
+#: human answers it via the cockpit.
+QUESTIONS_PATH = f"{ARTIFACT_DIR}/QUESTIONS.json"
 ARCHIVE_DIR = f"{ARTIFACT_DIR}/archive"
 
 #: Artifacts that gate a strict approval. SPEC and PLAN are required; TASKS is
@@ -152,6 +156,7 @@ def all_metadata(workspace_path: str) -> list[ArtifactMeta]:
         PLAN_REVIEW_PATH,
         EVIDENCE_PATH,
         PLAN_CHANGE_REQUEST_PATH,
+        QUESTIONS_PATH,
     )
     return [metadata(workspace_path, p) for p in paths]
 
@@ -352,6 +357,159 @@ def archive_change_request(workspace_path: str) -> str | None:
     write_text(workspace_path, rel_dest, text)
     try:
         os.remove(_safe_abs(workspace_path, PLAN_CHANGE_REQUEST_PATH))
+    except OSError:
+        pass
+    return rel_dest
+
+
+# ---------------------------------------------------------------------------
+# Structured Q&A (``QUESTIONS.json``)
+# ---------------------------------------------------------------------------
+#
+# An agent raises blocking questions instead of guessing a materially-impacting
+# decision; a blocking, unanswered question parks the phase at
+# ``waiting_answers`` until a human answers via the cockpit. The same artifact
+# serves both the planning phase (planner asks) and execution (generator asks).
+
+
+def read_questions(workspace_path: str) -> list[dict]:
+    """Normalised question rows from ``QUESTIONS.json`` (``[]`` when absent).
+
+    Each row carries: ``id``, ``question``, ``reason``, ``blocking`` (bool),
+    ``options`` (list[str], may be empty), and ``answer`` (str, ``""`` when
+    unanswered). The cockpit always renders an extra "Other" free-text choice on
+    top of ``options`` so a human can answer outside the offered set.
+    """
+    data = read_json(workspace_path, QUESTIONS_PATH)
+    if not isinstance(data, dict):
+        return []
+    raw = data.get("questions")
+    if not isinstance(raw, list):
+        return []
+    rows: list[dict] = []
+    for q in raw:
+        if not isinstance(q, dict):
+            continue
+        qid = q.get("id")
+        question = q.get("question")
+        if not isinstance(qid, str) or not qid.strip():
+            continue
+        if not isinstance(question, str) or not question.strip():
+            continue
+        answer = q.get("answer")
+        rows.append(
+            {
+                "id": qid.strip(),
+                "question": question.strip(),
+                "reason": str(q.get("reason") or "").strip(),
+                # Default to blocking: an agent that bothered to ask should pause
+                # unless it explicitly marked the question non-blocking.
+                "blocking": q.get("blocking", True) is not False,
+                "options": [str(o) for o in (q.get("options") or []) if str(o).strip()],
+                "answer": str(answer).strip() if isinstance(answer, str) else "",
+            }
+        )
+    return rows
+
+
+def open_questions(workspace_path: str) -> list[dict]:
+    """Blocking questions that still have no answer."""
+    return [q for q in read_questions(workspace_path) if q["blocking"] and not q["answer"]]
+
+
+def questions_pending(workspace_path: str) -> bool:
+    """Whether at least one blocking question is still unanswered."""
+    return bool(open_questions(workspace_path))
+
+
+def answer_questions(workspace_path: str, answers: dict[str, str]) -> int:
+    """Persist human ``answers`` (keyed by question id) into ``QUESTIONS.json``.
+
+    Returns the number of questions updated. Unknown ids and blank answers are
+    ignored, so a partial submission only fills the questions it addresses.
+    """
+    data = read_json(workspace_path, QUESTIONS_PATH)
+    if not isinstance(data, dict):
+        return 0
+    raw = data.get("questions")
+    if not isinstance(raw, list):
+        return 0
+    updated = 0
+    for q in raw:
+        if not isinstance(q, dict):
+            continue
+        qid = q.get("id")
+        if not isinstance(qid, str):
+            continue
+        ans = answers.get(qid)
+        if ans is None or not str(ans).strip():
+            continue
+        q["answer"] = str(ans).strip()
+        updated += 1
+    if updated:
+        write_text(
+            workspace_path, QUESTIONS_PATH, json.dumps(data, ensure_ascii=False, indent=2)
+        )
+    return updated
+
+
+#: Heading the durable human clarifications live under in ``SPEC.md``.
+CLARIFICATIONS_HEADING = "## Approved Clarifications"
+
+
+def append_clarifications(
+    workspace_path: str, answered: list[dict], note: str | None = None
+) -> bool:
+    """Fold answered execution-phase questions into ``SPEC.md`` as approved scope.
+
+    During execution the human's answers only reach the generator's prompt, so
+    the independent evaluator — which grades against the SPEC — would never see
+    them. Recording each answered question (including a free-text "Other" answer
+    and any overall ``note``) under a durable ``## Approved Clarifications``
+    section makes those decisions part of the contract the evaluator reads, so a
+    human-approved choice is not graded as a deviation.
+
+    Returns ``True`` when something was written.
+    """
+    lines: list[str] = []
+    for q in answered:
+        ans = str(q.get("answer") or "").strip()
+        if not ans:
+            continue
+        lines.append(f"- Q ({q.get('id')}): {q.get('question')}")
+        lines.append(f"  A: {ans}")
+    note = (note or "").strip()
+    if note:
+        lines.append(f"- Note: {note}")
+    if not lines:
+        return False
+    stamp = datetime.now(tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    block = f"### {stamp}\n" + "\n".join(lines)
+    spec = read_text(workspace_path, SPEC_PATH) or "# SPEC"
+    if CLARIFICATIONS_HEADING in spec:
+        # The section is appended once and stays last, so new rounds append here.
+        spec = f"{spec.rstrip()}\n\n{block}\n"
+    else:
+        spec = f"{spec.rstrip()}\n\n{CLARIFICATIONS_HEADING}\n\n{block}\n"
+    write_text(workspace_path, SPEC_PATH, spec)
+    return True
+
+
+def archive_questions(workspace_path: str) -> str | None:
+    """Move an active ``QUESTIONS.json`` into the archive, clearing the gate.
+
+    Archiving (rather than deleting) keeps the answered questionnaire for
+    history while removing the marker so a resumed phase does not re-pause.
+    Returns the archive path, or ``None`` when there was no active file.
+    """
+    text = read_text(workspace_path, QUESTIONS_PATH)
+    if not text or not text.strip():
+        return None
+    stamp = datetime.now(tz=UTC).strftime("%Y%m%dT%H%M%SZ")
+    rel_dest = f"{ARCHIVE_DIR}/questions/{stamp}.json"
+    write_text(workspace_path, rel_dest, text)
+    try:
+        os.remove(_safe_abs(workspace_path, QUESTIONS_PATH))
     except OSError:
         pass
     return rel_dest

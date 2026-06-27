@@ -37,6 +37,9 @@ OUTCOME_BUDGET = "budget"
 #: Outcome recorded when the generator flagged the approved plan as wrong/unsafe
 #: (it wrote the change-request marker) and the loop paused for a human to revise.
 OUTCOME_PLAN_CHANGE = "plan_change"
+#: Outcome recorded when the generator raised blocking questions (it wrote the
+#: questions marker) and the loop paused for a human to answer them.
+OUTCOME_NEEDS_ANSWERS = "needs_answers"
 
 
 @dataclass
@@ -121,6 +124,7 @@ async def run_loop(
     plan_path: str | None = None,
     preamble: str | None = None,
     replan_requested: Callable[[], bool] | None = None,
+    questions_pending: Callable[[], bool] | None = None,
     ledger: LoopLedger | None = None,
 ) -> LoopOutcome:
     """Drive a task to a verified result; returns the terminal outcome.
@@ -214,6 +218,13 @@ async def run_loop(
         # more attempts against a plan the agent itself distrusts.
         if replan_requested is not None and await asyncio.to_thread(replan_requested):
             return await asyncio.to_thread(_finish, attempt_id, OUTCOME_PLAN_CHANGE)
+
+        # The generator can also pause itself by raising blocking questions
+        # (writing the questions marker). Honour it before grading: park the loop
+        # for a human to answer rather than evaluating a deliberately-incomplete
+        # turn.
+        if questions_pending is not None and await asyncio.to_thread(questions_pending):
+            return await asyncio.to_thread(_finish, attempt_id, OUTCOME_NEEDS_ANSWERS)
 
         verdict: Verdict | None = None
         try:

@@ -308,6 +308,31 @@ class PlanningArtifactEdit(BaseModel):
     content: str = Field(max_length=400000)
 
 
+class PlanningQuestionDTO(BaseModel):
+    """One structured question an agent raised for the human."""
+
+    id: str
+    question: str
+    reason: str = ""
+    blocking: bool = True
+    #: Suggested choices; the cockpit always adds an "Other" free-text option.
+    options: list[str] = Field(default_factory=list)
+    #: The human's answer once given (``""`` while unanswered).
+    answer: str = ""
+
+
+class PlanningAnswerCreate(BaseModel):
+    """Human answers to an agent's blocking questions.
+
+    ``answers`` maps question id → chosen option or free text (an "Other" answer
+    is just the typed text). ``note`` is an optional overall remark carried into
+    the agent's resume/re-plan prompt alongside the answers.
+    """
+
+    answers: dict[str, str] = Field(default_factory=dict)
+    note: str | None = Field(default=None, max_length=20000)
+
+
 class PlanningArtifactDTO(BaseModel):
     """One planning artifact's on-disk metadata (+ text for readable files)."""
 
@@ -337,6 +362,8 @@ class PlanningInfoDTO(BaseModel):
     review_verdict: str | None = None
     last_error: str | None = None
     artifacts: list[PlanningArtifactDTO] = Field(default_factory=list)
+    #: Blocking questions an agent raised, shown as cards when waiting for answers.
+    questions: list[PlanningQuestionDTO] = Field(default_factory=list)
 
 
 class CommentCreate(BaseModel):

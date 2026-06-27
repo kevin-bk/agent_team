@@ -74,10 +74,13 @@ export function BoardEventsProvider({
           }
           break;
         case "loop.status":
-          // A loop lifecycle change: refresh the loop panel (attempts/verdicts)
-          // and the board card (its loop_state badge moves with the task).
-          if (e.task_id)
+          // A loop lifecycle change: refresh the loop panel (attempts/verdicts),
+          // the planning snapshot (artifacts/questions surface here), and the
+          // board card (its loop_state badge moves with the task).
+          if (e.task_id) {
             void qc.invalidateQueries({ queryKey: qk.taskLoop(e.task_id) });
+            void qc.invalidateQueries({ queryKey: qk.taskPlanning(e.task_id) });
+          }
           void qc.invalidateQueries({ queryKey: qk.boardTasks(boardId) });
           break;
       }

@@ -43,6 +43,9 @@ class LoopState(StrEnum):
     #: Execution discovered the approved plan is wrong/unsafe and paused for a
     #: human to revise it (the marker artifact gates continuation).
     PLAN_CHANGE_REQUESTED = "plan_change_requested"
+    #: An agent (planner or generator) raised blocking questions and the phase
+    #: paused for a human to answer them via the cockpit's question cards.
+    WAITING_ANSWERS = "waiting_answers"
     FAILED = "failed"
     CANCELLED = "cancelled"
 
@@ -74,6 +77,8 @@ def outcome_to_state(outcome: str) -> LoopState:
         return LoopState.CANCELLED
     if outcome == "plan_change":
         return LoopState.PLAN_CHANGE_REQUESTED
+    if outcome == "needs_answers":
+        return LoopState.WAITING_ANSWERS
     if outcome in _HUMAN_OUTCOMES:
         return LoopState.WAITING_FOR_HUMAN
     return LoopState.FAILED

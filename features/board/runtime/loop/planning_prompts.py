@@ -11,6 +11,31 @@ from __future__ import annotations
 
 from agent_team.features.board.runtime.loop import planning_artifacts as A
 
+#: Shared escape hatch: rather than guessing a materially-impacting decision, an
+#: agent writes structured blocking questions for the human and stops. Reused by
+#: the planner and the strict/task-graph generator preambles.
+ASK_QUESTIONS_INSTRUCTION = (
+    "If a decision would materially change the work and you cannot pick a safe "
+    f"default, do NOT guess. Write `{A.QUESTIONS_PATH}` (schema version 1) and "
+    "stop, instead of proceeding:\n\n"
+    "{\n"
+    '  "version": 1,\n'
+    '  "questions": [\n'
+    "    {\n"
+    '      "id": "Q1",\n'
+    '      "question": "Concise decision you need from the human",\n'
+    '      "reason": "Why it blocks/changes the work",\n'
+    '      "blocking": true,\n'
+    '      "options": ["Option A", "Option B"]\n'
+    "    }\n"
+    "  ]\n"
+    "}\n\n"
+    "Offer concrete `options` when there is a small set of sensible choices "
+    "(the human can always answer with something else). Only ask questions whose "
+    "answers materially change the implementation; prefer a stated assumption for "
+    "low-impact gaps."
+)
+
 #: System preamble for the planning turn. The planner must research first and
 #: only write artifacts — it must not implement the change.
 PLANNER_SYSTEM = (
@@ -89,7 +114,8 @@ def build_planning_prompt(
         f"{_TASKS_SCHEMA}\n\n"
         "Keep each task small and independently verifiable. Use repo-relative "
         "paths. Do not implement. When done, end your reply with a one-line "
-        "confirmation that all three files were written."
+        "confirmation that all three files were written.\n\n"
+        f"## When you are blocked\n{ASK_QUESTIONS_INSTRUCTION}"
     )
 
 
@@ -138,7 +164,10 @@ GENERATOR_STRICT_PREAMBLE = (
     "plan exactly; keep changes within the approved scope. If you discover the "
     "approved plan is wrong, unsafe or insufficient, stop and write "
     f"`{A.PLAN_CHANGE_REQUEST_PATH}` explaining the failed assumption instead of "
-    "silently changing scope."
+    "silently changing scope. If instead you only need a decision from the human "
+    f"to proceed, stop and write `{A.QUESTIONS_PATH}` with blocking questions "
+    "(schema version 1: a list of {id, question, reason, blocking, options}) "
+    "rather than guessing."
 )
 
 
@@ -151,7 +180,9 @@ TASK_GRAPH_PREAMBLE = (
     "the current task described above — do not start other tasks or expand "
     "scope. If the approved plan is wrong, unsafe or insufficient for this task, "
     f"stop and write `{A.PLAN_CHANGE_REQUEST_PATH}` explaining the problem "
-    "instead of silently changing scope."
+    "instead of silently changing scope. If you only need a decision from the "
+    f"human to proceed, stop and write `{A.QUESTIONS_PATH}` with blocking "
+    "questions (schema version 1) rather than guessing."
 )
 
 
@@ -211,7 +242,10 @@ def build_task_evaluator_prompt(
         "## Verify against\n"
         "- only this task's acceptance criteria (ignore other tasks)\n"
         "- the actual git diff / current workspace state\n"
-        "- actual test/build/lint output you run yourself\n\n"
+        "- actual test/build/lint output you run yourself\n"
+        f"- any `{A.CLARIFICATIONS_HEADING}` section in `{A.SPEC_PATH}` is "
+        "human-approved scope — honour it, do not penalise the agent for "
+        "following it\n\n"
         "## Required output\n"
         f"Write `{verdict_path}` (schema version 1):\n\n"
         "{\n"
@@ -231,6 +265,29 @@ def build_task_evaluator_prompt(
         'a single line of JSON as a fallback: {"verdict": "pass|fail|'
         'needs_human", "score": 0.0, "missing": "short note"}'
     )
+
+
+def build_answers_addendum(answered: list[dict], note: str | None = None) -> str:
+    """Render answered questions (+ an optional human note) as a prompt block.
+
+    Injected into the re-plan (planner) or resume (generator) prompt so the
+    agent proceeds with the human's decisions instead of re-asking. ``answered``
+    rows are the normalised question dicts with a non-empty ``answer``.
+    """
+    lines: list[str] = ["## Human answers to your questions"]
+    for q in answered:
+        ans = str(q.get("answer") or "").strip()
+        if not ans:
+            continue
+        lines.append(f"- Q ({q.get('id')}): {q.get('question')}")
+        lines.append(f"  A: {ans}")
+    note = (note or "").strip()
+    if note:
+        lines.append(f"\nAdditional note from the human:\n{note}")
+    lines.append(
+        "\nProceed using these decisions. Do not re-ask answered questions."
+    )
+    return "\n".join(lines)
 
 
 def build_strict_evaluator_prompt(
@@ -255,7 +312,10 @@ def build_strict_evaluator_prompt(
         "## Verify against\n"
         "- the acceptance criteria in the SPEC\n"
         "- the actual git diff / current workspace state\n"
-        "- actual test/build/lint output you run yourself\n\n"
+        "- actual test/build/lint output you run yourself\n"
+        f"- any `{A.CLARIFICATIONS_HEADING}` section in `{A.SPEC_PATH}` is "
+        "human-approved scope — honour it, do not penalise the agent for "
+        "following it\n\n"
         "## Required output\n"
         f"Write `{A.EVIDENCE_PATH}` (schema version 1):\n\n"
         "{\n"

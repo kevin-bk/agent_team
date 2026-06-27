@@ -10,6 +10,7 @@ import type {
   CreateBoardBody,
   CreateCronBody,
   CreateTaskBody,
+  PlanningAnswerBody,
   PlanningRunBody,
   PlanningStartBody,
   MoveTaskBody,
@@ -788,6 +789,20 @@ export function useEditTaskPlanningArtifact(taskId: string) {
     mutationFn: (v: { name: string; content: string; etag?: string | null }) =>
       client.editTaskPlanningArtifact(taskId, v.name, v.content, v.etag),
     onSuccess: () => qc.invalidateQueries({ queryKey: qk.taskPlanning(taskId) }),
+  });
+}
+
+export function useAnswerTaskPlanning(boardId: string, taskId: string) {
+  const { client } = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: PlanningAnswerBody) =>
+      client.answerTaskPlanning(taskId, body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: qk.taskPlanning(taskId) });
+      void qc.invalidateQueries({ queryKey: qk.taskLoop(taskId) });
+      void qc.invalidateQueries({ queryKey: qk.boardTasks(boardId) });
+    },
   });
 }
 

@@ -1602,6 +1602,58 @@ async def test_run_loop_pauses_on_plan_change_request(db, monkeypatch):
     assert outcome_to_state(outcome.outcome) == LoopState.PLAN_CHANGE_REQUESTED
 
 
+async def test_run_loop_pauses_on_questions(db, monkeypatch):
+    """A generator that raises blocking questions pauses the loop before grading."""
+    from sqlalchemy.orm import sessionmaker
+
+    from agent_team.features.board.runtime.loop import driver
+    from agent_team.features.board.runtime.loop.driver import GeneratorTurn, run_loop
+    from agent_team.features.board.runtime.loop.status import (
+        LoopState,
+        outcome_to_state,
+    )
+    from agent_team.features.board.runtime.loop.verdict import LoopVerdict, Verdict
+
+    factory = sessionmaker(bind=db.get_bind(), autoflush=False, future=True)
+    monkeypatch.setattr(driver, "SessionLocal", factory)
+
+    board = boards_repo.create_board(db, name="B", description=None, columns=None, owner_id=None)
+    db.flush()
+    task = tasks_repo.create_task(
+        db, board_id=board.id, title="T", description=None, status="todo",
+        assignee_id=None, labels=None, priority=None, created_by=None,
+    )
+    db.commit()
+
+    async def fake_generator(attempt_id, prompt):
+        return GeneratorTurn(run_id=None, final_text="I have a question", cancelled=False)
+
+    class NeverEvaluator:
+        def __init__(self):
+            self.calls = 0
+
+        async def evaluate(self, **_kwargs):
+            self.calls += 1
+            return Verdict(LoopVerdict.PASS, score=1.0)
+
+    evaluator = NeverEvaluator()
+    outcome = await run_loop(
+        task_id=task.id,
+        objective="build the thing",
+        workspace_path="/tmp/ws",
+        run_generator=fake_generator,
+        evaluator=evaluator,
+        max_attempts=5,
+        questions_pending=lambda: True,
+    )
+
+    assert outcome.outcome == "needs_answers"
+    # Pauses before grading: no attempt counted, evaluator never runs.
+    assert outcome.attempts == 0
+    assert evaluator.calls == 0
+    assert outcome_to_state(outcome.outcome) == LoopState.WAITING_ANSWERS
+
+
 async def test_run_task_graph_executes_tasks_in_dependency_order(db, monkeypatch, tmp_path):
     """The orchestrator schedules by dependency and marks each task complete."""
     import json as _json
