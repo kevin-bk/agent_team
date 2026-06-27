@@ -186,3 +186,14 @@ def test_verdict_from_evidence_none_when_absent(tmp_path):
     from agent_team.features.board.runtime.loop.service import _verdict_from_evidence
 
     assert _verdict_from_evidence(str(tmp_path)) is None
+
+
+# ── plan-change-request outcome mapping ──────────────────────────────────────
+def test_plan_change_outcome_maps_to_change_requested_state():
+    from agent_team.features.board.runtime.loop.driver import OUTCOME_PLAN_CHANGE
+    from agent_team.features.board.runtime.loop.status import (
+        LoopState,
+        outcome_to_state,
+    )
+
+    assert outcome_to_state(OUTCOME_PLAN_CHANGE) == LoopState.PLAN_CHANGE_REQUESTED

@@ -230,6 +230,18 @@ export function ReviewStage({
       ),
     [info.artifacts],
   );
+  // Set when the build paused because the agent flagged the approved plan as
+  // wrong/unsafe — its reasoning is shown so the human can revise and re-run.
+  const changeRequest = useMemo(
+    () =>
+      info.artifacts.find(
+        (a) =>
+          (a.path.split("/").pop() ?? "") === "PLAN_CHANGE_REQUEST.md" &&
+          a.exists &&
+          a.content,
+      )?.content ?? null,
+    [info.artifacts],
+  );
 
   return (
     <div className="rounded-lg border border-border bg-card p-3.5">
@@ -255,6 +267,22 @@ export function ReviewStage({
       </div>
 
       {info.last_error && <ErrorNote>{info.last_error}</ErrorNote>}
+
+      {changeRequest && (
+        <div className="mt-2 rounded-md border border-amber-300 bg-amber-50 p-2.5 dark:border-amber-500/30 dark:bg-amber-500/10">
+          <div className="mb-1 flex items-center gap-1.5 text-[12px] font-semibold text-amber-800 dark:text-amber-300">
+            <AlertTriangle className="h-3.5 w-3.5" />
+            The agent paused and requested a plan change
+          </div>
+          <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words font-mono text-[11.5px] leading-relaxed text-amber-900/90 dark:text-amber-200/90">
+            {changeRequest}
+          </pre>
+          <p className="mt-1.5 text-[11.5px] text-amber-800/80 dark:text-amber-300/80">
+            Revise the plan below then Approve &amp; run again, or send the
+            planner feedback to re-draft.
+          </p>
+        </div>
+      )}
 
       <ArtifactTabs taskId={task.id} artifacts={editable} canEdit={canEdit} />
 

@@ -734,22 +734,6 @@ export interface AttemptDTO {
 
 // ── Autonomous loop (generator + evaluator) ─────────────────────────
 
-export interface LoopStartBody {
-  /** Generator agent alias (does the work). */
-  agent_id: string;
-  /** Evaluator agent alias (independently grades each attempt). */
-  evaluator_id: string;
-  /** Objective; falls back to the task's stored objective/description. */
-  objective?: string | null;
-  /** Optional planner agent alias: analyses the task + writes a plan first. */
-  planner_id?: string | null;
-  max_attempts?: number;
-  /** Resource guardrails (omit/0 = unbounded). */
-  max_tokens?: number | null;
-  max_cost_usd?: number | null;
-  max_wall_seconds?: number | null;
-}
-
 export type LoopVerdict = "pass" | "fail" | "needs_human";
 
 export interface LoopEvaluationDTO {

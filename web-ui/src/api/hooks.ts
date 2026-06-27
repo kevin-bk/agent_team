@@ -10,7 +10,6 @@ import type {
   CreateBoardBody,
   CreateCronBody,
   CreateTaskBody,
-  LoopStartBody,
   PlanningRunBody,
   PlanningStartBody,
   MoveTaskBody,
@@ -699,18 +698,6 @@ export function useTaskLoop(taskId: string | undefined, enabled = true) {
       query.state.data?.loop_state === "planning"
         ? 4000
         : false,
-  });
-}
-
-export function useStartTaskLoop(boardId: string, taskId: string) {
-  const { client } = useApi();
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (body: LoopStartBody) => client.startTaskLoop(taskId, body),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: qk.taskLoop(taskId) });
-      void qc.invalidateQueries({ queryKey: qk.boardTasks(boardId) });
-    },
   });
 }
 

@@ -34,6 +34,9 @@ logger = logging.getLogger(__name__)
 OUTCOME_CANCELLED = "cancelled"
 #: Outcome recorded when a resource guardrail (tokens/cost/runtime) hard-stops it.
 OUTCOME_BUDGET = "budget"
+#: Outcome recorded when the generator flagged the approved plan as wrong/unsafe
+#: (it wrote the change-request marker) and the loop paused for a human to revise.
+OUTCOME_PLAN_CHANGE = "plan_change"
 
 
 @dataclass
@@ -117,6 +120,7 @@ async def run_loop(
     on_status: OnStatusFn | None = None,
     plan_path: str | None = None,
     preamble: str | None = None,
+    replan_requested: Callable[[], bool] | None = None,
 ) -> LoopOutcome:
     """Drive a task to a verified result; returns the terminal outcome.
 
@@ -200,6 +204,13 @@ async def run_loop(
 
         if turn.cancelled:
             return await asyncio.to_thread(_finish, attempt_id, OUTCOME_CANCELLED)
+
+        # The generator can flag the approved plan as wrong/unsafe by writing the
+        # change-request marker. Honour it before grading: pause the loop and
+        # route the task back to a human to revise the plan rather than burning
+        # more attempts against a plan the agent itself distrusts.
+        if replan_requested is not None and await asyncio.to_thread(replan_requested):
+            return await asyncio.to_thread(_finish, attempt_id, OUTCOME_PLAN_CHANGE)
 
         verdict: Verdict | None = None
         try:

@@ -52,7 +52,6 @@ from agent_team.features.board.schemas import (
     LoopAttemptDTO,
     LoopEvaluationDTO,
     LoopInfoDTO,
-    LoopStartCreate,
     MentionCreate,
     MentionResponse,
     PlanningArtifactDTO,
@@ -1282,52 +1281,6 @@ async def create_mention(
     )
 
 
-@router.post("/tasks/{task_id}/loop")
-async def start_task_loop(
-    task_id: str, payload: LoopStartCreate, request: Request, db: Session = Depends(get_db)
-):
-    """Start an autonomous loop: a generator agent works, an evaluator grades.
-
-    The loop drives generator turns and independent evaluations until the
-    objective is met (or a guardrail stops it), persisting each attempt. When a
-    ``planner_id`` is given, an optional planning phase runs first and writes a
-    plan the generator works from. Plain chat continues to work through
-    ``/mentions`` and is unaffected.
-    """
-    ctx, err = authz.guard_task(db, request, task_id, min_role="editor")
-    if err:
-        return err
-    task = ctx.task
-
-    from agent_team.features.board.models import TASK_EXEC_MODE_AUTONOMOUS
-
-    objective = (payload.objective or task.objective or task.description or "").strip()
-    # Persist the objective + autonomous mode so a later run reuses them.
-    task.objective = objective
-    task.execution_mode = TASK_EXEC_MODE_AUTONOMOUS
-    db.commit()
-
-    from agent_team.features.board.runtime.dispatch import capture_main_loop
-    from agent_team.features.board.runtime.loop.budget import LoopBudget
-    from agent_team.features.board.runtime.loop.service import start_autonomous_loop
-
-    capture_main_loop()
-    start_autonomous_loop(
-        task_id=task_id,
-        agent_alias=payload.agent_id,
-        evaluator_alias=payload.evaluator_id,
-        objective=objective,
-        planner_alias=payload.planner_id or None,
-        max_attempts=payload.max_attempts,
-        budget=LoopBudget(
-            max_tokens=payload.max_tokens,
-            max_cost_usd=payload.max_cost_usd,
-            max_wall_seconds=payload.max_wall_seconds,
-        ),
-    )
-    return {"ok": True, "task_id": task_id, "execution_mode": task.execution_mode}
-
-
 @router.get("/tasks/{task_id}/loop")
 async def get_task_loop(task_id: str, request: Request, db: Session = Depends(get_db)):
     """Snapshot of a task's autonomous loop: state + attempts with verdicts.
@@ -1482,11 +1435,15 @@ def _planning_info(task) -> PlanningInfoDTO:
 
     meta = task.planning_meta()
     dtos: list[PlanningArtifactDTO] = []
-    editable = set(artifacts.EDITABLE_ARTIFACTS.values())
+    # Editable artifacts plus the change-request note carry their text so the
+    # cockpit can render/edit them (the note is read-only, shown as an alert).
+    readable = set(artifacts.EDITABLE_ARTIFACTS.values()) | {
+        artifacts.PLAN_CHANGE_REQUEST_PATH
+    }
     for m in artifacts.all_metadata(task.workspace_path):
         content = (
             artifacts.read_text(task.workspace_path, m.path)
-            if (m.exists and m.path in editable)
+            if (m.exists and m.path in readable)
             else None
         )
         dtos.append(
@@ -1643,6 +1600,10 @@ def _approve_plan(ctx, db) -> object | None:
         if errors:
             return bad_request("; ".join(errors))
 
+    # Clear any active plan-change-request marker: approving (re)settles the plan,
+    # so the gate that would otherwise immediately re-pause execution is removed.
+    artifacts.archive_change_request(task.workspace_path)
+
     meta = task.planning_meta()
     meta.update(
         {
@@ -1698,6 +1659,12 @@ async def request_task_planning_changes(
     meta.update({"approved": False, "approved_by": None, "approved_at": None})
     task.planning_meta_json = json.dumps(meta, ensure_ascii=False)
     db.commit()
+
+    # Re-planning supersedes any active change-request marker; archive it so a
+    # later run does not re-trip the pause gate on the freshly drafted plan.
+    from agent_team.features.board.runtime.loop import planning_artifacts as artifacts
+
+    artifacts.archive_change_request(task.workspace_path)
 
     objective = task.objective or ""
     if feedback.strip():

@@ -1379,22 +1379,6 @@ def test_loop_controller_references_plan_when_present():
     assert ".agent-team/PLAN.md" in step.followup
 
 
-def test_build_plan_prompt_has_structure_and_path():
-    from agent_team.features.board.runtime.loop.planner import (
-        PLAN_STRUCTURE,
-        build_plan_prompt,
-    )
-
-    prompt = build_plan_prompt("ship feature X", plan_path=".agent-team/PLAN.md")
-    assert "ship feature X" in prompt
-    assert ".agent-team/PLAN.md" in prompt
-    # Every section title must appear in the rendered structure.
-    for title, _ in PLAN_STRUCTURE:
-        assert title in prompt
-    # The planner must be told not to implement in this turn.
-    assert "Do NOT implement" in prompt
-
-
 async def test_run_loop_runs_planning_phase_first(db, monkeypatch):
     from sqlalchemy.orm import sessionmaker
 
@@ -1563,6 +1547,59 @@ async def test_run_loop_drives_attempts_until_pass(db, monkeypatch):
     attempts = attempts_repo.list_attempts_for_task(db, task.id)
     assert [a.attempt_no for a in attempts] == [1, 2]
     assert attempts[-1].outcome == "complete"
+
+
+async def test_run_loop_pauses_on_plan_change_request(db, monkeypatch):
+    """A generator that flags the plan pauses the loop before grading."""
+    from sqlalchemy.orm import sessionmaker
+
+    from agent_team.features.board.runtime.loop import driver
+    from agent_team.features.board.runtime.loop.driver import GeneratorTurn, run_loop
+    from agent_team.features.board.runtime.loop.status import (
+        LoopState,
+        outcome_to_state,
+    )
+    from agent_team.features.board.runtime.loop.verdict import LoopVerdict, Verdict
+
+    factory = sessionmaker(bind=db.get_bind(), autoflush=False, future=True)
+    monkeypatch.setattr(driver, "SessionLocal", factory)
+
+    board = boards_repo.create_board(db, name="B", description=None, columns=None, owner_id=None)
+    db.flush()
+    task = tasks_repo.create_task(
+        db, board_id=board.id, title="T", description=None, status="todo",
+        assignee_id=None, labels=None, priority=None, created_by=None,
+    )
+    db.commit()
+
+    async def fake_generator(attempt_id, prompt):
+        return GeneratorTurn(run_id=None, final_text="plan is wrong", cancelled=False)
+
+    class NeverEvaluator:
+        def __init__(self):
+            self.calls = 0
+
+        async def evaluate(self, **_kwargs):
+            self.calls += 1
+            return Verdict(LoopVerdict.PASS, score=1.0)
+
+    evaluator = NeverEvaluator()
+    outcome = await run_loop(
+        task_id=task.id,
+        objective="build the thing",
+        workspace_path="/tmp/ws",
+        run_generator=fake_generator,
+        evaluator=evaluator,
+        max_attempts=5,
+        replan_requested=lambda: True,
+    )
+
+    assert outcome.outcome == "plan_change"
+    # The loop pauses before grading (like a cancel), so the controller has not
+    # counted the attempt and the evaluator never runs.
+    assert outcome.attempts == 0
+    assert evaluator.calls == 0
+    assert outcome_to_state(outcome.outcome) == LoopState.PLAN_CHANGE_REQUESTED
 
 
 async def test_run_loop_caps_when_never_passing(db, monkeypatch):

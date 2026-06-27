@@ -21,7 +21,6 @@ import {
   type JiraBatchResult,
   type JiraPreviewResponse,
   type LoopInfoDTO,
-  type LoopStartBody,
   type PlanningInfoDTO,
   type PlanningRunBody,
   type PlanningStartBody,
@@ -404,12 +403,6 @@ export class ApiClient {
   }
 
   // ── autonomous loop (generator + evaluator) ──────────────────────
-  startTaskLoop(taskId: string, body: LoopStartBody) {
-    return this.request<{ ok: boolean; task_id: string; execution_mode: string }>(
-      `/api/tasks/${taskId}/loop`,
-      { method: "POST", body: JSON.stringify(body) },
-    );
-  }
   getTaskLoop(taskId: string) {
     return this.request<LoopInfoDTO>(`/api/tasks/${taskId}/loop`);
   }

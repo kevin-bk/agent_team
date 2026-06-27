@@ -19,7 +19,6 @@ from agent_team.features.board.board_events import get_board_bus
 from agent_team.features.board.models import (
     RUN_ROLE_EVALUATOR,
     RUN_ROLE_GENERATOR,
-    RUN_ROLE_PLANNER,
     AgentTeamTask,
 )
 from agent_team.features.board.repositories import conversations as conversations_repo
@@ -40,7 +39,6 @@ from agent_team.features.board.runtime.loop.evaluator import (
     Verdict,
     build_evaluator_prompt,
 )
-from agent_team.features.board.runtime.loop.planner import build_plan_prompt
 from agent_team.features.board.runtime.loop.status import LoopStatus
 from agent_team.features.board.runtime.loop.verdict import LoopVerdict, parse_verdict
 from core.database.base import SessionLocal
@@ -181,50 +179,6 @@ class BackendGenerator:
             tokens=result.tokens,
             cost_usd=result.cost_usd,
         )
-
-
-#: Workspace-relative path the planning phase writes its plan to. Stable (not
-#: per-run) so the generator's prompt can point at a known file.
-_PLAN_PATH = ".agent-team/PLAN.md"
-
-
-def _plan_written(workspace_path: str, rel_path: str) -> bool:
-    """Whether the planner actually produced a non-empty plan file."""
-    if not workspace_path:
-        return False
-    try:
-        with open(os.path.join(workspace_path, rel_path), encoding="utf-8") as fh:
-            return bool(fh.read().strip())
-    except OSError:
-        return False
-
-
-class WorkerPlanner:
-    """Runs an optional planning turn that writes a structured plan file.
-
-    Returns the workspace-relative plan path when the file was written, else
-    ``None`` (the loop then proceeds from the raw objective — fail-open).
-    """
-
-    def __init__(self, *, task_id: str, planner_alias: str) -> None:
-        self._task_id = task_id
-        self._planner_alias = planner_alias
-
-    async def plan(self, *, objective: str, workspace_path: str) -> str | None:
-        prompt = build_plan_prompt(objective, plan_path=_PLAN_PATH)
-        run_id = await asyncio.to_thread(
-            _create_loop_run,
-            task_id=self._task_id,
-            agent_alias=self._planner_alias,
-            prompt=prompt,
-            role=RUN_ROLE_PLANNER,
-            attempt_id=None,  # planning precedes the first attempt
-        )
-        result = await _drive_to_completion(run_id)
-        if result.status != RUN_DONE:
-            return None
-        written = await asyncio.to_thread(_plan_written, workspace_path, _PLAN_PATH)
-        return _PLAN_PATH if written else None
 
 
 #: Workspace-relative directory the evaluator drops its verdict file into.
@@ -403,7 +357,6 @@ async def run_autonomous_loop(
     agent_alias: str,
     evaluator_alias: str,
     objective: str,
-    planner_alias: str | None = None,
     max_attempts: int = 10,
     budget: LoopBudget | None = None,
     cancel: asyncio.Event | None = None,
@@ -411,19 +364,12 @@ async def run_autonomous_loop(
 ) -> LoopOutcome:
     """Drive a task to a verified result using real generator + evaluator runs.
 
-    When ``planner_alias`` is given, an optional planning turn runs first and
-    writes a structured plan the generator works from. In ``strict`` mode the
-    plan was already drafted and approved before this loop started: the
-    generator is pointed at the approved ``SPEC.md``/``PLAN.md`` and the
-    evaluator grades against them (no in-loop planner runs).
+    The plan is drafted and approved before this loop starts: in ``strict`` mode
+    the generator is pointed at the approved ``SPEC.md``/``PLAN.md`` and the
+    evaluator grades against them.
     """
     workspace_path, board_id = await asyncio.to_thread(
         _task_workspace_and_board, task_id
-    )
-    planner = (
-        WorkerPlanner(task_id=task_id, planner_alias=planner_alias)
-        if planner_alias and not strict
-        else None
     )
     return await run_loop(
         task_id=task_id,
@@ -433,13 +379,19 @@ async def run_autonomous_loop(
         evaluator=WorkerEvaluator(
             task_id=task_id, evaluator_alias=evaluator_alias, strict=strict
         ),
-        planner=planner,
         max_attempts=max_attempts,
         budget=budget,
         cancel=cancel,
         on_status=_make_status_sink(board_id),
         plan_path=artifacts.PLAN_PATH if strict else None,
         preamble=planning_prompts.GENERATOR_STRICT_PREAMBLE if strict else None,
+        # In strict mode the generator can pause the loop by writing the
+        # plan-change-request marker; detect it after each turn.
+        replan_requested=(
+            (lambda: artifacts.exists(workspace_path, artifacts.PLAN_CHANGE_REQUEST_PATH))
+            if strict
+            else None
+        ),
     )
 
 
@@ -449,7 +401,6 @@ def start_autonomous_loop(
     agent_alias: str,
     evaluator_alias: str,
     objective: str,
-    planner_alias: str | None = None,
     max_attempts: int = 10,
     budget: LoopBudget | None = None,
     strict: bool = False,
@@ -472,7 +423,6 @@ def start_autonomous_loop(
                 agent_alias=agent_alias,
                 evaluator_alias=evaluator_alias,
                 objective=objective,
-                planner_alias=planner_alias,
                 max_attempts=max_attempts,
                 budget=budget,
                 cancel=cancel,

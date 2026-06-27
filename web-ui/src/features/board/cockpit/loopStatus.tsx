@@ -95,5 +95,6 @@ export const LOOP_OUTCOME_LABEL: Record<string, string> = {
   capped: "Hit iteration cap",
   budget: "Hit resource budget",
   needs_human: "Escalated to human",
+  plan_change: "Plan change requested",
   cancelled: "Cancelled",
 };

@@ -72,6 +72,8 @@ def outcome_to_state(outcome: str) -> LoopState:
         return LoopState.COMPLETE
     if outcome == "cancelled":
         return LoopState.CANCELLED
+    if outcome == "plan_change":
+        return LoopState.PLAN_CHANGE_REQUESTED
     if outcome in _HUMAN_OUTCOMES:
         return LoopState.WAITING_FOR_HUMAN
     return LoopState.FAILED
