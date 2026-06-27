@@ -435,6 +435,23 @@ function ApprovalBar({
   const [showFeedback, setShowFeedback] = useState(false);
   const [feedback, setFeedback] = useState("");
 
+  // How many tasks the planner wrote into TASKS.json — drives whether the
+  // task-by-task option is offered (and the per-task wording).
+  const taskCount = useMemo(() => {
+    const raw = info.artifacts.find(
+      (a) => (a.path.split("/").pop() ?? "") === "TASKS.json" && a.content,
+    )?.content;
+    if (!raw) return 0;
+    try {
+      const parsed = JSON.parse(raw) as { tasks?: unknown[] };
+      return Array.isArray(parsed.tasks) ? parsed.tasks.length : 0;
+    } catch {
+      return 0;
+    }
+  }, [info.artifacts]);
+  const [taskByTask, setTaskByTask] = useState(true);
+  const useGraph = taskCount > 0 && taskByTask;
+
   const run = useApproveAndRunTaskPlanning(task.board_id, task.id);
   const requestChanges = useRequestTaskPlanningChanges(task.id);
 
@@ -462,7 +479,7 @@ function ApprovalBar({
             placeholder="Critic"
           />
         </Field>
-        <Field label="Max iterations">
+        <Field label={useGraph ? "Attempts / task" : "Max iterations"}>
           <Input
             value={maxAttempts}
             onChange={(e) => setMaxAttempts(e.target.value)}
@@ -470,6 +487,26 @@ function ApprovalBar({
           />
         </Field>
       </div>
+
+      {taskCount > 0 && (
+        <label className="flex items-start gap-2 rounded-md border border-border bg-surface-1/40 p-2.5 text-[12.5px]">
+          <input
+            type="checkbox"
+            checked={taskByTask}
+            onChange={(e) => setTaskByTask(e.target.checked)}
+            className="mt-0.5 h-4 w-4 accent-primary"
+          />
+          <span>
+            <span className="font-semibold text-foreground">
+              Execute task-by-task
+            </span>{" "}
+            <span className="text-muted-foreground">
+              ({taskCount} tasks) — schedule by dependency, verify each task
+              before the next. Uncheck to run one loop over the whole objective.
+            </span>
+          </span>
+        </label>
+      )}
       <div className="grid grid-cols-3 gap-3">
         <Field label="Max tokens" hint="opt">
           <Input
@@ -506,6 +543,7 @@ function ApprovalBar({
               {
                 agent_id: generator,
                 evaluator_id: evaluator,
+                task_graph: useGraph,
                 max_attempts: Math.max(1, Math.min(100, posInt(maxAttempts) ?? 10)),
                 max_tokens: posInt(maxTokens),
                 max_cost_usd: (() => {

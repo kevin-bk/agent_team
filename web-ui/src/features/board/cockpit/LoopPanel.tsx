@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronRight,
+  Circle,
   CircleSlash,
   Coins,
   FileText,
@@ -26,6 +27,8 @@ import type {
   LoopAttemptDTO,
   LoopInfoDTO,
   LoopState,
+  LoopTaskDTO,
+  LoopTaskStatus,
   TaskDTO,
 } from "@/api/types";
 import { Button } from "@/components/ui/button";
@@ -226,6 +229,11 @@ export function LoopPanel({
               />
             )}
           </>
+        )}
+
+        {/* Live task-graph progress (when executing task-by-task) */}
+        {info?.tasks && info.tasks.length > 0 && (
+          <TaskGraphProgress tasks={info.tasks} />
         )}
 
         {/* Full work transcripts for every role (plan / build / critic) */}
@@ -468,6 +476,79 @@ function GoalActivity({
           />
         </div>
       )}
+    </div>
+  );
+}
+
+const TASK_STATUS_META: Record<
+  LoopTaskStatus,
+  { icon: typeof Circle; cls: string; spin?: boolean }
+> = {
+  complete: { icon: CheckCircle2, cls: "text-emerald-500" },
+  in_progress: { icon: Loader2, cls: "text-sky-500", spin: true },
+  blocked: { icon: AlertTriangle, cls: "text-rose-500" },
+  skipped: { icon: CircleSlash, cls: "text-muted-foreground" },
+  pending: { icon: Circle, cls: "text-muted-foreground/50" },
+};
+
+/**
+ * Live task-graph progress mirrored from ``TASKS.json``: each task with its
+ * status, the currently-running one highlighted. The on-disk file is the source
+ * of truth (updated by the orchestrator as each task verifies), polled via the
+ * loop snapshot while running.
+ */
+function TaskGraphProgress({ tasks }: { tasks: LoopTaskDTO[] }) {
+  const done = tasks.filter(
+    (t) => t.status === "complete" || t.status === "skipped",
+  ).length;
+  return (
+    <div>
+      <div className="mb-2 flex items-center gap-1.5 text-[13px] font-semibold text-foreground">
+        <ListChecks className="h-3.5 w-3.5 text-muted-foreground" /> Tasks
+        <span className="ml-1 font-normal tabular-nums text-muted-foreground">
+          {done}/{tasks.length} done
+        </span>
+      </div>
+      <ul className="space-y-1">
+        {tasks.map((t) => {
+          const meta = TASK_STATUS_META[t.status] ?? TASK_STATUS_META.pending;
+          const Icon = meta.icon;
+          return (
+            <li
+              key={t.id}
+              className={cn(
+                "flex items-center gap-2 rounded-md border px-2.5 py-1.5",
+                t.status === "in_progress"
+                  ? "border-sky-300 bg-sky-50 dark:border-sky-500/30 dark:bg-sky-500/10"
+                  : "border-border bg-card",
+              )}
+            >
+              <Icon
+                className={cn("h-4 w-4 shrink-0", meta.cls, meta.spin && "animate-spin")}
+              />
+              <span className="font-mono text-[11px] text-muted-foreground">
+                {t.id}
+              </span>
+              <span
+                className={cn(
+                  "min-w-0 flex-1 truncate text-[12.5px]",
+                  t.status === "complete"
+                    ? "text-muted-foreground line-through"
+                    : "text-foreground",
+                )}
+                title={t.title}
+              >
+                {t.title}
+              </span>
+              {t.status === "blocked" && (
+                <span className="text-[10.5px] font-semibold uppercase tracking-[0.03em] text-rose-600 dark:text-rose-300">
+                  blocked
+                </span>
+              )}
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }

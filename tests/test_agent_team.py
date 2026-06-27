@@ -1602,6 +1602,125 @@ async def test_run_loop_pauses_on_plan_change_request(db, monkeypatch):
     assert outcome_to_state(outcome.outcome) == LoopState.PLAN_CHANGE_REQUESTED
 
 
+async def test_run_task_graph_executes_tasks_in_dependency_order(db, monkeypatch, tmp_path):
+    """The orchestrator schedules by dependency and marks each task complete."""
+    import json as _json
+
+    from sqlalchemy.orm import sessionmaker
+
+    from agent_team.features.board.runtime.loop import driver
+    from agent_team.features.board.runtime.loop import planning_artifacts as A
+    from agent_team.features.board.runtime.loop.driver import GeneratorTurn
+    from agent_team.features.board.runtime.loop.task_graph import run_task_graph
+    from agent_team.features.board.runtime.loop.verdict import LoopVerdict, Verdict
+
+    factory = sessionmaker(bind=db.get_bind(), autoflush=False, future=True)
+    monkeypatch.setattr(driver, "SessionLocal", factory)
+
+    board = boards_repo.create_board(db, name="B", description=None, columns=None, owner_id=None)
+    db.flush()
+    task = tasks_repo.create_task(
+        db, board_id=board.id, title="T", description=None, status="todo",
+        assignee_id=None, labels=None, priority=None, created_by=None,
+    )
+    db.commit()
+
+    ws = str(tmp_path)
+    A.write_text(
+        ws,
+        A.TASKS_PATH,
+        _json.dumps(
+            {
+                "version": 1,
+                "tasks": [
+                    {"id": "T2", "status": "pending", "depends_on": ["T1"]},
+                    {"id": "T1", "status": "pending", "depends_on": []},
+                ],
+            }
+        ),
+    )
+
+    seen: list[str] = []
+
+    async def fake_generator(attempt_id, prompt):
+        # The per-task objective names the task id; record execution order.
+        for tid in ("T1", "T2"):
+            if f"task: {tid}" in prompt:
+                seen.append(tid)
+        return GeneratorTurn(run_id=None, final_text="did it", cancelled=False)
+
+    class PassEvaluator:
+        async def evaluate(self, **_kwargs):
+            return Verdict(LoopVerdict.PASS, score=1.0)
+
+    outcome = await run_task_graph(
+        task_id=task.id,
+        objective="build everything",
+        workspace_path=ws,
+        run_generator=fake_generator,
+        make_evaluator=lambda _t: PassEvaluator(),
+        max_attempts_per_task=2,
+        final_verify=True,
+    )
+
+    assert outcome.outcome == "complete"
+    # T1 runs before T2 even though T2 is first in the document.
+    assert seen == ["T1", "T2"]
+    statuses = {r["id"]: r["status"] for r in A.task_list(ws)}
+    assert statuses == {"T1": "complete", "T2": "complete"}
+
+
+async def test_run_task_graph_blocks_task_that_never_passes(db, monkeypatch, tmp_path):
+    """A task that exhausts its attempt cap is marked blocked and escalates."""
+    import json as _json
+
+    from sqlalchemy.orm import sessionmaker
+
+    from agent_team.features.board.runtime.loop import driver
+    from agent_team.features.board.runtime.loop import planning_artifacts as A
+    from agent_team.features.board.runtime.loop.driver import GeneratorTurn
+    from agent_team.features.board.runtime.loop.task_graph import run_task_graph
+    from agent_team.features.board.runtime.loop.verdict import LoopVerdict, Verdict
+
+    factory = sessionmaker(bind=db.get_bind(), autoflush=False, future=True)
+    monkeypatch.setattr(driver, "SessionLocal", factory)
+
+    board = boards_repo.create_board(db, name="B", description=None, columns=None, owner_id=None)
+    db.flush()
+    task = tasks_repo.create_task(
+        db, board_id=board.id, title="T", description=None, status="todo",
+        assignee_id=None, labels=None, priority=None, created_by=None,
+    )
+    db.commit()
+
+    ws = str(tmp_path)
+    A.write_text(
+        ws,
+        A.TASKS_PATH,
+        _json.dumps({"version": 1, "tasks": [{"id": "T1", "status": "pending"}]}),
+    )
+
+    async def fake_generator(attempt_id, prompt):
+        return GeneratorTurn(run_id=None, final_text="...", cancelled=False)
+
+    class FailEvaluator:
+        async def evaluate(self, **_kwargs):
+            return Verdict(LoopVerdict.FAIL, missing="not done")
+
+    outcome = await run_task_graph(
+        task_id=task.id,
+        objective="build",
+        workspace_path=ws,
+        run_generator=fake_generator,
+        make_evaluator=lambda _t: FailEvaluator(),
+        max_attempts_per_task=2,
+        final_verify=True,
+    )
+
+    assert outcome.outcome == "needs_human"
+    assert A.task_list(ws)[0]["status"] == "blocked"
+
+
 async def test_run_loop_caps_when_never_passing(db, monkeypatch):
     from sqlalchemy.orm import sessionmaker
 

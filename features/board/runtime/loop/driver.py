@@ -121,6 +121,7 @@ async def run_loop(
     plan_path: str | None = None,
     preamble: str | None = None,
     replan_requested: Callable[[], bool] | None = None,
+    ledger: LoopLedger | None = None,
 ) -> LoopOutcome:
     """Drive a task to a verified result; returns the terminal outcome.
 
@@ -140,7 +141,9 @@ async def run_loop(
     attempt, and at the terminal state — so a caller can publish progress and
     persist the task's loop state.
     """
-    ledger = LoopLedger(budget=budget or LoopBudget())
+    # A caller (e.g. the task-graph orchestrator running one sub-loop per task)
+    # may pass a shared ledger so the resource budget spans every sub-loop.
+    ledger = ledger if ledger is not None else LoopLedger(budget=budget or LoopBudget())
 
     def _publish(
         state: LoopState, *, attempt: int, outcome: str | None = None

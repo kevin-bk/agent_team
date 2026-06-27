@@ -142,6 +142,97 @@ GENERATOR_STRICT_PREAMBLE = (
 )
 
 
+#: Standing instruction prepended to every per-task generator turn in task-graph
+#: execution. Scopes the agent to the single current task and keeps the same
+#: change-request escape hatch as whole-objective strict mode.
+TASK_GRAPH_PREAMBLE = (
+    "You are executing ONE task of an approved plan. Read the approved contract "
+    f"`{A.SPEC_PATH}` and plan `{A.PLAN_PATH}` for context, but implement ONLY "
+    "the current task described above — do not start other tasks or expand "
+    "scope. If the approved plan is wrong, unsafe or insufficient for this task, "
+    f"stop and write `{A.PLAN_CHANGE_REQUEST_PATH}` explaining the problem "
+    "instead of silently changing scope."
+)
+
+
+def _bullets(items: list[str]) -> str:
+    """Render a list as markdown bullets, or a placeholder when empty."""
+    cleaned = [i.strip() for i in items if i and i.strip()]
+    return "\n".join(f"- {i}" for i in cleaned) if cleaned else "- (none specified)"
+
+
+def build_task_objective(task: dict) -> str:
+    """Compose the per-task objective the generator loop works against.
+
+    Carries the single task's contract (objective, files, acceptance, validation)
+    so the generator focuses on exactly this unit of the plan.
+    """
+    tid = str(task.get("id") or "task")
+    title = str(task.get("title") or tid)
+    objective = str(task.get("objective") or "").strip() or "(see acceptance criteria)"
+    files = [str(f) for f in (task.get("files") or [])]
+    acceptance = [str(a) for a in (task.get("acceptance") or [])]
+    validation = [str(v) for v in (task.get("validation") or [])]
+    files_line = ", ".join(files) if files else "(discover from the plan)"
+    return (
+        f"## Current task: {tid} — {title}\n"
+        f"{objective}\n\n"
+        f"Files likely involved: {files_line}\n\n"
+        f"Acceptance criteria (this task is done only when all hold):\n"
+        f"{_bullets(acceptance)}\n\n"
+        f"Validation to run:\n{_bullets(validation)}"
+    )
+
+
+def build_task_evaluator_prompt(
+    *,
+    task: dict,
+    generator_summary: str,
+    verdict_path: str,
+) -> str:
+    """Compose the evaluator turn that grades ONE task against its acceptance."""
+    tid = str(task.get("id") or "task")
+    title = str(task.get("title") or tid)
+    summary = (generator_summary or "").strip() or "(the agent provided no summary)"
+    acceptance = [str(a) for a in (task.get("acceptance") or [])]
+    validation = [str(v) for v in (task.get("validation") or [])]
+    return (
+        "You are an independent verifier grading a SINGLE task of an approved "
+        "plan. Assume it is incomplete until proven otherwise, and verify "
+        "evidence rather than trusting the agent's summary.\n\n"
+        "## Task under review\n"
+        f"- Id: {tid}\n- Title: {title}\n"
+        f"- Agent summary: {summary}\n"
+        f"- Approved contract: `{A.SPEC_PATH}` · plan: `{A.PLAN_PATH}`\n\n"
+        "## Acceptance criteria for THIS task\n"
+        f"{_bullets(acceptance)}\n\n"
+        "## Validation to run yourself\n"
+        f"{_bullets(validation)}\n\n"
+        "## Verify against\n"
+        "- only this task's acceptance criteria (ignore other tasks)\n"
+        "- the actual git diff / current workspace state\n"
+        "- actual test/build/lint output you run yourself\n\n"
+        "## Required output\n"
+        f"Write `{verdict_path}` (schema version 1):\n\n"
+        "{\n"
+        '  "version": 1,\n'
+        '  "verdict": "pass|fail|needs_human",\n'
+        '  "score": 0.0,\n'
+        f'  "checked_tasks": ["{tid}"],\n'
+        '  "commands": [{"cmd": "...", "exit_code": 0, "summary": "..."}],\n'
+        '  "changed_files": ["..."],\n'
+        '  "missing": ["..."],\n'
+        '  "risks": ["..."]\n'
+        "}\n\n"
+        "Use `pass` only when every acceptance criterion for this task is "
+        "provably met. A `pass` with failed commands is invalid unless the "
+        "failures are explicitly non-blocking and explained under risks. Use "
+        "`needs_human` only when a person must decide. Then end your reply with "
+        'a single line of JSON as a fallback: {"verdict": "pass|fail|'
+        'needs_human", "score": 0.0, "missing": "short note"}'
+    )
+
+
 def build_strict_evaluator_prompt(
     *,
     objective: str,

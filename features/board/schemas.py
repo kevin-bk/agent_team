@@ -236,6 +236,16 @@ class LoopAttemptDTO(BaseModel):
     evaluations: list[LoopEvaluationDTO] = Field(default_factory=list)
 
 
+class LoopTaskDTO(BaseModel):
+    """One task from ``TASKS.json`` for the cockpit's task-graph progress view."""
+
+    id: str
+    title: str
+    #: ``pending`` / ``in_progress`` / ``complete`` / ``blocked`` / ``skipped``.
+    status: str
+    depends_on: list[str] = Field(default_factory=list)
+
+
 class LoopInfoDTO(BaseModel):
     """Snapshot of a task's autonomous loop for the cockpit."""
 
@@ -259,6 +269,9 @@ class LoopInfoDTO(BaseModel):
     active_run_id: str | None = None
     active_conversation_id: str | None = None
     attempts: list[LoopAttemptDTO] = Field(default_factory=list)
+    #: Live task-graph progress from ``TASKS.json`` (empty when not executing
+    #: task-by-task). The on-disk file is the source of truth; this mirrors it.
+    tasks: list[LoopTaskDTO] = Field(default_factory=list)
 
 
 class PlanningStartCreate(BaseModel):
@@ -279,6 +292,10 @@ class PlanningRunCreate(BaseModel):
 
     agent_id: str = Field(min_length=1, max_length=255)
     evaluator_id: str = Field(min_length=1, max_length=255)
+    #: Execute task-by-task from ``TASKS.json`` (scheduled by dependency) when a
+    #: valid task list exists; otherwise run one loop over the whole objective.
+    #: ``max_attempts`` then bounds attempts *per task*.
+    task_graph: bool = True
     max_attempts: int = Field(default=10, ge=1, le=100)
     max_tokens: int | None = Field(default=None, ge=0)
     max_cost_usd: float | None = Field(default=None, ge=0)

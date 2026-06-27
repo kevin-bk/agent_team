@@ -251,11 +251,19 @@ class WorkerEvaluator:
     """
 
     def __init__(
-        self, *, task_id: str, evaluator_alias: str, strict: bool = False
+        self,
+        *,
+        task_id: str,
+        evaluator_alias: str,
+        strict: bool = False,
+        graph_task: dict | None = None,
     ) -> None:
         self._task_id = task_id
         self._evaluator_alias = evaluator_alias
         self._strict = strict
+        #: When set (task-graph execution), grade only this single plan task
+        #: rather than the whole SPEC.
+        self._graph_task = graph_task
 
     async def evaluate(
         self,
@@ -265,7 +273,13 @@ class WorkerEvaluator:
         workspace_path: str,
         attempt_id: str | None = None,
     ) -> Verdict | None:
-        if self._strict:
+        if self._strict and self._graph_task is not None:
+            prompt = planning_prompts.build_task_evaluator_prompt(
+                task=self._graph_task,
+                generator_summary=generator_summary,
+                verdict_path=artifacts.EVIDENCE_PATH,
+            )
+        elif self._strict:
             prompt = planning_prompts.build_strict_evaluator_prompt(
                 objective=objective,
                 generator_summary=generator_summary,
@@ -361,37 +375,69 @@ async def run_autonomous_loop(
     budget: LoopBudget | None = None,
     cancel: asyncio.Event | None = None,
     strict: bool = False,
+    task_graph: bool = False,
 ) -> LoopOutcome:
     """Drive a task to a verified result using real generator + evaluator runs.
 
     The plan is drafted and approved before this loop starts: in ``strict`` mode
     the generator is pointed at the approved ``SPEC.md``/``PLAN.md`` and the
-    evaluator grades against them.
+    evaluator grades against them. When ``task_graph`` is set (and a non-empty
+    ``TASKS.json`` exists), execution is scheduled task-by-task from that file
+    instead of running one loop over the whole objective.
     """
     workspace_path, board_id = await asyncio.to_thread(
         _task_workspace_and_board, task_id
     )
+    generator = BackendGenerator(task_id=task_id, agent_alias=agent_alias)
+    on_status = _make_status_sink(board_id)
+    # In strict mode the generator can pause execution by writing the
+    # plan-change-request marker; detect it after each turn.
+    replan = (
+        (lambda: artifacts.exists(workspace_path, artifacts.PLAN_CHANGE_REQUEST_PATH))
+        if strict
+        else None
+    )
+
+    if strict and task_graph and artifacts.task_list(workspace_path):
+        from agent_team.features.board.runtime.loop.task_graph import run_task_graph
+
+        def make_evaluator(graph_task: dict | None) -> WorkerEvaluator:
+            return WorkerEvaluator(
+                task_id=task_id,
+                evaluator_alias=evaluator_alias,
+                strict=True,
+                graph_task=graph_task,
+            )
+
+        return await run_task_graph(
+            task_id=task_id,
+            objective=objective,
+            workspace_path=workspace_path,
+            run_generator=generator,
+            make_evaluator=make_evaluator,
+            max_attempts_per_task=max_attempts,
+            budget=budget,
+            cancel=cancel,
+            on_status=on_status,
+            final_verify=True,
+            replan_requested=replan,
+        )
+
     return await run_loop(
         task_id=task_id,
         objective=objective,
         workspace_path=workspace_path,
-        run_generator=BackendGenerator(task_id=task_id, agent_alias=agent_alias),
+        run_generator=generator,
         evaluator=WorkerEvaluator(
             task_id=task_id, evaluator_alias=evaluator_alias, strict=strict
         ),
         max_attempts=max_attempts,
         budget=budget,
         cancel=cancel,
-        on_status=_make_status_sink(board_id),
+        on_status=on_status,
         plan_path=artifacts.PLAN_PATH if strict else None,
         preamble=planning_prompts.GENERATOR_STRICT_PREAMBLE if strict else None,
-        # In strict mode the generator can pause the loop by writing the
-        # plan-change-request marker; detect it after each turn.
-        replan_requested=(
-            (lambda: artifacts.exists(workspace_path, artifacts.PLAN_CHANGE_REQUEST_PATH))
-            if strict
-            else None
-        ),
+        replan_requested=replan,
     )
 
 
@@ -404,6 +450,7 @@ def start_autonomous_loop(
     max_attempts: int = 10,
     budget: LoopBudget | None = None,
     strict: bool = False,
+    task_graph: bool = False,
 ) -> asyncio.Task:
     """Launch the loop as a background task on the running event loop.
 
@@ -427,6 +474,7 @@ def start_autonomous_loop(
                 budget=budget,
                 cancel=cancel,
                 strict=strict,
+                task_graph=task_graph,
             )
             logger.info(
                 "autonomous loop finished task=%s outcome=%s attempts=%s",

@@ -392,6 +392,8 @@ export interface PlanningStartBody {
 export interface PlanningRunBody {
   agent_id: string;
   evaluator_id: string;
+  /** Execute task-by-task from TASKS.json (default true when a valid list exists). */
+  task_graph?: boolean;
   max_attempts?: number;
   max_tokens?: number | null;
   max_cost_usd?: number | null;
@@ -784,6 +786,23 @@ export interface LoopInfoDTO {
   active_run_id?: string | null;
   active_conversation_id?: string | null;
   attempts: LoopAttemptDTO[];
+  /** Live task-graph progress from TASKS.json (empty unless executing task-by-task). */
+  tasks?: LoopTaskDTO[];
+}
+
+export type LoopTaskStatus =
+  | "pending"
+  | "in_progress"
+  | "complete"
+  | "blocked"
+  | "skipped";
+
+/** One task from TASKS.json for the cockpit's task-graph progress view. */
+export interface LoopTaskDTO {
+  id: string;
+  title: string;
+  status: LoopTaskStatus;
+  depends_on: string[];
 }
 
 export interface CommentAttachment {

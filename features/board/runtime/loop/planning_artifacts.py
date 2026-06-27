@@ -174,6 +174,100 @@ def missing_required(workspace_path: str) -> list[str]:
     return [p for p in REQUIRED_FOR_APPROVAL if not exists(workspace_path, p)]
 
 
+#: Valid lifecycle values for a task in ``TASKS.json``.
+TASK_STATUSES: frozenset[str] = frozenset(
+    {"pending", "in_progress", "complete", "blocked", "skipped"}
+)
+#: Statuses that satisfy a dependency (a dependant may start once its deps reach
+#: one of these). ``skipped`` counts as satisfied so a manually skipped task does
+#: not wedge the graph.
+_DEP_SATISFIED: frozenset[str] = frozenset({"complete", "skipped"})
+
+
+def read_tasks(workspace_path: str) -> dict | None:
+    """Parse ``TASKS.json`` as a dict, or ``None`` when missing/blank/invalid."""
+    data = read_json(workspace_path, TASKS_PATH)
+    return data if isinstance(data, dict) else None
+
+
+def task_list(workspace_path: str) -> list[dict]:
+    """Normalised task rows from ``TASKS.json`` for scheduling and the cockpit.
+
+    Returns ``[]`` when the file is absent or malformed; each row carries the
+    fields the scheduler and generator need (id/title/status/depends_on plus the
+    per-task contract).
+    """
+    data = read_tasks(workspace_path)
+    if data is None:
+        return []
+    tasks = data.get("tasks")
+    if not isinstance(tasks, list):
+        return []
+    rows: list[dict] = []
+    for t in tasks:
+        if not isinstance(t, dict):
+            continue
+        tid = t.get("id")
+        if not isinstance(tid, str) or not tid.strip():
+            continue
+        status = t.get("status", "pending")
+        rows.append(
+            {
+                "id": tid,
+                "title": str(t.get("title") or tid),
+                "status": status if status in TASK_STATUSES else "pending",
+                "depends_on": [str(d) for d in (t.get("depends_on") or [])],
+                "objective": str(t.get("objective") or ""),
+                "files": [str(f) for f in (t.get("files") or [])],
+                "acceptance": [str(a) for a in (t.get("acceptance") or [])],
+                "validation": [str(v) for v in (t.get("validation") or [])],
+                "risk": str(t.get("risk") or ""),
+            }
+        )
+    return rows
+
+
+def next_runnable_task(rows: list[dict]) -> dict | None:
+    """First ``pending`` task whose dependencies are all satisfied, else ``None``.
+
+    Preserves document order, so the planner's ordering is the tie-breaker.
+    """
+    done = {r["id"] for r in rows if r["status"] in _DEP_SATISFIED}
+    for r in rows:
+        if r["status"] != "pending":
+            continue
+        if all(dep in done for dep in r["depends_on"]):
+            return r
+    return None
+
+
+def set_task_status(workspace_path: str, task_id: str, status: str) -> bool:
+    """Persist a new ``status`` for one task in ``TASKS.json``.
+
+    Returns ``True`` when the task was found and written. The on-disk file stays
+    the single source of truth for graph progress, so the cockpit and a resumed
+    run both see the same state.
+    """
+    if status not in TASK_STATUSES:
+        raise ArtifactError(f"invalid task status: {status!r}")
+    data = read_tasks(workspace_path)
+    if data is None:
+        return False
+    tasks = data.get("tasks")
+    if not isinstance(tasks, list):
+        return False
+    found = False
+    for t in tasks:
+        if isinstance(t, dict) and t.get("id") == task_id:
+            t["status"] = status
+            found = True
+            break
+    if not found:
+        return False
+    write_text(workspace_path, TASKS_PATH, json.dumps(data, ensure_ascii=False, indent=2))
+    return True
+
+
 def validate_tasks(data: object) -> list[str]:
     """Validate a ``TASKS.json`` document; return a list of error strings.
 
@@ -190,7 +284,7 @@ def validate_tasks(data: object) -> list[str]:
         return errors + ["TASKS.json: 'tasks' must be a list"]
 
     ids: set[str] = set()
-    valid_status = {"pending", "in_progress", "complete", "blocked", "skipped"}
+    valid_status = TASK_STATUSES
     deps: dict[str, list[str]] = {}
     for i, task in enumerate(tasks):
         where = f"TASKS.json: task[{i}]"

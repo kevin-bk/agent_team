@@ -188,6 +188,92 @@ def test_verdict_from_evidence_none_when_absent(tmp_path):
     assert _verdict_from_evidence(str(tmp_path)) is None
 
 
+# ── task-graph scheduling helpers ────────────────────────────────────────────
+def _write_tasks(ws, tasks):
+    A.write_text(ws, A.TASKS_PATH, json.dumps({"version": 1, "tasks": tasks}))
+
+
+def test_task_list_parses_and_normalises(tmp_path):
+    ws = str(tmp_path)
+    _write_tasks(
+        ws,
+        [
+            {"id": "T1", "title": "First", "status": "pending", "acceptance": ["a"]},
+            {"id": "T2", "depends_on": ["T1"]},  # missing title/status default
+        ],
+    )
+    rows = A.task_list(ws)
+    assert [r["id"] for r in rows] == ["T1", "T2"]
+    assert rows[1]["title"] == "T2"  # falls back to id
+    assert rows[1]["status"] == "pending"
+    assert rows[1]["depends_on"] == ["T1"]
+    assert rows[0]["acceptance"] == ["a"]
+    assert A.task_list(str(tmp_path / "empty")) == []
+
+
+def test_next_runnable_respects_dependencies(tmp_path):
+    ws = str(tmp_path)
+    _write_tasks(
+        ws,
+        [
+            {"id": "T1", "status": "pending", "depends_on": []},
+            {"id": "T2", "status": "pending", "depends_on": ["T1"]},
+        ],
+    )
+    rows = A.task_list(ws)
+    assert A.next_runnable_task(rows)["id"] == "T1"  # T2 blocked on T1
+
+    A.set_task_status(ws, "T1", "complete")
+    rows = A.task_list(ws)
+    assert A.next_runnable_task(rows)["id"] == "T2"  # now unblocked
+
+    A.set_task_status(ws, "T2", "complete")
+    assert A.next_runnable_task(A.task_list(ws)) is None  # nothing left
+
+
+def test_set_task_status_roundtrip_and_validation(tmp_path):
+    ws = str(tmp_path)
+    _write_tasks(ws, [{"id": "T1", "status": "pending"}])
+    assert A.set_task_status(ws, "T1", "in_progress") is True
+    assert A.task_list(ws)[0]["status"] == "in_progress"
+    assert A.set_task_status(ws, "TX", "complete") is False  # unknown id
+    with pytest.raises(A.ArtifactError):
+        A.set_task_status(ws, "T1", "weird")
+
+
+def test_skipped_dependency_does_not_wedge_graph(tmp_path):
+    ws = str(tmp_path)
+    _write_tasks(
+        ws,
+        [
+            {"id": "T1", "status": "skipped", "depends_on": []},
+            {"id": "T2", "status": "pending", "depends_on": ["T1"]},
+        ],
+    )
+    assert A.next_runnable_task(A.task_list(ws))["id"] == "T2"
+
+
+def test_build_task_prompts_scope_to_single_task():
+    task = {
+        "id": "T3",
+        "title": "Wire the API",
+        "objective": "Add endpoint",
+        "files": ["api.py"],
+        "acceptance": ["returns 200"],
+        "validation": ["pytest test_api.py"],
+    }
+    obj = P.build_task_objective(task)
+    assert "T3" in obj and "Wire the API" in obj
+    assert "returns 200" in obj and "pytest test_api.py" in obj
+
+    ev = P.build_task_evaluator_prompt(
+        task=task, generator_summary="done", verdict_path=A.EVIDENCE_PATH
+    )
+    assert "T3" in ev and "returns 200" in ev
+    assert A.EVIDENCE_PATH in ev
+    assert A.PLAN_CHANGE_REQUEST_PATH in P.TASK_GRAPH_PREAMBLE
+
+
 # ── plan-change-request outcome mapping ──────────────────────────────────────
 def test_plan_change_outcome_maps_to_change_requested_state():
     from agent_team.features.board.runtime.loop.driver import OUTCOME_PLAN_CHANGE

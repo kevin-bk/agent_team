@@ -52,6 +52,7 @@ from agent_team.features.board.schemas import (
     LoopAttemptDTO,
     LoopEvaluationDTO,
     LoopInfoDTO,
+    LoopTaskDTO,
     MentionCreate,
     MentionResponse,
     PlanningArtifactDTO,
@@ -1354,6 +1355,17 @@ async def get_task_loop(task_id: str, request: Request, db: Session = Depends(ge
         db, task_id=task_id, role=RUN_ROLE_PLANNER
     )
     active_run = runs_repo.get_active_loop_run(db, task_id=task_id)
+    from agent_team.features.board.runtime.loop import planning_artifacts as artifacts
+
+    graph_tasks = [
+        LoopTaskDTO(
+            id=t["id"],
+            title=t["title"],
+            status=t["status"],
+            depends_on=t["depends_on"],
+        )
+        for t in artifacts.task_list(task.workspace_path)
+    ]
     return LoopInfoDTO(
         task_id=task_id,
         execution_mode=task.execution_mode or "chat",
@@ -1395,6 +1407,7 @@ async def get_task_loop(task_id: str, request: Request, db: Session = Depends(ge
             )
             for a in attempts
         ],
+        tasks=graph_tasks,
     )
 
 
@@ -1719,6 +1732,7 @@ async def approve_and_run_task_planning(
             max_wall_seconds=payload.max_wall_seconds,
         ),
         strict=True,
+        task_graph=payload.task_graph,
     )
     return {"ok": True, "task_id": task_id}
 
