@@ -383,6 +383,13 @@ def test_append_clarifications_folds_answers_into_spec(tmp_path):
     assert A.append_clarifications(ws, [], note="  ") is False
 
 
+def test_plan_revised_note_points_at_contract():
+    # The note must name the contract files so the resumed agent re-reads them.
+    assert A.SPEC_PATH in P.PLAN_REVISED_NOTE
+    assert A.PLAN_PATH in P.PLAN_REVISED_NOTE
+    assert "revised" in P.PLAN_REVISED_NOTE.lower()
+
+
 def test_strict_evaluator_prompts_reference_clarifications():
     ev = P.build_strict_evaluator_prompt(
         objective="x", generator_summary="y", verdict_path=A.EVIDENCE_PATH

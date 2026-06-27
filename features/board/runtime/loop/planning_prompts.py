@@ -17,7 +17,9 @@ from agent_team.features.board.runtime.loop import planning_artifacts as A
 ASK_QUESTIONS_INSTRUCTION = (
     "If a decision would materially change the work and you cannot pick a safe "
     f"default, do NOT guess. Write `{A.QUESTIONS_PATH}` (schema version 1) and "
-    "stop, instead of proceeding:\n\n"
+    "then END YOUR TURN IMMEDIATELY — do not make any further edits or run other "
+    "steps in this turn; wait for the human's answer before doing anything "
+    "else:\n\n"
     "{\n"
     '  "version": 1,\n'
     '  "questions": [\n'
@@ -162,12 +164,26 @@ GENERATOR_STRICT_PREAMBLE = (
     "This task runs under an approved plan. Before editing, read the approved "
     f"contract in `{A.SPEC_PATH}` and the plan in `{A.PLAN_PATH}`. Implement the "
     "plan exactly; keep changes within the approved scope. If you discover the "
-    "approved plan is wrong, unsafe or insufficient, stop and write "
+    "approved plan is wrong, unsafe or insufficient, write "
     f"`{A.PLAN_CHANGE_REQUEST_PATH}` explaining the failed assumption instead of "
     "silently changing scope. If instead you only need a decision from the human "
-    f"to proceed, stop and write `{A.QUESTIONS_PATH}` with blocking questions "
+    f"to proceed, write `{A.QUESTIONS_PATH}` with blocking questions "
     "(schema version 1: a list of {id, question, reason, blocking, options}) "
-    "rather than guessing."
+    "rather than guessing. In either case, END YOUR TURN IMMEDIATELY after "
+    "writing the file — do not make further edits or run other steps in this "
+    "turn; wait for the human."
+)
+
+
+#: Resume note injected into the generator preamble when execution restarts
+#: *after a plan change* (the human revised the contract in response to the
+#: agent's change request). Makes the revision explicit so the agent re-reads
+#: the updated plan instead of re-filing the same change request.
+PLAN_REVISED_NOTE = (
+    "The approved plan was revised by a human in response to your earlier change "
+    f"request. The contract has changed — re-read `{A.SPEC_PATH}` and "
+    f"`{A.PLAN_PATH}` and proceed with the updated plan. Do not re-file the same "
+    "change request unless a genuinely new blocking problem remains."
 )
 
 
@@ -179,10 +195,12 @@ TASK_GRAPH_PREAMBLE = (
     f"`{A.SPEC_PATH}` and plan `{A.PLAN_PATH}` for context, but implement ONLY "
     "the current task described above — do not start other tasks or expand "
     "scope. If the approved plan is wrong, unsafe or insufficient for this task, "
-    f"stop and write `{A.PLAN_CHANGE_REQUEST_PATH}` explaining the problem "
+    f"write `{A.PLAN_CHANGE_REQUEST_PATH}` explaining the problem "
     "instead of silently changing scope. If you only need a decision from the "
-    f"human to proceed, stop and write `{A.QUESTIONS_PATH}` with blocking "
-    "questions (schema version 1) rather than guessing."
+    f"human to proceed, write `{A.QUESTIONS_PATH}` with blocking "
+    "questions (schema version 1) rather than guessing. In either case, END "
+    "YOUR TURN IMMEDIATELY after writing the file — do not make further edits "
+    "or run other steps in this turn; wait for the human."
 )
 
 

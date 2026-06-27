@@ -1721,9 +1721,16 @@ async def approve_and_run_task_planning(
     task = ctx.task
 
     from agent_team.features.board.runtime.loop.service import is_loop_running
+    from agent_team.features.board.runtime.loop.status import LoopState
 
     if is_loop_running(task_id):
         return bad_request("A loop is already running for this task.")
+
+    # Approving out of a plan-change pause means the human revised the contract;
+    # tell the resumed generator explicitly so it re-reads the updated plan
+    # instead of re-filing the same change request (captured before _approve_plan
+    # clears the state).
+    was_plan_change = task.loop_state == LoopState.PLAN_CHANGE_REQUESTED.value
 
     approve_err = _approve_plan(ctx, db)
     if approve_err:
@@ -1745,6 +1752,7 @@ async def approve_and_run_task_planning(
     db.commit()
 
     from agent_team.features.board.runtime.dispatch import capture_main_loop
+    from agent_team.features.board.runtime.loop import planning_prompts
     from agent_team.features.board.runtime.loop.budget import LoopBudget
     from agent_team.features.board.runtime.loop.service import start_autonomous_loop
 
@@ -1762,6 +1770,7 @@ async def approve_and_run_task_planning(
         ),
         strict=True,
         task_graph=payload.task_graph,
+        resume_note=planning_prompts.PLAN_REVISED_NOTE if was_plan_change else None,
     )
     return {"ok": True, "task_id": task_id}
 
