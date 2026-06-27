@@ -23,12 +23,26 @@ from enum import StrEnum
 
 
 class LoopState(StrEnum):
-    """Persisted lifecycle state of a task's autonomous loop."""
+    """Persisted lifecycle state of a task's autonomous loop.
+
+    This is the single canonical public lifecycle for the cockpit. The planning
+    states sit *before* execution: a strict-planning task drafts artifacts
+    (``PLANNING``), stops for human review (``WAITING_PLAN_APPROVAL``), is
+    approved (``PLAN_APPROVED``), then runs (``RUNNING``).
+    """
 
     PLANNING = "planning"
+    #: Planning artifacts exist and the system has stopped, waiting for a human
+    #: to approve them or request changes. No process is kept alive here.
+    WAITING_PLAN_APPROVAL = "waiting_plan_approval"
+    #: A human approved the plan; execution has not started yet.
+    PLAN_APPROVED = "plan_approved"
     RUNNING = "running"
     COMPLETE = "complete"
     WAITING_FOR_HUMAN = "waiting_for_human"
+    #: Execution discovered the approved plan is wrong/unsafe and paused for a
+    #: human to revise it (the marker artifact gates continuation).
+    PLAN_CHANGE_REQUESTED = "plan_change_requested"
     FAILED = "failed"
     CANCELLED = "cancelled"
 

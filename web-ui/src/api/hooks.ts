@@ -11,6 +11,8 @@ import type {
   CreateCronBody,
   CreateTaskBody,
   LoopStartBody,
+  PlanningRunBody,
+  PlanningStartBody,
   MoveTaskBody,
   PatchAutopilotBody,
   PatchBoardBody,
@@ -62,6 +64,7 @@ export const qk = {
   taskComments: (taskId: string) => ["task-comments", taskId] as const,
   taskActivity: (taskId: string) => ["task-activity", taskId] as const,
   taskLoop: (taskId: string) => ["task-loop", taskId] as const,
+  taskPlanning: (taskId: string) => ["task-planning", taskId] as const,
   users: (q: string) => ["users", q] as const,
   repos: ["repos"] as const,
   boardRepos: (id: string) => ["board-repos", id] as const,
@@ -687,6 +690,15 @@ export function useTaskLoop(taskId: string | undefined, enabled = true) {
     queryKey: qk.taskLoop(taskId ?? "_"),
     queryFn: () => client.getTaskLoop(taskId as string),
     enabled: !!taskId && enabled,
+    // While a loop is live (or the planner is drafting), poll so the active run
+    // / attempts / verdicts (and therefore the embedded transcript that follows
+    // the running role) refresh as the goal advances between planner, generator
+    // and critic.
+    refetchInterval: (query) =>
+      query.state.data?.is_running ||
+      query.state.data?.loop_state === "planning"
+        ? 4000
+        : false,
   });
 }
 
@@ -720,6 +732,75 @@ export function useAckTaskLoop(boardId: string, taskId: string) {
       void qc.invalidateQueries({ queryKey: qk.taskLoop(taskId) });
       void qc.invalidateQueries({ queryKey: qk.boardTasks(boardId) });
     },
+  });
+}
+
+export function useTaskPlanning(taskId: string | undefined, enabled = true) {
+  const { client } = useApi();
+  return useQuery({
+    queryKey: qk.taskPlanning(taskId ?? "_"),
+    queryFn: () => client.getTaskPlanning(taskId as string),
+    enabled: !!taskId && enabled,
+    // Poll while the planner is drafting so artifacts appear as they land.
+    refetchInterval: (query) =>
+      query.state.data?.is_planning ? 3000 : false,
+  });
+}
+
+export function useStartTaskPlanning(boardId: string, taskId: string) {
+  const { client } = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: PlanningStartBody) =>
+      client.startTaskPlanning(taskId, body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: qk.taskPlanning(taskId) });
+      void qc.invalidateQueries({ queryKey: qk.taskLoop(taskId) });
+      void qc.invalidateQueries({ queryKey: qk.boardTasks(boardId) });
+    },
+  });
+}
+
+export function useApproveTaskPlanning(taskId: string) {
+  const { client } = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => client.approveTaskPlanning(taskId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.taskPlanning(taskId) }),
+  });
+}
+
+export function useRequestTaskPlanningChanges(taskId: string) {
+  const { client } = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (feedback?: string) =>
+      client.requestTaskPlanningChanges(taskId, feedback),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.taskPlanning(taskId) }),
+  });
+}
+
+export function useApproveAndRunTaskPlanning(boardId: string, taskId: string) {
+  const { client } = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: PlanningRunBody) =>
+      client.approveAndRunTaskPlanning(taskId, body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: qk.taskPlanning(taskId) });
+      void qc.invalidateQueries({ queryKey: qk.taskLoop(taskId) });
+      void qc.invalidateQueries({ queryKey: qk.boardTasks(boardId) });
+    },
+  });
+}
+
+export function useEditTaskPlanningArtifact(taskId: string) {
+  const { client } = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { name: string; content: string; etag?: string | null }) =>
+      client.editTaskPlanningArtifact(taskId, v.name, v.content, v.etag),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.taskPlanning(taskId) }),
   });
 }
 

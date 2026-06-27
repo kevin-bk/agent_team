@@ -28,6 +28,8 @@ from agent_team.features.board.repositories.tasks import get_task
 from agent_team.features.board.runtime import registry
 from agent_team.features.board.runtime.backend import get_run_backend
 from agent_team.features.board.runtime.events import RUN_CANCELLED, RUN_DONE
+from agent_team.features.board.runtime.loop import planning_artifacts as artifacts
+from agent_team.features.board.runtime.loop import planning_prompts
 from agent_team.features.board.runtime.loop.budget import LoopBudget
 from agent_team.features.board.runtime.loop.driver import (
     GeneratorTurn,
@@ -40,7 +42,7 @@ from agent_team.features.board.runtime.loop.evaluator import (
 )
 from agent_team.features.board.runtime.loop.planner import build_plan_prompt
 from agent_team.features.board.runtime.loop.status import LoopStatus
-from agent_team.features.board.runtime.loop.verdict import parse_verdict
+from agent_team.features.board.runtime.loop.verdict import LoopVerdict, parse_verdict
 from core.database.base import SessionLocal
 
 logger = logging.getLogger(__name__)
@@ -251,33 +253,95 @@ def _read_verdict_file(workspace_path: str, rel_path: str) -> Verdict | None:
     return parse_verdict(text)
 
 
-class WorkerEvaluator:
-    """Grades an attempt by running a separate evaluator agent over the task."""
+def _verdict_from_evidence(workspace_path: str) -> Verdict | None:
+    """Map a strict evaluator's ``EVIDENCE.json`` artifact onto a verdict.
 
-    def __init__(self, *, task_id: str, evaluator_alias: str) -> None:
+    The durable evidence file (kept on disk, overwritten each evaluation) is the
+    authoritative output in strict mode. ``missing``/``risks`` lists are joined
+    into the controller's free-text ``missing`` field, and the whole document is
+    carried in ``evidence`` so the cockpit can render it.
+    """
+    data = artifacts.read_json(workspace_path, artifacts.EVIDENCE_PATH)
+    if not isinstance(data, dict):
+        return None
+    verdict = _coerce_loop_verdict(data.get("verdict"))
+    if verdict is None:
+        return None
+    try:
+        score = min(1.0, max(0.0, float(data.get("score", 0.0) or 0.0)))
+    except (TypeError, ValueError):
+        score = 0.0
+    missing_items = data.get("missing")
+    missing = (
+        "; ".join(str(m) for m in missing_items)
+        if isinstance(missing_items, list)
+        else str(missing_items or "")
+    ).strip()
+    return Verdict(verdict=verdict, score=score, missing=missing, evidence=data)
+
+
+def _coerce_loop_verdict(value: object) -> LoopVerdict | None:
+    text = str(value or "").strip().lower()
+    for member in LoopVerdict:
+        if text == member.value:
+            return member
+    return None
+
+
+class WorkerEvaluator:
+    """Grades an attempt by running a separate evaluator agent over the task.
+
+    In ``strict`` mode the evaluator works from the approved planning artifacts
+    and writes a durable ``EVIDENCE.json``; otherwise it uses the lightweight
+    verdict-file contract.
+    """
+
+    def __init__(
+        self, *, task_id: str, evaluator_alias: str, strict: bool = False
+    ) -> None:
         self._task_id = task_id
         self._evaluator_alias = evaluator_alias
+        self._strict = strict
 
     async def evaluate(
-        self, *, objective: str, generator_summary: str, workspace_path: str
+        self,
+        *,
+        objective: str,
+        generator_summary: str,
+        workspace_path: str,
+        attempt_id: str | None = None,
     ) -> Verdict | None:
-        # Unique per evaluation so a leftover file from a prior attempt can never
-        # be read back as this attempt's verdict.
-        rel_path = f"{_VERDICT_DIR}/verdict-{uuid.uuid4().hex}.json"
-        prompt = build_evaluator_prompt(
-            objective, generator_summary, verdict_path=rel_path
-        )
+        if self._strict:
+            prompt = planning_prompts.build_strict_evaluator_prompt(
+                objective=objective,
+                generator_summary=generator_summary,
+                verdict_path=artifacts.EVIDENCE_PATH,
+            )
+        else:
+            # Unique per evaluation so a leftover file from a prior attempt can
+            # never be read back as this attempt's verdict.
+            rel_path = f"{_VERDICT_DIR}/verdict-{uuid.uuid4().hex}.json"
+            prompt = build_evaluator_prompt(
+                objective, generator_summary, verdict_path=rel_path
+            )
         run_id = await asyncio.to_thread(
             _create_loop_run,
             task_id=self._task_id,
             agent_alias=self._evaluator_alias,
             prompt=prompt,
             role=RUN_ROLE_EVALUATOR,
-            attempt_id=None,  # evaluator runs are graded out-of-band, not an attempt
+            # Tag the critic run with the attempt it judges so the cockpit can
+            # surface the critic's verification transcript next to the verdict.
+            attempt_id=attempt_id,
         )
         result = await _drive_to_completion(run_id)
         if result.status != RUN_DONE:
             return None  # could not evaluate → fail-open
+        if self._strict:
+            verdict = await asyncio.to_thread(_verdict_from_evidence, workspace_path)
+            if verdict is not None:
+                return verdict
+            return parse_verdict(result.final_answer)
         # Prefer the file the evaluator wrote (robust for noisy CLI stdout), then
         # fall back to parsing the JSON it echoed in its reply.
         verdict = await asyncio.to_thread(
@@ -343,18 +407,22 @@ async def run_autonomous_loop(
     max_attempts: int = 10,
     budget: LoopBudget | None = None,
     cancel: asyncio.Event | None = None,
+    strict: bool = False,
 ) -> LoopOutcome:
     """Drive a task to a verified result using real generator + evaluator runs.
 
     When ``planner_alias`` is given, an optional planning turn runs first and
-    writes a structured plan the generator works from.
+    writes a structured plan the generator works from. In ``strict`` mode the
+    plan was already drafted and approved before this loop started: the
+    generator is pointed at the approved ``SPEC.md``/``PLAN.md`` and the
+    evaluator grades against them (no in-loop planner runs).
     """
     workspace_path, board_id = await asyncio.to_thread(
         _task_workspace_and_board, task_id
     )
     planner = (
         WorkerPlanner(task_id=task_id, planner_alias=planner_alias)
-        if planner_alias
+        if planner_alias and not strict
         else None
     )
     return await run_loop(
@@ -362,12 +430,16 @@ async def run_autonomous_loop(
         objective=objective,
         workspace_path=workspace_path,
         run_generator=BackendGenerator(task_id=task_id, agent_alias=agent_alias),
-        evaluator=WorkerEvaluator(task_id=task_id, evaluator_alias=evaluator_alias),
+        evaluator=WorkerEvaluator(
+            task_id=task_id, evaluator_alias=evaluator_alias, strict=strict
+        ),
         planner=planner,
         max_attempts=max_attempts,
         budget=budget,
         cancel=cancel,
         on_status=_make_status_sink(board_id),
+        plan_path=artifacts.PLAN_PATH if strict else None,
+        preamble=planning_prompts.GENERATOR_STRICT_PREAMBLE if strict else None,
     )
 
 
@@ -380,6 +452,7 @@ def start_autonomous_loop(
     planner_alias: str | None = None,
     max_attempts: int = 10,
     budget: LoopBudget | None = None,
+    strict: bool = False,
 ) -> asyncio.Task:
     """Launch the loop as a background task on the running event loop.
 
@@ -403,6 +476,7 @@ def start_autonomous_loop(
                 max_attempts=max_attempts,
                 budget=budget,
                 cancel=cancel,
+                strict=strict,
             )
             logger.info(
                 "autonomous loop finished task=%s outcome=%s attempts=%s",

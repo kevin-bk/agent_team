@@ -22,6 +22,9 @@ import {
   type JiraPreviewResponse,
   type LoopInfoDTO,
   type LoopStartBody,
+  type PlanningInfoDTO,
+  type PlanningRunBody,
+  type PlanningStartBody,
   type Me,
   type MentionBody,
   type MentionResponse,
@@ -420,6 +423,50 @@ export class ApiClient {
     return this.request<{ ok: boolean; task_id: string }>(
       `/api/tasks/${taskId}/loop/ack`,
       { method: "POST" },
+    );
+  }
+
+  // ── strict planning (draft → approve → run) ──────────────────────
+  getTaskPlanning(taskId: string) {
+    return this.request<PlanningInfoDTO>(`/api/tasks/${taskId}/planning`);
+  }
+  startTaskPlanning(taskId: string, body: PlanningStartBody) {
+    return this.request<{ ok: boolean; task_id: string }>(
+      `/api/tasks/${taskId}/planning/start`,
+      { method: "POST", body: JSON.stringify(body) },
+    );
+  }
+  approveTaskPlanning(taskId: string) {
+    return this.request<PlanningInfoDTO>(
+      `/api/tasks/${taskId}/planning/approve`,
+      { method: "POST" },
+    );
+  }
+  requestTaskPlanningChanges(taskId: string, feedback?: string) {
+    return this.request<{ ok: boolean; task_id: string }>(
+      `/api/tasks/${taskId}/planning/request-changes`,
+      { method: "POST", body: JSON.stringify({ objective: feedback ?? null }) },
+    );
+  }
+  approveAndRunTaskPlanning(taskId: string, body: PlanningRunBody) {
+    return this.request<{ ok: boolean; task_id: string }>(
+      `/api/tasks/${taskId}/planning/approve-and-run`,
+      { method: "POST", body: JSON.stringify(body) },
+    );
+  }
+  editTaskPlanningArtifact(
+    taskId: string,
+    name: string,
+    content: string,
+    etag?: string | null,
+  ) {
+    return this.request<{ ok: boolean; path: string; etag: string }>(
+      `/api/tasks/${taskId}/planning/artifacts/${encodeURIComponent(name)}`,
+      {
+        method: "PUT",
+        body: JSON.stringify({ content }),
+        headers: etag ? { "If-Match": etag } : undefined,
+      },
     );
   }
   setTyping(taskId: string, agentId: string, state: "start" | "stop") {

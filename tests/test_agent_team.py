@@ -1430,7 +1430,9 @@ async def test_run_loop_runs_planning_phase_first(db, monkeypatch):
         return GeneratorTurn(run_id=None, final_text="done", cancelled=False)
 
     class PassEvaluator:
-        async def evaluate(self, *, objective, generator_summary, workspace_path):
+        async def evaluate(
+            self, *, objective, generator_summary, workspace_path, attempt_id=None
+        ):
             return Verdict(LoopVerdict.PASS, score=1.0)
 
     planner = FakePlanner()
@@ -1482,7 +1484,9 @@ async def test_run_loop_planning_failopen(db, monkeypatch):
         return GeneratorTurn(run_id=None, final_text="done", cancelled=False)
 
     class PassEvaluator:
-        async def evaluate(self, *, objective, generator_summary, workspace_path):
+        async def evaluate(
+            self, *, objective, generator_summary, workspace_path, attempt_id=None
+        ):
             return Verdict(LoopVerdict.PASS, score=1.0)
 
     outcome = await run_loop(
@@ -1531,7 +1535,9 @@ async def test_run_loop_drives_attempts_until_pass(db, monkeypatch):
         def __init__(self):
             self.calls = 0
 
-        async def evaluate(self, *, objective, generator_summary, workspace_path):
+        async def evaluate(
+            self, *, objective, generator_summary, workspace_path, attempt_id=None
+        ):
             self.calls += 1
             # Fail the first attempt, pass the second.
             if self.calls == 1:
@@ -1580,7 +1586,9 @@ async def test_run_loop_caps_when_never_passing(db, monkeypatch):
         return GeneratorTurn(run_id=None, final_text="...", cancelled=False)
 
     class BrokenEvaluator:
-        async def evaluate(self, *, objective, generator_summary, workspace_path):
+        async def evaluate(
+            self, *, objective, generator_summary, workspace_path, attempt_id=None
+        ):
             raise RuntimeError("judge exploded")
 
     outcome = await run_loop(
@@ -1649,7 +1657,9 @@ async def test_run_loop_stops_on_token_budget(db, monkeypatch):
         return GeneratorTurn(run_id=None, final_text="...", cancelled=False, tokens=80)
 
     class AlwaysFail:
-        async def evaluate(self, *, objective, generator_summary, workspace_path):
+        async def evaluate(
+            self, *, objective, generator_summary, workspace_path, attempt_id=None
+        ):
             return Verdict(LoopVerdict.FAIL, missing="more")
 
     statuses: list = []

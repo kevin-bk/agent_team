@@ -344,11 +344,59 @@ export interface TaskDTO {
 /** Persisted lifecycle state of a task's autonomous loop. */
 export type LoopState =
   | "planning"
+  | "waiting_plan_approval"
+  | "plan_approved"
   | "running"
   | "complete"
   | "waiting_for_human"
+  | "plan_change_requested"
   | "failed"
   | "cancelled";
+
+/** How a task's plan is produced before autonomous execution. */
+export type PlanningMode = "legacy_plan" | "strict_plan";
+
+/** One planning artifact's on-disk metadata (+ text for readable files). */
+export interface PlanningArtifactDTO {
+  path: string;
+  exists: boolean;
+  etag?: string | null;
+  size?: number;
+  updated_at?: string | null;
+  content?: string | null;
+}
+
+/** Snapshot of a task's strict planning phase for the cockpit. */
+export interface PlanningInfoDTO {
+  task_id: string;
+  loop_state?: LoopState | null;
+  planning_mode: PlanningMode;
+  objective?: string | null;
+  is_planning: boolean;
+  approved: boolean;
+  approved_by?: string | null;
+  approved_at?: string | null;
+  review_verdict?: string | null;
+  last_error?: string | null;
+  artifacts: PlanningArtifactDTO[];
+}
+
+/** Body to start the strict planning phase. */
+export interface PlanningStartBody {
+  planner_id: string;
+  reviewer_id?: string | null;
+  objective?: string | null;
+}
+
+/** Body to approve the plan and start strict execution. */
+export interface PlanningRunBody {
+  agent_id: string;
+  evaluator_id: string;
+  max_attempts?: number;
+  max_tokens?: number | null;
+  max_cost_usd?: number | null;
+  max_wall_seconds?: number | null;
+}
 
 export interface CreateBoardBody {
   name: string;
@@ -713,6 +761,8 @@ export interface LoopEvaluationDTO {
   missing: string;
   /** Free-form evidence the critic recorded (e.g. `{ checks: "..." }`). */
   evidence?: Record<string, unknown>;
+  /** Conversation holding the critic run's verification transcript. */
+  conversation_id?: string | null;
   created_at?: string | null;
 }
 
@@ -728,6 +778,9 @@ export interface LoopAttemptDTO {
   run_id?: string | null;
   /** Conversation holding the iteration's transcript. */
   conversation_id?: string | null;
+  /** Critic run that graded this iteration + its fresh verification transcript. */
+  critic_run_id?: string | null;
+  critic_conversation_id?: string | null;
   evaluations: LoopEvaluationDTO[];
 }
 
@@ -740,6 +793,12 @@ export interface LoopInfoDTO {
   is_running: boolean;
   /** Conversation with the generator's continuous transcript across iterations. */
   generator_conversation_id?: string | null;
+  /** The planning phase's transcript conversation + run (null if no plan phase). */
+  planner_conversation_id?: string | null;
+  planner_run_id?: string | null;
+  /** The loop run streaming right now (any role) + its conversation. */
+  active_run_id?: string | null;
+  active_conversation_id?: string | null;
   attempts: LoopAttemptDTO[];
 }
 

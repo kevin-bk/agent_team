@@ -115,6 +115,8 @@ async def run_loop(
     budget: LoopBudget | None = None,
     cancel: asyncio.Event | None = None,
     on_status: OnStatusFn | None = None,
+    plan_path: str | None = None,
+    preamble: str | None = None,
 ) -> LoopOutcome:
     """Drive a task to a verified result; returns the terminal outcome.
 
@@ -157,8 +159,9 @@ async def run_loop(
             logger.debug("loop status emit failed", exc_info=True)
 
     # Optional planning phase. Hand the plan to the generator by reference (the
-    # opening prompt points at the file) rather than inlining it.
-    plan_path: str | None = None
+    # opening prompt points at the file) rather than inlining it. A caller may
+    # also pass ``plan_path`` directly (strict planning, where the plan was
+    # approved before this loop started); the in-loop planner overrides it.
     if planner is not None:
         if cancel is not None and cancel.is_set():
             _publish(LoopState.CANCELLED, attempt=0, outcome=OUTCOME_CANCELLED)
@@ -173,7 +176,7 @@ async def run_loop(
             plan_path = None
 
     controller = LoopController(
-        objective, max_attempts=max_attempts, plan_path=plan_path
+        objective, max_attempts=max_attempts, plan_path=plan_path, preamble=preamble
     )
     prompt = controller.start()
 
@@ -204,6 +207,7 @@ async def run_loop(
                 objective=objective,
                 generator_summary=turn.final_text,
                 workspace_path=workspace_path,
+                attempt_id=attempt_id,
             )
         except Exception:  # noqa: BLE001 — fail-open: a broken judge must not wedge
             logger.warning("loop evaluation failed for task %s", task_id, exc_info=True)

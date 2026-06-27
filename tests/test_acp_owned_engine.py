@@ -145,7 +145,8 @@ def test_flag_selects_engine(monkeypatch):
     legacy_run, _ = acp_cli._load_direct_cli()
     assert legacy_run.__module__ == "agent_team.features.board.runtime.direct_acp"
 
-    # Default (unset) is the legacy engine.
+    # Default (unset) is the owned engine — it supports structured plan updates
+    # and per-agent MCP pass-through that the strict workflow relies on.
     monkeypatch.delenv("AGENT_TEAM_ACP_ENGINE", raising=False)
     default_run, _ = acp_cli._load_direct_cli()
-    assert default_run.__module__ == "agent_team.features.board.runtime.direct_acp"
+    assert default_run.__module__ == "agent_team.features.board.runtime.acp.run"

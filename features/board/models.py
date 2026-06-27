@@ -56,6 +56,15 @@ TASK_EXEC_MODE_CHAT = "chat"
 TASK_EXEC_MODE_AUTONOMOUS = "autonomous"
 TASK_EXEC_MODES = frozenset({TASK_EXEC_MODE_CHAT, TASK_EXEC_MODE_AUTONOMOUS})
 
+#: How a task's plan is produced before autonomous execution.
+#: ``legacy_plan`` = the lightweight best-effort planner (writes PLAN.md inside
+#: the loop, fails open to the raw objective). ``strict_plan`` = a contract-
+#: driven phase that drafts durable artifacts and requires human approval before
+#: any execution starts.
+PLANNING_MODE_LEGACY = "legacy_plan"
+PLANNING_MODE_STRICT = "strict_plan"
+PLANNING_MODES = frozenset({PLANNING_MODE_LEGACY, PLANNING_MODE_STRICT})
+
 #: Why a run was executed (its stage in the autonomous loop). A plain chat/mention
 #: run is ``chat``; the loop tags its runs ``planner`` / ``generator`` /
 #: ``evaluator``. Stored in a plain VARCHAR(16) (no CHECK), so new roles need no
@@ -277,6 +286,17 @@ class AgentTeamTask(Base):
     #: Lifecycle state of the autonomous loop (running / complete /
     #: waiting_for_human / failed / cancelled). Null for plain chat tasks.
     loop_state: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    #: How this task's plan is produced (``legacy_plan`` or ``strict_plan``).
+    #: Defaults to legacy so existing tasks keep their current behaviour.
+    planning_mode: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=PLANNING_MODE_LEGACY
+    )
+    #: Backend-owned planning metadata (approval flag/by/at, approved artifact
+    #: etags, last reviewer verdict, last error). Authoritative and never written
+    #: by an agent — distinct from the artifact files an agent produces on disk.
+    planning_meta_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="{}"
+    )
     #: Jira-style issue type (task/story/bug/epic/subtask/agent); UI-driven.
     task_type: Mapped[str] = mapped_column(String(32), nullable=False, default="task")
     status: Mapped[str] = mapped_column(String(64), nullable=False, default="todo", index=True)
@@ -336,6 +356,14 @@ class AgentTeamTask(Base):
         except (json.JSONDecodeError, TypeError):
             return []
         return [str(item) for item in value] if isinstance(value, list) else []
+
+    def planning_meta(self) -> dict:
+        """Return decoded planning metadata (approval, etags, verdict, error)."""
+        try:
+            value = json.loads(self.planning_meta_json or "{}")
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        return value if isinstance(value, dict) else {}
 
 
 class AgentTeamConversation(Base):

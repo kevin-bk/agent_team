@@ -55,6 +55,7 @@ class LoopController:
         *,
         max_attempts: int = 10,
         plan_path: str | None = None,
+        preamble: str | None = None,
     ) -> None:
         self._objective = (objective or "").strip()
         self._max_attempts = max(1, max_attempts)
@@ -63,6 +64,11 @@ class LoopController:
         #: set, prompts point the generator at the file (handoff by reference)
         #: instead of relying on the inline objective alone.
         self._plan_path = (plan_path or "").strip() or None
+        #: Optional instruction block prepended to the opening prompt. Strict
+        #: planning uses it to point the generator at the approved contract and
+        #: forbid silent scope expansion; when set it replaces the plan
+        #: reference in the opening (the follow-up still cites the plan).
+        self._preamble = (preamble or "").strip() or None
 
     @property
     def attempts(self) -> int:
@@ -71,12 +77,15 @@ class LoopController:
     def start(self) -> str:
         """Return the opening generator prompt (the objective + a clear ask)."""
         objective = self._objective or "Complete the task described in the workspace."
-        plan_ref = (
-            f"A detailed implementation plan has been written to `{self._plan_path}`. "
-            "Read it first and implement every step in it.\n\n"
-            if self._plan_path
-            else ""
-        )
+        if self._preamble:
+            plan_ref = f"{self._preamble}\n\n"
+        elif self._plan_path:
+            plan_ref = (
+                f"A detailed implementation plan has been written to `{self._plan_path}`. "
+                "Read it first and implement every step in it.\n\n"
+            )
+        else:
+            plan_ref = ""
         return (
             f"{objective}\n\n"
             f"{plan_ref}"

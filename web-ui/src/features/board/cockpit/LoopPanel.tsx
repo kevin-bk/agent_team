@@ -8,33 +8,34 @@ import {
   ChevronRight,
   CircleSlash,
   Coins,
+  FileText,
   Gauge,
   Hash,
   ListChecks,
   Loader2,
-  Play,
   RotateCcw,
-  Sparkles,
 } from "@/components/icons";
 import {
   useAckTaskLoop,
   useCancelTaskLoop,
-  useStartTaskLoop,
   useTaskLoop,
+  useTaskPlanning,
 } from "@/api/hooks";
 import type {
   AgentDTO,
   LoopAttemptDTO,
+  LoopInfoDTO,
   LoopState,
   TaskDTO,
 } from "@/api/types";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { SelectMenu } from "@/components/ui/select-menu";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { useBoardEventListener } from "../BoardEventsContext";
+import { GoalStepper, type GoalStage } from "./GoalStepper";
 import { GoalTranscript } from "./GoalTranscript";
+import { PlanStage, ReviewStage } from "./PlanningPanel";
 import {
   LOOP_OUTCOME_LABEL,
   LOOP_STATE_META,
@@ -75,17 +76,26 @@ function useLoopLiveStatus(taskId: string): [LiveStatus | null, () => void] {
   return [status, clear];
 }
 
-const TERMINAL_STATES: LoopState[] = [
-  "complete",
-  "failed",
-  "cancelled",
-  "waiting_for_human",
+const REVIEW_STATES: LoopState[] = [
+  "waiting_plan_approval",
+  "plan_approved",
+  "plan_change_requested",
 ];
 
+/** Map the persisted loop state (plus a restart intent) to one wizard stage. */
+function stageFor(state: LoopState | null, restarting: boolean): GoalStage {
+  if (state === "planning") return "plan";
+  if (state && REVIEW_STATES.includes(state)) return "review";
+  if (state === "running") return "run";
+  // Terminal or unset: a restart sends the user back to drafting a new plan.
+  if (restarting || !state) return "plan";
+  return "result";
+}
+
 /**
- * The autonomous-loop cockpit for a task: start a generator+evaluator loop,
- * watch its live progress, review a stop that needs a human, and inspect the
- * attempt/evaluation history.
+ * The goal cockpit for a task, as one linear wizard: draft a plan, review and
+ * approve it, run it, then read the verdict. Every goal is planned first —
+ * there is no run-without-a-plan path.
  */
 export function LoopPanel({
   task,
@@ -99,15 +109,18 @@ export function LoopPanel({
   canEdit: boolean;
 }) {
   const loop = useTaskLoop(task.id);
+  const planning = useTaskPlanning(task.id);
   const [live, clearLive] = useLoopLiveStatus(task.id);
-  const start = useStartTaskLoop(task.board_id, task.id);
   const cancel = useCancelTaskLoop(task.id);
   const ack = useAckTaskLoop(task.board_id, task.id);
+  const [restarting, setRestarting] = useState(false);
 
   const info = loop.data;
-  // Prefer the live SSE state (freshest) over the persisted one.
-  const state: LoopState | null = live?.state ?? info?.loop_state ?? null;
+  const pinfo = planning.data;
+  const state: LoopState | null =
+    live?.state ?? info?.loop_state ?? pinfo?.loop_state ?? null;
   const running = state === "running" || info?.is_running === true;
+  const drafting = !!pinfo?.is_planning || state === "planning";
   const attempts = info?.attempts ?? [];
   const latestEval = useMemo(() => {
     for (let i = attempts.length - 1; i >= 0; i--) {
@@ -117,15 +130,18 @@ export function LoopPanel({
     return null;
   }, [attempts]);
 
-  const [showForm, setShowForm] = useState(false);
-  // Show the start form by default only for a task that has never run a loop.
-  const hasHistory = attempts.length > 0 || !!state;
-  const formOpen = showForm || (!hasHistory && canEdit);
+  // Once a fresh goal actually begins, drop the restart intent so the result
+  // stage shows again when it finishes.
+  useEffect(() => {
+    if (state === "planning" || state === "running") setRestarting(false);
+  }, [state]);
 
-  if (loop.isLoading) {
+  const stage = stageFor(state, restarting);
+
+  if (loop.isLoading && planning.isLoading) {
     return (
       <div className="flex flex-1 items-center justify-center gap-2 text-sm text-muted-foreground">
-        <Spinner className="h-4 w-4" /> Loading loop…
+        <Spinner className="h-4 w-4" /> Loading goal…
       </div>
     );
   }
@@ -133,110 +149,90 @@ export function LoopPanel({
   return (
     <div className="min-h-0 flex-1 overflow-auto scrollbar-thin">
       <div className="mx-auto max-w-3xl space-y-4 px-4 py-4">
-        {/* Live status banner */}
-        {state && <StatusBanner state={state} live={live} info={info} />}
+        <GoalStepper current={stage} />
 
-        {/* Human-review / terminal actions */}
-        {state &&
-          TERMINAL_STATES.includes(state) &&
-          !running &&
-          canEdit && (
-            <ReviewActions
-              state={state}
-              missing={latestEval?.missing ?? ""}
-              onRunAgain={() => setShowForm(true)}
-              onAck={() => {
-                ack.mutate(undefined, {
-                  // The ack clears server state without emitting a loop.status
-                  // event, so drop the live SSE snapshot too — otherwise the
-                  // banner would linger until the task is reopened.
-                  onSuccess: () => clearLive(),
-                  onError: (err) =>
-                    toast.error(
-                      err instanceof Error ? err.message : "Could not acknowledge",
-                    ),
-                });
-              }}
-              acking={ack.isPending}
-            />
-          )}
-
-        {/* Running → offer cancel */}
-        {running && canEdit && (
-          <div className="flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2">
-            <Loader2 className="h-4 w-4 animate-spin text-sky-500" />
-            <span className="text-[13px] text-muted-foreground">
-              Working on the goal autonomously…
-            </span>
-            <Button
-              variant="outline"
-              size="sm"
-              className="ml-auto"
-              onClick={() =>
-                cancel.mutate(undefined, {
-                  onSuccess: (r) =>
-                    r.ok
-                      ? toast.success("Stopping after the current iteration")
-                      : toast.message("No running goal to stop"),
-                })
-              }
-              disabled={cancel.isPending}
-            >
-              <CircleSlash className="h-4 w-4" /> Stop
-            </Button>
-          </div>
-        )}
-
-        {/* Start form */}
-        {canEdit && formOpen && !running && (
-          <StartForm
+        {stage === "plan" && (
+          <PlanStage
             task={task}
             agents={agents}
             cliAgents={cliAgents}
-            pending={start.isPending}
-            onCancel={hasHistory ? () => setShowForm(false) : undefined}
-            onStart={(body) => {
-              start.mutate(body, {
-                onSuccess: () => {
-                  setShowForm(false);
-                  toast.success("Goal started");
-                },
-                onError: (err) =>
-                  toast.error(
-                    err instanceof Error ? err.message : "Could not start the goal",
-                  ),
-              });
-            }}
+            canEdit={canEdit}
+            drafting={drafting}
+            lastError={pinfo?.last_error}
           />
         )}
 
-        {/* Idle with history but form closed → quick start button */}
-        {canEdit && !formOpen && !running && hasHistory && (
-          <Button variant="outline" size="sm" onClick={() => setShowForm(true)}>
-            <Play className="h-4 w-4" /> Start a new goal
-          </Button>
-        )}
-
-        {/* The agent's full work transcript across iterations (live + history) */}
-        {info?.generator_conversation_id && (
-          <GoalWork
-            taskId={task.id}
-            conversationId={info.generator_conversation_id}
-            activeRunId={
-              attempts.find((a) => a.status === "running")?.run_id ?? null
-            }
-            running={running}
+        {stage === "review" && pinfo && (
+          <ReviewStage
+            task={task}
+            agents={agents}
+            cliAgents={cliAgents}
+            canEdit={canEdit}
+            info={pinfo}
           />
         )}
 
-        {/* Attempt / evaluation timeline */}
+        {stage === "run" && state && (
+          <>
+            <StatusBanner state={state} live={live} info={info} />
+            {running && canEdit && (
+              <div className="flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2">
+                <Loader2 className="h-4 w-4 animate-spin text-sky-500" />
+                <span className="text-[13px] text-muted-foreground">
+                  Working on the goal autonomously…
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="ml-auto"
+                  onClick={() =>
+                    cancel.mutate(undefined, {
+                      onSuccess: (r) =>
+                        r.ok
+                          ? toast.success("Stopping after the current iteration")
+                          : toast.message("No running goal to stop"),
+                    })
+                  }
+                  disabled={cancel.isPending}
+                >
+                  <CircleSlash className="h-4 w-4" /> Stop
+                </Button>
+              </div>
+            )}
+          </>
+        )}
+
+        {stage === "result" && state && (
+          <>
+            <StatusBanner state={state} live={live} info={info} />
+            {canEdit && (
+              <ReviewActions
+                state={state}
+                missing={latestEval?.missing ?? ""}
+                onRunAgain={() => setRestarting(true)}
+                onAck={() => {
+                  ack.mutate(undefined, {
+                    // The ack clears server state without emitting a loop.status
+                    // event, so drop the live SSE snapshot too — otherwise the
+                    // banner would linger until the task is reopened.
+                    onSuccess: () => clearLive(),
+                    onError: (err) =>
+                      toast.error(
+                        err instanceof Error ? err.message : "Could not acknowledge",
+                      ),
+                  });
+                }}
+                acking={ack.isPending}
+              />
+            )}
+          </>
+        )}
+
+        {/* Full work transcripts for every role (plan / build / critic) */}
+        {info && <GoalActivity taskId={task.id} info={info} running={running} />}
+
+        {/* Iteration / evaluation timeline (run & result stages) */}
         {attempts.length > 0 && <AttemptTimeline attempts={attempts} />}
-
-        {!canEdit && !state && (
-          <p className="text-[13px] text-muted-foreground">
-            No goal has run on this task yet.
-          </p>
-        )}
       </div>
     </div>
   );
@@ -333,15 +329,15 @@ function ReviewActions({
           {needsHuman && !missing && (
             <p className="mt-1 text-[12.5px] text-muted-foreground">
               The goal stopped at a guardrail (iteration or resource cap) or
-              asked for review. Inspect the latest iteration below, then continue
-              or close.
+              asked for review. Inspect the latest iteration below, then plan a
+              new goal or close.
             </p>
           )}
         </div>
       </div>
       <div className="mt-3 flex items-center gap-2">
         <Button variant="outline" size="sm" onClick={onRunAgain}>
-          <RotateCcw className="h-4 w-4" /> Run again
+          <RotateCcw className="h-4 w-4" /> Plan a new goal
         </Button>
         <Button variant="ghost" size="sm" onClick={onAck} disabled={acking}>
           Acknowledge & close
@@ -351,278 +347,124 @@ function ReviewActions({
   );
 }
 
-function StartForm({
-  task,
-  agents,
-  cliAgents,
-  pending,
-  onStart,
-  onCancel,
-}: {
-  task: TaskDTO;
-  agents: AgentDTO[];
-  cliAgents: AgentDTO[];
-  pending: boolean;
-  onStart: (body: {
-    agent_id: string;
-    evaluator_id: string;
-    objective: string;
-    planner_id: string | null;
-    max_attempts: number;
-    max_tokens: number | null;
-    max_cost_usd: number | null;
-    max_wall_seconds: number | null;
-  }) => void;
-  onCancel?: () => void;
-}) {
-  // Both roles accept any staffed agent or direct CLI. A direct CLI makes a
-  // strong evaluator: it can run the project's tests/lint/build in the
-  // workspace to verify completion (not just read a transcript), and the
-  // verdict parser tolerates a JSON object embedded anywhere in its output.
-  const generatorOptions = useMemo(
-    () => [...agents, ...cliAgents],
-    [agents, cliAgents],
-  );
-  const evaluatorOptions = generatorOptions;
-
-  const [generator, setGenerator] = useState(generatorOptions[0]?.id ?? "");
-  // Default the evaluator to an agent distinct from the generator when possible
-  // (independent grading), else the first available option.
-  const [evaluator, setEvaluator] = useState(
-    evaluatorOptions.find((a) => a.id !== generatorOptions[0]?.id)?.id ??
-      evaluatorOptions[0]?.id ??
-      "",
-  );
-  const [objective, setObjective] = useState(
-    task.objective || task.description || "",
-  );
-  // Optional planning phase: an agent analyses the task and writes a plan the
-  // generator then works from. Defaults to the generator agent.
-  const [planFirst, setPlanFirst] = useState(false);
-  const [planner, setPlanner] = useState(generatorOptions[0]?.id ?? "");
-  const [maxAttempts, setMaxAttempts] = useState("10");
-  const [maxTokens, setMaxTokens] = useState("");
-  const [maxCost, setMaxCost] = useState("");
-  const [maxMinutes, setMaxMinutes] = useState("");
-
-  const toOpt = (a: AgentDTO) => ({
-    value: a.id,
-    label: a.display_name,
-    icon: <Bot className="h-3.5 w-3.5" />,
-    description: a.id.startsWith("cli:") ? "Direct CLI" : a.model ?? "agent",
-  });
-
-  const canStart = !!generator && !!evaluator && !!objective.trim() && !pending;
-  const num = (s: string): number | null => {
-    const n = Number(s.replace(/[, ]/g, ""));
-    return Number.isFinite(n) && n > 0 ? n : null;
-  };
-
-  return (
-    <div className="rounded-lg border border-border bg-card p-3.5">
-      <div className="mb-3 flex items-center gap-1.5">
-        <Sparkles className="h-4 w-4 text-primary" />
-        <span className="text-[13px] font-semibold text-foreground">
-          Start a goal
-        </span>
-      </div>
-      <p className="mb-3 text-[12px] text-muted-foreground">
-        The agent works the task; an independent critic grades each iteration
-        and the goal repeats until it is verified complete or a guardrail routes
-        it to you for review.
-      </p>
-
-      <div className="grid grid-cols-2 gap-3">
-        <Field label="Agent">
-          <SelectMenu
-            value={generator}
-            onChange={setGenerator}
-            options={generatorOptions.map(toOpt)}
-            placeholder="Pick an agent"
-          />
-        </Field>
-        <Field label="Critic">
-          <SelectMenu
-            value={evaluator}
-            onChange={setEvaluator}
-            options={evaluatorOptions.map(toOpt)}
-            placeholder="Pick a critic"
-          />
-        </Field>
-      </div>
-
-      <Field label="Objective" className="mt-3">
-        <textarea
-          value={objective}
-          onChange={(e) => setObjective(e.target.value)}
-          rows={3}
-          placeholder="What does 'done' mean? Include the acceptance criteria the evaluator should verify."
-          className="block w-full resize-y rounded border border-input bg-card px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-[#4C9AFF] focus:outline-none"
-        />
-      </Field>
-
-      {/* Optional planning phase */}
-      <div className="mt-3 rounded-lg border border-border bg-surface-1/40 p-3">
-        <label className="flex cursor-pointer items-start gap-2">
-          <input
-            type="checkbox"
-            checked={planFirst}
-            onChange={(e) => setPlanFirst(e.target.checked)}
-            className="mt-0.5 h-4 w-4 rounded border-input accent-primary"
-          />
-          <span className="min-w-0">
-            <span className="flex items-center gap-1.5 text-[13px] font-semibold text-foreground">
-              <ListChecks className="h-3.5 w-3.5 text-indigo-500" />
-              Plan first
-            </span>
-            <span className="mt-0.5 block text-[12px] text-muted-foreground">
-              A planner agent analyses the task and writes a structured{" "}
-              <code className="font-mono text-[11px]">PLAN.md</code> before any
-              work; the generator then implements that plan.
-            </span>
-          </span>
-        </label>
-        {planFirst && (
-          <Field label="Planner agent" className="mt-3">
-            <SelectMenu
-              value={planner}
-              onChange={setPlanner}
-              options={generatorOptions.map(toOpt)}
-              placeholder="Pick a planner"
-            />
-          </Field>
-        )}
-      </div>
-
-      <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <Field label="Max iterations">
-          <Input
-            value={maxAttempts}
-            onChange={(e) => setMaxAttempts(e.target.value)}
-            inputMode="numeric"
-          />
-        </Field>
-        <Field label="Max tokens" hint="optional">
-          <Input
-            value={maxTokens}
-            onChange={(e) => setMaxTokens(e.target.value)}
-            inputMode="numeric"
-            placeholder="∞"
-          />
-        </Field>
-        <Field label="Max cost $" hint="optional">
-          <Input
-            value={maxCost}
-            onChange={(e) => setMaxCost(e.target.value)}
-            inputMode="decimal"
-            placeholder="∞"
-          />
-        </Field>
-        <Field label="Max minutes" hint="optional">
-          <Input
-            value={maxMinutes}
-            onChange={(e) => setMaxMinutes(e.target.value)}
-            inputMode="numeric"
-            placeholder="∞"
-          />
-        </Field>
-      </div>
-
-      <div className="mt-4 flex items-center gap-2">
-        <Button
-          size="sm"
-          disabled={!canStart}
-          onClick={() =>
-            onStart({
-              agent_id: generator,
-              evaluator_id: evaluator,
-              objective: objective.trim(),
-              planner_id: planFirst ? planner || generator : null,
-              max_attempts: Math.max(1, Math.min(100, Number(maxAttempts) || 10)),
-              max_tokens: num(maxTokens),
-              max_cost_usd: num(maxCost),
-              max_wall_seconds: maxMinutes ? (num(maxMinutes) ?? 0) * 60 : null,
-            })
-          }
-        >
-          {pending ? (
-            <Spinner className="h-4 w-4" />
-          ) : (
-            <Play className="h-4 w-4" />
-          )}
-          Start goal
-        </Button>
-        {onCancel && (
-          <Button variant="ghost" size="sm" onClick={onCancel}>
-            Cancel
-          </Button>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function Field({
-  label,
-  hint,
-  className,
-  children,
-}: {
+interface ActivitySource {
+  id: string;
   label: string;
-  hint?: string;
-  className?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <label className={cn("block", className)}>
-      <span className="mb-1 flex items-center gap-1 text-[12px] font-semibold uppercase tracking-[0.04em] text-muted-foreground">
-        {label}
-        {hint && <span className="font-normal normal-case opacity-70">· {hint}</span>}
-      </span>
-      {children}
-    </label>
-  );
+  conversationId: string;
 }
 
 /**
- * Collapsible wrapper around the agent's work transcript. Open by default so a
- * human sees what the agent is doing; its own scroll region keeps the live
- * auto-scroll contained instead of hijacking the whole panel.
+ * The work transcripts for every loop role, in one place. A source picker
+ * switches between the planning phase, the agent's continuous build transcript
+ * and each iteration's critic verification — so nothing the agents did is
+ * hidden, and whichever role is running streams live.
  */
-function GoalWork({
+function GoalActivity({
   taskId,
-  conversationId,
-  activeRunId,
+  info,
   running,
 }: {
   taskId: string;
-  conversationId: string;
-  activeRunId: string | null;
+  info: LoopInfoDTO;
   running: boolean;
 }) {
   const [open, setOpen] = useState(true);
+
+  const sources = useMemo<ActivitySource[]>(() => {
+    const out: ActivitySource[] = [];
+    if (info.planner_conversation_id) {
+      out.push({
+        id: "plan",
+        label: "Plan",
+        conversationId: info.planner_conversation_id,
+      });
+    }
+    if (info.generator_conversation_id) {
+      out.push({
+        id: "build",
+        label: "Build · agent",
+        conversationId: info.generator_conversation_id,
+      });
+    }
+    for (const a of info.attempts) {
+      // The critic runs in its own fresh conversation per iteration; prefer the
+      // attempt's critic run, falling back to the verdict's conversation.
+      const conv =
+        a.critic_conversation_id ??
+        a.evaluations.find((e) => e.conversation_id)?.conversation_id;
+      if (conv) {
+        out.push({
+          id: `critic-${a.id}`,
+          label: `Critic · #${a.attempt_no}`,
+          conversationId: conv,
+        });
+      }
+    }
+    return out;
+  }, [info]);
+
+  // Default to whatever role is streaming now, else the build transcript.
+  const liveSourceId = useMemo(() => {
+    if (!running || !info.active_conversation_id) return null;
+    return (
+      sources.find((s) => s.conversationId === info.active_conversation_id)?.id ??
+      null
+    );
+  }, [running, info.active_conversation_id, sources]);
+
+  const [selected, setSelected] = useState<string | null>(null);
+  // Follow the live role as it advances (plan → build → critic), unless the
+  // user has manually picked a source to inspect.
+  const [pinned, setPinned] = useState(false);
+  useEffect(() => {
+    if (!pinned && liveSourceId) setSelected(liveSourceId);
+  }, [liveSourceId, pinned]);
+
+  if (sources.length === 0) return null;
+  const current =
+    sources.find((s) => s.id === selected) ??
+    sources.find((s) => s.id === "build") ??
+    sources[0];
+  const isLive =
+    running && info.active_conversation_id === current.conversationId;
+
   return (
     <div className="rounded-lg border border-border bg-card">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-1.5 px-3 py-2 text-[13px] font-semibold text-foreground"
-      >
-        {open ? (
-          <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
-        ) : (
-          <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
+      <div className="flex items-center gap-2 px-3 py-2">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="flex items-center gap-1.5 text-[13px] font-semibold text-foreground"
+        >
+          {open ? (
+            <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
+          ) : (
+            <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
+          )}
+          <Bot className="h-3.5 w-3.5 text-muted-foreground" /> Activity
+        </button>
+        {isLive && <Loader2 className="h-3 w-3 animate-spin text-sky-500" />}
+        {open && sources.length > 1 && (
+          <div className="ml-auto w-44">
+            <SelectMenu
+              value={current.id}
+              onChange={(v) => {
+                setSelected(v);
+                setPinned(true);
+              }}
+              options={sources.map((s) => ({ value: s.id, label: s.label }))}
+            />
+          </div>
         )}
-        <Bot className="h-3.5 w-3.5 text-muted-foreground" /> Agent work
-        {running && <Loader2 className="h-3 w-3 animate-spin text-sky-500" />}
-      </button>
+      </div>
       {open && (
         <div className="max-h-[60vh] overflow-auto border-t border-border scrollbar-thin">
           <GoalTranscript
+            key={current.conversationId}
             taskId={taskId}
-            conversationId={conversationId}
-            activeRunId={activeRunId}
-            running={running}
+            conversationId={current.conversationId}
+            activeRunId={isLive ? (info.active_run_id ?? null) : null}
+            running={isLive}
           />
         </div>
       )}
@@ -664,9 +506,7 @@ function AttemptTimeline({ attempts }: { attempts: LoopAttemptDTO[] }) {
                     {vMeta.label}
                   </span>
                 )}
-                {verdict && (
-                  <ScoreStars score={verdict.score} />
-                )}
+                {verdict && <ScoreStars score={verdict.score} />}
                 {a.outcome && (
                   <span className="ml-auto text-[11px] font-medium text-muted-foreground">
                     {LOOP_OUTCOME_LABEL[a.outcome] ?? a.outcome}
@@ -711,6 +551,7 @@ function VerdictDetail({
   verdict: import("@/api/types").LoopEvaluationDTO;
 }) {
   const [open, setOpen] = useState(false);
+  const [rawOpen, setRawOpen] = useState(false);
   const evidence = verdict.evidence ?? {};
   const evidenceRows = useMemo(
     () =>
@@ -718,6 +559,23 @@ function VerdictDetail({
         .map(([k, v]) => [k, stringifyEvidence(v)] as const)
         .filter(([, v]) => v.trim().length > 0),
     [evidence],
+  );
+  // Reconstruct the canonical verdict JSON the critic wrote to its verdict file.
+  // The file is consumed and deleted after grading, but its content is persisted
+  // (verdict / score / missing / evidence), so this is a faithful equivalent.
+  const verdictJson = useMemo(
+    () =>
+      JSON.stringify(
+        {
+          verdict: verdict.verdict,
+          score: verdict.score,
+          missing: verdict.missing,
+          evidence,
+        },
+        null,
+        2,
+      ),
+    [verdict.verdict, verdict.score, verdict.missing, evidence],
   );
   return (
     <>
@@ -752,6 +610,21 @@ function VerdictDetail({
           )}
         </div>
       )}
+      <div className="mt-1.5">
+        <button
+          type="button"
+          onClick={() => setRawOpen((v) => !v)}
+          className="inline-flex items-center gap-1 text-[11px] font-medium text-muted-foreground hover:text-foreground"
+        >
+          <FileText className="h-3 w-3" />
+          {rawOpen ? "Hide verdict JSON" : "Show verdict JSON"}
+        </button>
+        {rawOpen && (
+          <pre className="mt-1.5 max-h-72 overflow-auto rounded-md border border-dashed border-border bg-surface-1/40 p-2.5 font-mono text-[11px] leading-relaxed text-foreground/90">
+            {verdictJson}
+          </pre>
+        )}
+      </div>
     </>
   );
 }

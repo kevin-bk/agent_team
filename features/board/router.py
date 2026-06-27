@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
+from datetime import UTC
 from pathlib import Path
 
 from fastapi import APIRouter, Body, Depends, File, Request, UploadFile
@@ -54,6 +55,11 @@ from agent_team.features.board.schemas import (
     LoopStartCreate,
     MentionCreate,
     MentionResponse,
+    PlanningArtifactDTO,
+    PlanningArtifactEdit,
+    PlanningInfoDTO,
+    PlanningRunCreate,
+    PlanningStartCreate,
     SkillPackDTO,
     TaskCreate,
     TaskMove,
@@ -1335,7 +1341,11 @@ async def get_task_loop(task_id: str, request: Request, db: Session = Depends(ge
         return err
     task = ctx.task
 
-    from agent_team.features.board.models import RUN_ROLE_GENERATOR
+    from agent_team.features.board.models import (
+        RUN_ROLE_EVALUATOR,
+        RUN_ROLE_GENERATOR,
+        RUN_ROLE_PLANNER,
+    )
     from agent_team.features.board.repositories import attempts as attempts_repo
     from agent_team.features.board.repositories import runs as runs_repo
     from agent_team.features.board.runtime.loop.service import is_loop_running
@@ -1350,8 +1360,19 @@ async def get_task_loop(task_id: str, request: Request, db: Session = Depends(ge
         )
         for a in attempts
     }
+    # The critic (evaluator) runs in its own fresh conversation per iteration; it
+    # is tagged with the attempt it graded, so its verification transcript can be
+    # shown next to the verdict rather than the generator's build transcript.
+    crit_run_by_attempt = {
+        a.id: runs_repo.get_attempt_run(
+            db, attempt_id=a.id, role=RUN_ROLE_EVALUATOR
+        )
+        for a in attempts
+    }
+
     by_attempt: dict[str, list] = {}
     for ev in evaluations:
+        crit = crit_run_by_attempt.get(ev.attempt_id)
         by_attempt.setdefault(ev.attempt_id, []).append(
             LoopEvaluationDTO(
                 id=ev.id,
@@ -1361,6 +1382,7 @@ async def get_task_loop(task_id: str, request: Request, db: Session = Depends(ge
                 score=ev.score,
                 missing=ev.missing,
                 evidence=ev.evidence(),
+                conversation_id=crit.conversation_id if crit is not None else None,
                 created_at=ev.created_at.isoformat() if ev.created_at else None,
             )
         )
@@ -1375,6 +1397,10 @@ async def get_task_loop(task_id: str, request: Request, db: Session = Depends(ge
         ),
         None,
     )
+    planner_run = runs_repo.get_latest_task_run_by_role(
+        db, task_id=task_id, role=RUN_ROLE_PLANNER
+    )
+    active_run = runs_repo.get_active_loop_run(db, task_id=task_id)
     return LoopInfoDTO(
         task_id=task_id,
         execution_mode=task.execution_mode or "chat",
@@ -1382,6 +1408,14 @@ async def get_task_loop(task_id: str, request: Request, db: Session = Depends(ge
         objective=task.objective,
         is_running=is_loop_running(task_id),
         generator_conversation_id=generator_conversation_id,
+        planner_conversation_id=(
+            planner_run.conversation_id if planner_run is not None else None
+        ),
+        planner_run_id=planner_run.id if planner_run is not None else None,
+        active_run_id=active_run.id if active_run is not None else None,
+        active_conversation_id=(
+            active_run.conversation_id if active_run is not None else None
+        ),
         attempts=[
             LoopAttemptDTO(
                 id=a.id,
@@ -1394,6 +1428,14 @@ async def get_task_loop(task_id: str, request: Request, db: Session = Depends(ge
                 conversation_id=(
                     gr.conversation_id
                     if (gr := gen_run_by_attempt.get(a.id))
+                    else None
+                ),
+                critic_run_id=(
+                    cr.id if (cr := crit_run_by_attempt.get(a.id)) else None
+                ),
+                critic_conversation_id=(
+                    cr.conversation_id
+                    if (cr := crit_run_by_attempt.get(a.id))
                     else None
                 ),
                 evaluations=by_attempt.get(a.id, []),
@@ -1430,6 +1472,287 @@ async def ack_task_loop(task_id: str, request: Request, db: Session = Depends(ge
         return bad_request("The loop is still running — cancel it first.")
     ctx.task.loop_state = None
     db.commit()
+    return {"ok": True, "task_id": task_id}
+
+
+def _planning_info(task) -> PlanningInfoDTO:
+    """Build the planning snapshot DTO from a task + its on-disk artifacts."""
+    from agent_team.features.board.runtime.loop import planning_artifacts as artifacts
+    from agent_team.features.board.runtime.loop.planning import is_planning_running
+
+    meta = task.planning_meta()
+    dtos: list[PlanningArtifactDTO] = []
+    editable = set(artifacts.EDITABLE_ARTIFACTS.values())
+    for m in artifacts.all_metadata(task.workspace_path):
+        content = (
+            artifacts.read_text(task.workspace_path, m.path)
+            if (m.exists and m.path in editable)
+            else None
+        )
+        dtos.append(
+            PlanningArtifactDTO(
+                path=m.path,
+                exists=m.exists,
+                etag=m.etag,
+                size=m.size,
+                updated_at=m.updated_at,
+                content=content,
+            )
+        )
+    return PlanningInfoDTO(
+        task_id=task.id,
+        loop_state=task.loop_state,
+        planning_mode=task.planning_mode,
+        objective=task.objective,
+        is_planning=is_planning_running(task.id),
+        approved=bool(meta.get("approved")),
+        approved_by=meta.get("approved_by"),
+        approved_at=meta.get("approved_at"),
+        review_verdict=meta.get("review_verdict"),
+        last_error=meta.get("last_error"),
+        artifacts=dtos,
+    )
+
+
+@router.post("/tasks/{task_id}/planning/start")
+async def start_task_planning(
+    task_id: str, payload: PlanningStartCreate, request: Request, db: Session = Depends(get_db)
+):
+    """Run the strict planning phase: draft artifacts, then park for approval.
+
+    This does not start execution. The planner (and optional reviewer) write the
+    SPEC/PLAN/TASKS artifacts; the task ends at ``waiting_plan_approval`` for a
+    human to review, edit and approve. No process is kept alive after drafting.
+    """
+    ctx, err = authz.guard_task(db, request, task_id, min_role="editor")
+    if err:
+        return err
+    task = ctx.task
+
+    from agent_team.features.board.models import (
+        PLANNING_MODE_STRICT,
+        TASK_EXEC_MODE_AUTONOMOUS,
+    )
+    from agent_team.features.board.runtime.loop.service import is_loop_running
+
+    if is_loop_running(task_id):
+        return bad_request("A loop is running — cancel it before planning.")
+
+    objective = (payload.objective or task.objective or task.description or "").strip()
+    task.objective = objective
+    task.execution_mode = TASK_EXEC_MODE_AUTONOMOUS
+    task.planning_mode = PLANNING_MODE_STRICT
+    db.commit()
+
+    from agent_team.features.board.runtime.dispatch import capture_main_loop
+    from agent_team.features.board.runtime.loop.planning import start_planning_job
+
+    capture_main_loop()
+    start_planning_job(
+        task_id=task_id,
+        planner_alias=payload.planner_id,
+        objective=objective,
+        reviewer_alias=payload.reviewer_id or None,
+    )
+    return {"ok": True, "task_id": task_id}
+
+
+@router.get("/tasks/{task_id}/planning")
+async def get_task_planning(task_id: str, request: Request, db: Session = Depends(get_db)):
+    """Snapshot of a task's strict planning phase: state, approval, artifacts."""
+    ctx, err = authz.guard_task(db, request, task_id, min_role="viewer")
+    if err:
+        return err
+    return _planning_info(ctx.task)
+
+
+@router.put("/tasks/{task_id}/planning/artifacts/{artifact_name}")
+async def edit_task_planning_artifact(
+    task_id: str,
+    artifact_name: str,
+    payload: PlanningArtifactEdit,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Replace an editable artifact's content, guarded by an ``If-Match`` etag.
+
+    Only allowed while the plan is awaiting approval (the agent must not be
+    writing concurrently). Editing an approved artifact invalidates approval.
+    """
+    ctx, err = authz.guard_task(db, request, task_id, min_role="editor")
+    if err:
+        return err
+    task = ctx.task
+
+    from agent_team.features.board.models import PLANNING_MODE_STRICT
+    from agent_team.features.board.runtime.loop import planning_artifacts as artifacts
+    from agent_team.features.board.runtime.loop.planning import is_planning_running
+    from agent_team.features.board.runtime.loop.status import LoopState
+
+    rel = artifacts.EDITABLE_ARTIFACTS.get(artifact_name)
+    if rel is None:
+        return bad_request(f"Artifact {artifact_name!r} is not editable.")
+    if is_planning_running(task_id) or task.loop_state not in (
+        LoopState.WAITING_PLAN_APPROVAL.value,
+        LoopState.PLAN_APPROVED.value,
+    ):
+        return bad_request("Artifacts can only be edited while awaiting approval.")
+
+    current = artifacts.read_text(task.workspace_path, rel) or ""
+    if_match = request.headers.get("If-Match")
+    if if_match and if_match != artifacts.etag(current):
+        return JSONResponse(
+            status_code=409,
+            content={"detail": "Artifact changed since you loaded it; reload."},
+        )
+    if artifact_name == "TASKS.json":
+        try:
+            errors = artifacts.validate_tasks(json.loads(payload.content or "{}"))
+        except json.JSONDecodeError as exc:
+            return bad_request(f"TASKS.json is not valid JSON: {exc}")
+        if errors:
+            return bad_request("; ".join(errors))
+    new_etag = artifacts.write_text(task.workspace_path, rel, payload.content)
+
+    # A human edit invalidates a prior approval — it must be re-approved.
+    if task.planning_mode == PLANNING_MODE_STRICT:
+        meta = task.planning_meta()
+        if meta.get("approved"):
+            meta.update({"approved": False, "approved_by": None, "approved_at": None})
+            task.planning_meta_json = json.dumps(meta, ensure_ascii=False)
+        if task.loop_state == LoopState.PLAN_APPROVED.value:
+            task.loop_state = LoopState.WAITING_PLAN_APPROVAL.value
+        db.commit()
+    return {"ok": True, "path": rel, "etag": new_etag}
+
+
+def _approve_plan(ctx, db) -> object | None:
+    """Validate artifacts and stamp approval metadata; return an error or None."""
+    from datetime import datetime
+
+    from agent_team.features.board.runtime.loop import planning_artifacts as artifacts
+    from agent_team.features.board.runtime.loop.status import LoopState
+
+    task = ctx.task
+    missing = artifacts.missing_required(task.workspace_path)
+    if missing:
+        return bad_request(f"Cannot approve — missing artifacts: {', '.join(missing)}")
+    tasks_data = artifacts.read_json(task.workspace_path, artifacts.TASKS_PATH)
+    if tasks_data is not None:
+        errors = artifacts.validate_tasks(tasks_data)
+        if errors:
+            return bad_request("; ".join(errors))
+
+    meta = task.planning_meta()
+    meta.update(
+        {
+            "approved": True,
+            "approved_by": getattr(ctx.user, "id", None),
+            "approved_at": datetime.now(UTC).isoformat(),
+            "artifact_etags": artifacts.approved_etags(task.workspace_path),
+            "last_error": None,
+        }
+    )
+    task.planning_meta_json = json.dumps(meta, ensure_ascii=False)
+    task.loop_state = LoopState.PLAN_APPROVED.value
+    db.commit()
+    return None
+
+
+@router.post("/tasks/{task_id}/planning/approve")
+async def approve_task_planning(task_id: str, request: Request, db: Session = Depends(get_db)):
+    """Approve the drafted plan (does not start execution)."""
+    ctx, err = authz.guard_task(db, request, task_id, min_role="editor")
+    if err:
+        return err
+    approve_err = _approve_plan(ctx, db)
+    if approve_err:
+        return approve_err
+    return _planning_info(ctx.task)
+
+
+@router.post("/tasks/{task_id}/planning/request-changes")
+async def request_task_planning_changes(
+    task_id: str,
+    request: Request,
+    payload: PlanningStartCreate | None = Body(default=None),
+    db: Session = Depends(get_db),
+):
+    """Clear approval and re-draft the plan with the remembered planner.
+
+    A human comment can refine the objective; the planner re-runs and the task
+    returns to ``waiting_plan_approval``.
+    """
+    ctx, err = authz.guard_task(db, request, task_id, min_role="editor")
+    if err:
+        return err
+    task = ctx.task
+
+    meta = task.planning_meta()
+    planner_id = (payload.planner_id if payload else None) or meta.get("planner_id")
+    if not planner_id:
+        return bad_request("No planner is set for this task; start planning first.")
+    reviewer_id = (payload.reviewer_id if payload else None) or meta.get("reviewer_id")
+    feedback = (payload.objective if payload else None) or ""
+
+    meta.update({"approved": False, "approved_by": None, "approved_at": None})
+    task.planning_meta_json = json.dumps(meta, ensure_ascii=False)
+    db.commit()
+
+    objective = task.objective or ""
+    if feedback.strip():
+        objective = f"{objective}\n\n## Requested changes\n{feedback.strip()}"
+
+    from agent_team.features.board.runtime.dispatch import capture_main_loop
+    from agent_team.features.board.runtime.loop.planning import start_planning_job
+
+    capture_main_loop()
+    start_planning_job(
+        task_id=task_id,
+        planner_alias=planner_id,
+        objective=objective,
+        reviewer_alias=reviewer_id or None,
+    )
+    return {"ok": True, "task_id": task_id}
+
+
+@router.post("/tasks/{task_id}/planning/approve-and-run")
+async def approve_and_run_task_planning(
+    task_id: str, payload: PlanningRunCreate, request: Request, db: Session = Depends(get_db)
+):
+    """Approve the plan and immediately start strict autonomous execution."""
+    ctx, err = authz.guard_task(db, request, task_id, min_role="editor")
+    if err:
+        return err
+    task = ctx.task
+
+    from agent_team.features.board.runtime.loop.service import is_loop_running
+
+    if is_loop_running(task_id):
+        return bad_request("A loop is already running for this task.")
+
+    approve_err = _approve_plan(ctx, db)
+    if approve_err:
+        return approve_err
+
+    from agent_team.features.board.runtime.dispatch import capture_main_loop
+    from agent_team.features.board.runtime.loop.budget import LoopBudget
+    from agent_team.features.board.runtime.loop.service import start_autonomous_loop
+
+    capture_main_loop()
+    start_autonomous_loop(
+        task_id=task_id,
+        agent_alias=payload.agent_id,
+        evaluator_alias=payload.evaluator_id,
+        objective=task.objective or "",
+        max_attempts=payload.max_attempts,
+        budget=LoopBudget(
+            max_tokens=payload.max_tokens,
+            max_cost_usd=payload.max_cost_usd,
+            max_wall_seconds=payload.max_wall_seconds,
+        ),
+        strict=True,
+    )
     return {"ok": True, "task_id": task_id}
 
 

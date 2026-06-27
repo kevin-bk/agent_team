@@ -10,7 +10,7 @@ from agent_team.features.board.models import (
     AgentTeamConversation,
     AgentTeamRun,
 )
-from agent_team.features.board.runtime.events import RUN_QUEUED
+from agent_team.features.board.runtime.events import RUN_QUEUED, RUN_RUNNING
 from agent_team.features.board.schemas import RunDTO
 
 
@@ -70,6 +70,39 @@ def get_attempt_run(
         .filter(
             AgentTeamRun.attempt_id == attempt_id,
             AgentTeamRun.role == role,
+        )
+        .order_by(AgentTeamRun.created_at.desc())
+        .first()
+    )
+
+
+def get_latest_task_run_by_role(
+    db: Session, *, task_id: str, role: str
+) -> AgentTeamRun | None:
+    """Return the most recent run of a loop ``role`` for a task, or None.
+
+    Used to surface the planner's (single) run + its transcript conversation.
+    """
+    return (
+        db.query(AgentTeamRun)
+        .filter(AgentTeamRun.task_id == task_id, AgentTeamRun.role == role)
+        .order_by(AgentTeamRun.created_at.desc())
+        .first()
+    )
+
+
+def get_active_loop_run(db: Session, *, task_id: str) -> AgentTeamRun | None:
+    """Return the loop run currently streaming for a task (any role), or None.
+
+    Loop roles run strictly one at a time, so the single queued/running non-chat
+    run is the one to attach the live transcript to.
+    """
+    return (
+        db.query(AgentTeamRun)
+        .filter(
+            AgentTeamRun.task_id == task_id,
+            AgentTeamRun.role != RUN_ROLE_CHAT,
+            AgentTeamRun.status.in_((RUN_QUEUED, RUN_RUNNING)),
         )
         .order_by(AgentTeamRun.created_at.desc())
         .first()

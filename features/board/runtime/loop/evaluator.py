@@ -85,5 +85,10 @@ class Evaluator(Protocol):
     """
 
     async def evaluate(
-        self, *, objective: str, generator_summary: str, workspace_path: str
+        self,
+        *,
+        objective: str,
+        generator_summary: str,
+        workspace_path: str,
+        attempt_id: str | None = None,
     ) -> Verdict | None: ...

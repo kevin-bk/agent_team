@@ -229,6 +229,9 @@ class LoopEvaluationDTO(BaseModel):
     #: Free-form evidence the evaluator recorded (e.g. ``{"checks": "..."}``):
     #: what it ran and saw. Shown in the verdict card so a human can see *why*.
     evidence: dict = Field(default_factory=dict)
+    #: Conversation holding the critic run's transcript (its verification work),
+    #: so the cockpit can show what the critic actually did.
+    conversation_id: str | None = None
     created_at: str | None
 
 
@@ -246,6 +249,11 @@ class LoopAttemptDTO(BaseModel):
     #: exactly what the agent did inside the iteration.
     run_id: str | None = None
     conversation_id: str | None = None
+    #: The critic (evaluator) run that graded this iteration, and the fresh
+    #: conversation holding its verification transcript — distinct from the
+    #: generator's build transcript above.
+    critic_run_id: str | None = None
+    critic_conversation_id: str | None = None
     evaluations: list[LoopEvaluationDTO] = Field(default_factory=list)
 
 
@@ -264,7 +272,75 @@ class LoopInfoDTO(BaseModel):
     #: every iteration (the generator reuses one session), so the cockpit embeds
     #: it inline. Null until the first generator run exists.
     generator_conversation_id: str | None = None
+    #: The planning phase's run + transcript conversation (null if no plan phase).
+    planner_conversation_id: str | None = None
+    planner_run_id: str | None = None
+    #: The loop run streaming right now (any role) + its conversation, so the
+    #: cockpit attaches the live stream to whichever role is currently working.
+    active_run_id: str | None = None
+    active_conversation_id: str | None = None
     attempts: list[LoopAttemptDTO] = Field(default_factory=list)
+
+
+class PlanningStartCreate(BaseModel):
+    """Start the strict planning phase for a task (drafts artifacts, then stops).
+
+    The ``planner_id`` agent researches and writes the SPEC/PLAN/TASKS artifacts;
+    an optional ``reviewer_id`` agent adversarially grades them. Execution does
+    not start — the task parks at ``waiting_plan_approval`` for a human.
+    """
+
+    planner_id: str = Field(min_length=1, max_length=255)
+    reviewer_id: str | None = Field(default=None, max_length=255)
+    objective: str | None = Field(default=None, max_length=20000)
+
+
+class PlanningRunCreate(BaseModel):
+    """Approve the drafted plan and start strict execution against it."""
+
+    agent_id: str = Field(min_length=1, max_length=255)
+    evaluator_id: str = Field(min_length=1, max_length=255)
+    max_attempts: int = Field(default=10, ge=1, le=100)
+    max_tokens: int | None = Field(default=None, ge=0)
+    max_cost_usd: float | None = Field(default=None, ge=0)
+    max_wall_seconds: int | None = Field(default=None, ge=0)
+
+
+class PlanningArtifactEdit(BaseModel):
+    """Replace an editable planning artifact's content (guarded by If-Match)."""
+
+    content: str = Field(max_length=400000)
+
+
+class PlanningArtifactDTO(BaseModel):
+    """One planning artifact's on-disk metadata (+ text for readable files)."""
+
+    path: str
+    exists: bool
+    etag: str | None = None
+    size: int = 0
+    updated_at: str | None = None
+    #: Text content for SPEC/PLAN/TASKS so the cockpit can render/edit it inline.
+    content: str | None = None
+
+
+class PlanningInfoDTO(BaseModel):
+    """Snapshot of a task's strict planning phase for the cockpit."""
+
+    task_id: str
+    loop_state: str | None = None
+    planning_mode: str = "legacy_plan"
+    objective: str | None = None
+    #: Whether a planning job is actively drafting artifacts right now.
+    is_planning: bool = False
+    #: Approval metadata (backend-owned; never written by an agent).
+    approved: bool = False
+    approved_by: str | None = None
+    approved_at: str | None = None
+    #: Last adversarial reviewer verdict (``pass``/``fail``/``needs_human``).
+    review_verdict: str | None = None
+    last_error: str | None = None
+    artifacts: list[PlanningArtifactDTO] = Field(default_factory=list)
 
 
 class CommentCreate(BaseModel):

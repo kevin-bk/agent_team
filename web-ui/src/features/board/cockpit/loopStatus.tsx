@@ -3,6 +3,7 @@ import {
   CheckCircle2,
   CircleSlash,
   Loader2,
+  Pencil,
   XCircle,
 } from "@/components/icons";
 import type { LoopState, LoopVerdict } from "@/api/types";
@@ -23,6 +24,21 @@ export const LOOP_STATE_META: Record<LoopState, StateMeta> = {
     tone: "bg-indigo-100 text-indigo-700 dark:bg-indigo-500/15 dark:text-indigo-300",
     icon: Loader2,
     active: true,
+  },
+  waiting_plan_approval: {
+    label: "Plan ready for review",
+    tone: "bg-violet-100 text-violet-700 dark:bg-violet-500/15 dark:text-violet-300",
+    icon: Pencil,
+  },
+  plan_approved: {
+    label: "Plan approved",
+    tone: "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300",
+    icon: CheckCircle2,
+  },
+  plan_change_requested: {
+    label: "Plan change requested",
+    tone: "bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300",
+    icon: AlertTriangle,
   },
   running: {
     label: "Running",
