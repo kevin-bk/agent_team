@@ -22,7 +22,6 @@ import { ReposPage } from "@/features/repos/ReposPage";
 import { ChannelsPage } from "@/features/comm/ChannelsPage";
 
 const LS_PROFILE = "da.profile";
-const LS_COLLAPSED = "da.sidebar.collapsed";
 
 function viewFromPath(pathname: string): View {
   if (pathname.startsWith("/chat")) return "chat";
@@ -41,20 +40,9 @@ function Shell() {
   const [profile, setProfile] = useState<string | undefined>(
     () => localStorage.getItem(LS_PROFILE) ?? undefined,
   );
-  const [collapsed, setCollapsed] = useState<boolean>(
-    () => localStorage.getItem(LS_COLLAPSED) === "1",
-  );
-
   const view = viewFromPath(location.pathname);
   const convMatch = location.pathname.match(/^\/chat\/(.+)$/);
   const convId = convMatch ? decodeURIComponent(convMatch[1]) : undefined;
-
-  const toggleCollapsed = () =>
-    setCollapsed((c) => {
-      const next = !c;
-      localStorage.setItem(LS_COLLAPSED, next ? "1" : "0");
-      return next;
-    });
 
   // Default to the first available profile once loaded.
   useEffect(() => {
@@ -78,26 +66,26 @@ function Shell() {
   };
 
   return (
-    <div className="flex h-full w-full overflow-hidden">
+    <div className="flex h-full w-full flex-col overflow-hidden">
       <NavRail
         view={view}
         onViewChange={goToView}
         dark={dark}
         onToggleTheme={toggle}
-        collapsed={collapsed}
-        onToggleCollapse={toggleCollapsed}
       />
-      <Sidebar
-        profile={profile}
-        onProfileChange={changeProfile}
-        view={view}
-        selectedConvId={convId}
-        onSelectConv={(id) => navigate(id ? `/chat/${encodeURIComponent(id)}` : "/chat")}
-        collapsed={collapsed}
-      />
-      <main className="min-w-0 flex-1">
-        <Outlet />
-      </main>
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        <Sidebar
+          profile={profile}
+          onProfileChange={changeProfile}
+          view={view}
+          selectedConvId={convId}
+          onSelectConv={(id) => navigate(id ? `/chat/${encodeURIComponent(id)}` : "/chat")}
+          collapsed={false}
+        />
+        <main className="min-w-0 flex-1">
+          <Outlet />
+        </main>
+      </div>
       <CommandPalette />
     </div>
   );

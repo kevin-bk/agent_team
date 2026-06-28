@@ -16,9 +16,10 @@ export function AuthButton() {
         href="/"
         title="Back to admin"
         aria-label="Back to admin"
-        className="flex h-7 w-7 items-center justify-center rounded-full bg-surface-3 text-muted-foreground transition-colors hover:text-foreground"
+        className="flex h-9 cursor-pointer items-center gap-2 rounded-md px-3 text-[13.5px] font-medium text-nav-foreground/80 transition-colors duration-150 hover:bg-nav-hover hover:text-white"
       >
-        <ArrowLeft className="h-4 w-4" />
+        <ArrowLeft className="h-[18px] w-[18px] shrink-0" />
+        <span>Back to admin</span>
       </a>
     );
   }
