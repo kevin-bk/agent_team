@@ -1,12 +1,47 @@
 # Task Journal for agent_team
 
-Status: Proposed.
+Status: **Implemented (Slices 1–3 + recap injection).**
 Audience: coding agents implementing durable task memory and auditability in
 `community_plugins/agent_team`.
 
 This document specifies the **Task Journal** feature: an append-only semantic
 timeline for important decisions, assumptions, questions, approvals, plan
 changes, verification outcomes, and human/agent notes across a task.
+
+## Implementation status (what shipped)
+
+- **Slice 1 — Backend core.** `db_migrations/024_task_journal.sql`
+  (`plugin_agent_team_journal_entry`), `AgentTeamJournalEntry` model + constants,
+  `repositories/journal.py` (`append_entry` with task-local monotonic `seq`,
+  `list_entries` filter/paginate, `serialize_entry`), best-effort
+  `runtime/task_journal.py` (`record` / `record_with` / `refs`), DTOs
+  (`JournalEntryDTO`, `JournalEntryCreate`), and `GET`/`POST
+  /tasks/{id}/journal`. System-authored entries are wired at ~15 lifecycle
+  points across the router, planning job, loop driver, and task-graph
+  orchestrator (planning start, artifact edit, approve, request-changes,
+  approve-and-run, answer, generator plan-change/questions, evaluator verdict,
+  task started/complete/blocked, final verify, terminal outcome).
+- **Slice 2 — Agent note inbox.** `.agent-team/JOURNAL_NOTES.jsonl` (append-only
+  JSONL) with `read_journal_notes` / `archive_journal_notes` in
+  `planning_artifacts.py`; `task_journal.ingest_agent_notes` reads → archives
+  immediately (no double-ingest) → masks the agent's MCP secrets → de-dupes a
+  batch → appends as `agent` entries. Ingest runs after every planner, reviewer,
+  generator, and evaluator turn. Prompt discipline (`JOURNAL_DISCIPLINE`) is
+  injected into the planner/generator/evaluator prompts (not `TASK.md`, since
+  chat runs do not ingest).
+- **Slice 3 — UI.** `cockpit/JournalPanel.tsx` — a `Journal` thread with a
+  timeline (actor icon, severity rail, type/phase chips, reference chips) +
+  type/phase/severity filters + a manual human-note composer. Wired into
+  `TaskCockpit` and invalidated on `loop.status` SSE events.
+- **Durable memory (read-back).** Instead of inlining the whole journal in every
+  prompt, the backend **mirrors the full journal to a workspace file** that the
+  agent reads on demand. `task_journal.write_journal_file` renders all entries to
+  `.agent-team/JOURNAL.md` (regenerated before each generator turn by
+  `BackendGenerator`), and `JOURNAL_DISCIPLINE` carries a light pointer telling
+  the agent to read that file first for prior decisions/assumptions/risks. This
+  keeps prompts small while giving the agent the complete decision history when
+  it needs it; any agent with file tools (LLM or direct-CLI) can open it. The
+  agent never queries the DB.
 
 ## 0. Naming decision
 

@@ -38,6 +38,10 @@ QUESTIONS_PATH = f"{ARTIFACT_DIR}/QUESTIONS.json"
 #: after each turn and then archives the file, so a write here is a *suggestion*
 #: that survives the agent's own context compaction.
 JOURNAL_NOTES_PATH = f"{ARTIFACT_DIR}/JOURNAL_NOTES.jsonl"
+#: Backend-rendered, read-only mirror of the durable journal (full history).
+#: Regenerated each turn so an agent can read the complete decision timeline on
+#: demand instead of carrying it inline in every prompt.
+JOURNAL_FILE_PATH = f"{ARTIFACT_DIR}/JOURNAL.md"
 ARCHIVE_DIR = f"{ARTIFACT_DIR}/archive"
 
 #: Artifacts that gate a strict approval. SPEC and PLAN are required; TASKS is

@@ -263,3 +263,34 @@ def test_ingest_masks_agent_secrets(session, tmp_path, monkeypatch):
 
 def test_ingest_empty_inbox_is_noop(session, tmp_path):
     assert task_journal.ingest_agent_notes(task_id="T1", workspace_path=str(tmp_path)) == 0
+
+
+# ── journal file mirror (read-on-demand, full history) ───────────────────────
+def test_write_journal_file_renders_full_timeline(session, tmp_path):
+    from agent_team.features.board.runtime.loop import planning_artifacts as A
+
+    journal_repo.append_entry(
+        session, task_id="T1", type="decision", title="Use SSE", body="stream tokens"
+    )
+    journal_repo.append_entry(
+        session, task_id="T1", type="state_change", title="Loop started"
+    )
+    session.commit()
+    rel = task_journal.write_journal_file("T1", str(tmp_path))
+    assert rel == A.JOURNAL_FILE_PATH
+    md = A.read_text(str(tmp_path), A.JOURNAL_FILE_PATH)
+    # The mirror keeps the FULL timeline (lifecycle included), newest last.
+    assert "Use SSE" in md and "stream tokens" in md
+    assert "Loop started" in md
+    assert md.index("Use SSE") < md.index("Loop started")  # ascending seq
+
+
+def test_write_journal_file_none_when_empty(session, tmp_path):
+    from agent_team.features.board.runtime.loop import planning_artifacts as A
+
+    assert task_journal.write_journal_file("T1", str(tmp_path)) is None
+    assert A.read_text(str(tmp_path), A.JOURNAL_FILE_PATH) is None  # no file written
+
+
+def test_write_journal_file_no_workspace_is_noop(session):
+    assert task_journal.write_journal_file("T1", "") is None

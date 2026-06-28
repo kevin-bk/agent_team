@@ -164,6 +164,13 @@ class BackendGenerator:
         self._workspace_path = workspace_path
 
     async def __call__(self, attempt_id: str, prompt: str) -> GeneratorTurn:
+        # Mirror the full durable journal to a workspace file before the turn so
+        # the agent can read its own prior decisions on demand (a light pointer
+        # in the prompt preamble tells it where), even after its context was
+        # compacted. We do not inline the whole journal to keep the prompt small.
+        await asyncio.to_thread(
+            task_journal.write_journal_file, self._task_id, self._workspace_path
+        )
         run_id = await asyncio.to_thread(
             _create_loop_run,
             task_id=self._task_id,

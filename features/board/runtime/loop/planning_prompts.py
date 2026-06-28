@@ -44,10 +44,12 @@ ASK_QUESTIONS_INSTRUCTION = (
 #: short and decision-grade — not a verbose log. Reused across planner/generator/
 #: evaluator prompts.
 JOURNAL_DISCIPLINE = (
-    "Keep a running journal of important moments. Whenever you make a notable "
-    "decision, rely on a key assumption, hit a risk, or change direction, append "
-    f"ONE JSON object per line to `{A.JOURNAL_NOTES_PATH}` (JSONL — append only, "
-    "never rewrite the file): "
+    f"This task keeps a durable journal. If `{A.JOURNAL_FILE_PATH}` exists, read "
+    "it first for the prior decisions, assumptions and risks recorded so far, and "
+    "do not contradict or re-decide them without a stated reason. "
+    "Then, whenever you make a notable decision, rely on a key assumption, hit a "
+    "risk, or change direction, append ONE JSON object per line to "
+    f"`{A.JOURNAL_NOTES_PATH}` (JSONL — append only, never rewrite the file): "
     '{"type": "decision|assumption|risk|note", "title": "short summary", '
     '"body": "why / detail", "severity": "info|warning|blocking"}. '
     "Keep it concise and meaningful; do not log routine steps and never put "
