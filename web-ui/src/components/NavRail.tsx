@@ -5,6 +5,7 @@ import {
   Moon,
   PanelLeftClose,
   PanelLeftOpen,
+  Send,
   Sun,
 } from "@/components/icons";
 import { useMe } from "@/api/hooks";
@@ -25,6 +26,7 @@ const ITEMS: RailItem[] = [
 
 const ADMIN_ITEMS: RailItem[] = [
   { id: "repos", label: "Repositories", icon: FolderGit2 },
+  { id: "channels", label: "Channels", icon: Send },
 ];
 
 /**

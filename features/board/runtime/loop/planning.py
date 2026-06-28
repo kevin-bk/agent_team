@@ -84,6 +84,14 @@ def _persist_planning(
                 "state": state.value,
             },
         )
+        # Outbound-notification chokepoint for planning-phase states
+        # (waiting_plan_approval / waiting_answers). Best-effort, off-thread.
+        try:
+            from agent_team.features.comm.service import notify_loop_state
+
+            notify_loop_state(task_id=task_id, board_id=board_id, state=state.value)
+        except Exception:  # pragma: no cover - notifications are best-effort
+            pass
 
 
 async def run_planning_job(

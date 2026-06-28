@@ -386,6 +386,20 @@ def _make_status_sink(board_id: str | None):
                     "total_tokens": status.total_tokens,
                 },
             )
+        # Single outbound-notification chokepoint: the gateway decides (per board
+        # rules) whether this state transition warrants an external message. It
+        # is best-effort and runs off-thread, so it never blocks/breaks the loop.
+        try:
+            from agent_team.features.comm.service import notify_loop_state
+
+            notify_loop_state(
+                task_id=status.task_id,
+                board_id=board_id,
+                state=status.state.value,
+                attempt=status.attempt,
+            )
+        except Exception:  # pragma: no cover - notifications are best-effort
+            logger.debug("comm: notify_loop_state failed to schedule", exc_info=True)
 
     return _on_status
 

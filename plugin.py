@@ -111,6 +111,12 @@ class AgentTeamPlugin(PluginBase):
             AgentTeamTaskSchedule,
             AgentTeamToolOutput,
         )
+        from agent_team.features.comm.models import (
+            AgentTeamBoardChannel,
+            AgentTeamCommConnection,
+            AgentTeamCommDelivery,
+            AgentTeamCommUserLink,
+        )
         from agent_team.features.repos.models import (
             AgentTeamBoardRepo,
             AgentTeamRepo,
@@ -134,14 +140,19 @@ class AgentTeamPlugin(PluginBase):
             AgentTeamAttempt,
             AgentTeamEvaluation,
             AgentTeamJournalEntry,
+            AgentTeamCommConnection,
+            AgentTeamBoardChannel,
+            AgentTeamCommDelivery,
+            AgentTeamCommUserLink,
         ]
 
     def routers(self) -> list[APIRouter]:
         from agent_team.features.board.router import router as board_router
+        from agent_team.features.comm.router import router as comm_router
         from agent_team.features.repos.router import router as repos_router
         from agent_team.router import router as platform_router
 
-        return [platform_router, board_router, repos_router]
+        return [platform_router, board_router, repos_router, comm_router]
 
     def tool_factories(self) -> list[ToolFactory]:
         # Only registered (and therefore offered to agents) while this plugin is

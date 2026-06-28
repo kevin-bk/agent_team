@@ -1023,6 +1023,125 @@ export interface RepoStatusDTO {
   error?: string | null;
 }
 
+// ── communication gateway ────────────────────────────────────────────────
+
+export type CommTagMode = "none" | "assignee" | "creator";
+
+export interface CommProviderField {
+  key: string;
+  label: string;
+  type: "text" | "url" | "secret";
+  required: boolean;
+  placeholder: string;
+  help: string;
+}
+
+export interface CommProviderDescriptor {
+  id: string;
+  label: string;
+  fields: CommProviderField[];
+  channel_id_label: string;
+  channel_id_placeholder: string;
+  channel_id_help: string;
+}
+
+export interface CommConnectionDTO {
+  id: string;
+  owner_id: string | null;
+  provider: string;
+  name: string;
+  server_url: string;
+  /** True when a bot token is stored — the token itself is never returned. */
+  has_token: boolean;
+  default_team_id: string | null;
+  deep_link_base: string | null;
+  archived: boolean;
+  used_by_boards: number;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface CommConnectionCreateBody {
+  name: string;
+  provider?: string;
+  server_url?: string | null;
+  bot_token?: string | null;
+  default_team_id?: string | null;
+  deep_link_base?: string | null;
+}
+
+export interface CommConnectionUpdateBody {
+  name?: string;
+  server_url?: string | null;
+  /** Omit to keep the stored token; send "" to clear it. */
+  bot_token?: string | null;
+  default_team_id?: string | null;
+  deep_link_base?: string | null;
+  archived?: boolean;
+}
+
+export interface CommUserLinkDTO {
+  user_id: string;
+  email: string | null;
+  display_name: string | null;
+  role: string | null;
+  mm_user_id: string | null;
+  mm_username: string | null;
+  source: string | null;
+}
+
+export interface BoardChannelDTO {
+  id: string;
+  board_id: string;
+  connection_id: string;
+  connection_name: string | null;
+  provider: string;
+  channel_id: string;
+  channel_name: string;
+  use_threads: boolean;
+  event_allowlist: string[];
+  tag_mode: CommTagMode;
+  enabled: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface BoardChannelResponse {
+  channel: BoardChannelDTO | null;
+  available_connections: CommConnectionDTO[];
+}
+
+export interface BoardChannelUpsertBody {
+  connection_id: string;
+  channel_id: string;
+  channel_name?: string | null;
+  use_threads?: boolean;
+  event_allowlist?: string[];
+  tag_mode?: CommTagMode;
+  enabled?: boolean;
+}
+
+export interface CommDeliveryDTO {
+  id: string;
+  task_id: string | null;
+  board_id: string | null;
+  channel_id: string | null;
+  event_type: string;
+  provider: string;
+  provider_message_id: string | null;
+  provider_thread_id: string | null;
+  status: string;
+  error: string | null;
+  created_at: string | null;
+  sent_at: string | null;
+}
+
+export interface CommTestSendResult {
+  ok: boolean;
+  provider_message_id: string | null;
+  error: string | null;
+}
+
 export class ApiError extends Error {
   constructor(
     public status: number,

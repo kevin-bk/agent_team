@@ -12,6 +12,7 @@ import {
   List,
   Plus,
   Search,
+  Send,
   Settings,
   Tag,
   Users,
@@ -55,6 +56,7 @@ import { BoardEventsProvider } from "./BoardEventsContext";
 import { BoardAgentsDialog } from "./BoardAgentsDialog";
 import { BoardAutopilotDialog } from "./BoardAutopilotDialog";
 import { BoardReposDialog } from "./BoardReposDialog";
+import { BoardChannelDialog } from "@/features/comm/BoardChannelDialog";
 import { BoardJiraDialog } from "./BoardJiraDialog";
 import { BoardJiraSyncDialog } from "./BoardJiraSyncDialog";
 import { BoardSettingsDialog } from "./BoardSettingsDialog";
@@ -187,6 +189,7 @@ function BoardViewInner({
   const [agentsOpen, setAgentsOpen] = useState(false);
   const [autopilotOpen, setAutopilotOpen] = useState(false);
   const [reposOpen, setReposOpen] = useState(false);
+  const [channelOpen, setChannelOpen] = useState(false);
   const [jiraOpen, setJiraOpen] = useState(false);
   const [jiraSyncOpen, setJiraSyncOpen] = useState(false);
   // When set, the import preview is scoped to these specific keys.
@@ -419,6 +422,15 @@ function BoardViewInner({
                 <GitBranch className="h-4 w-4" /> Code
               </Button>
             )}
+            {board.data.my_role === "owner" && (
+              <Button
+                variant="ghost"
+                aria-label="Channel notifications"
+                onClick={() => setChannelOpen(true)}
+              >
+                <Send className="h-4 w-4" /> Channel
+              </Button>
+            )}
             {canEdit && (
               <Button
                 variant="ghost"
@@ -535,6 +547,12 @@ function BoardViewInner({
         boardId={boardId}
         open={reposOpen}
         onClose={() => setReposOpen(false)}
+      />
+
+      <BoardChannelDialog
+        boardId={boardId}
+        open={channelOpen}
+        onClose={() => setChannelOpen(false)}
       />
 
       <BoardImportDialog

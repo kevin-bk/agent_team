@@ -44,6 +44,16 @@ import {
   type ProfileDTO,
   type BoardRepoDTO,
   type BoardReposResponse,
+  type BoardChannelDTO,
+  type BoardChannelResponse,
+  type BoardChannelUpsertBody,
+  type CommConnectionDTO,
+  type CommConnectionCreateBody,
+  type CommConnectionUpdateBody,
+  type CommProviderDescriptor,
+  type CommDeliveryDTO,
+  type CommTestSendResult,
+  type CommUserLinkDTO,
   type RepoCreateBody,
   type RepoDTO,
   type RepoStatusDTO,
@@ -746,6 +756,76 @@ export class ApiClient {
       `/api/tasks/${taskId}/repos/prepare`,
       { method: "POST" },
     );
+  }
+
+  // ── communication gateway ────────────────────────────────────────
+  commEventTypes() {
+    return this.request<{ event_types: string[] }>("/api/comm/event-types");
+  }
+  commProviders() {
+    return this.request<CommProviderDescriptor[]>("/api/comm/providers");
+  }
+  listCommConnections() {
+    return this.request<CommConnectionDTO[]>("/api/comm/connections");
+  }
+  createCommConnection(body: CommConnectionCreateBody) {
+    return this.request<CommConnectionDTO>("/api/comm/connections", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+  patchCommConnection(connectionId: string, body: CommConnectionUpdateBody) {
+    return this.request<CommConnectionDTO>(`/api/comm/connections/${connectionId}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    });
+  }
+  deleteCommConnection(connectionId: string) {
+    return this.request<{ ok: boolean }>(`/api/comm/connections/${connectionId}`, {
+      method: "DELETE",
+    });
+  }
+  listCommUserLinks(connectionId: string) {
+    return this.request<CommUserLinkDTO[]>(
+      `/api/comm/connections/${connectionId}/user-links`,
+    );
+  }
+  upsertCommUserLink(
+    connectionId: string,
+    body: { user_id: string; mm_username?: string | null; mm_user_id?: string | null },
+  ) {
+    return this.request<{ ok: boolean; mm_username: string | null }>(
+      `/api/comm/connections/${connectionId}/user-links`,
+      { method: "PUT", body: JSON.stringify(body) },
+    );
+  }
+  autoMatchCommUserLinks(connectionId: string) {
+    return this.request<{ ok: boolean; matched: number }>(
+      `/api/comm/connections/${connectionId}/user-links/auto-match`,
+      { method: "POST" },
+    );
+  }
+  getBoardChannel(boardId: string) {
+    return this.request<BoardChannelResponse>(`/api/boards/${boardId}/channel`);
+  }
+  putBoardChannel(boardId: string, body: BoardChannelUpsertBody) {
+    return this.request<BoardChannelDTO>(`/api/boards/${boardId}/channel`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    });
+  }
+  deleteBoardChannel(boardId: string) {
+    return this.request<{ ok: boolean }>(`/api/boards/${boardId}/channel`, {
+      method: "DELETE",
+    });
+  }
+  testBoardChannel(boardId: string) {
+    return this.request<CommTestSendResult>(`/api/boards/${boardId}/channel/test`, {
+      method: "POST",
+    });
+  }
+  listBoardDeliveries(boardId: string) {
+    return this.request<CommDeliveryDTO[]>(`/api/boards/${boardId}/channel/deliveries`);
   }
 }
 

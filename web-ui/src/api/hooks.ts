@@ -22,6 +22,9 @@ import type {
   PatchTaskScheduleBody,
   RepoCreateBody,
   RepoUpdateBody,
+  BoardChannelUpsertBody,
+  CommConnectionCreateBody,
+  CommConnectionUpdateBody,
   TaskDTO,
 } from "./types";
 
@@ -71,6 +74,10 @@ export const qk = {
   repos: ["repos"] as const,
   boardRepos: (id: string) => ["board-repos", id] as const,
   taskRepos: (taskId: string) => ["task-repos", taskId] as const,
+  commConnections: ["comm-connections"] as const,
+  commUserLinks: (connId: string) => ["comm-user-links", connId] as const,
+  boardChannel: (id: string) => ["board-channel", id] as const,
+  boardDeliveries: (id: string) => ["board-deliveries", id] as const,
 };
 
 export function useMe() {
@@ -965,5 +972,120 @@ export function usePrepareTaskRepos(taskId: string) {
   return useMutation({
     mutationFn: () => client.prepareTaskRepos(taskId),
     onSuccess: () => qc.invalidateQueries({ queryKey: qk.taskRepos(taskId) }),
+  });
+}
+
+// ── communication gateway ──────────────────────────────────────────────────
+
+export function useCommEventTypes() {
+  const { client } = useApi();
+  return useQuery({
+    queryKey: ["comm-event-types"],
+    queryFn: () => client.commEventTypes(),
+  });
+}
+
+export function useCommProviders() {
+  const { client } = useApi();
+  return useQuery({
+    queryKey: ["comm-providers"],
+    queryFn: () => client.commProviders(),
+    staleTime: 5 * 60 * 1000,
+  });
+}
+
+export function useCommConnections() {
+  const { client } = useApi();
+  return useQuery({
+    queryKey: qk.commConnections,
+    queryFn: () => client.listCommConnections(),
+  });
+}
+
+export function useCommConnectionMutations() {
+  const { client } = useApi();
+  const qc = useQueryClient();
+  const invalidate = () => void qc.invalidateQueries({ queryKey: qk.commConnections });
+  return {
+    create: useMutation({
+      mutationFn: (body: CommConnectionCreateBody) => client.createCommConnection(body),
+      onSuccess: invalidate,
+    }),
+    patch: useMutation({
+      mutationFn: (vars: { connectionId: string; body: CommConnectionUpdateBody }) =>
+        client.patchCommConnection(vars.connectionId, vars.body),
+      onSuccess: invalidate,
+    }),
+    remove: useMutation({
+      mutationFn: (connectionId: string) => client.deleteCommConnection(connectionId),
+      onSuccess: invalidate,
+    }),
+  };
+}
+
+export function useCommUserLinks(connectionId: string | undefined) {
+  const { client } = useApi();
+  return useQuery({
+    queryKey: qk.commUserLinks(connectionId ?? "_"),
+    queryFn: () => client.listCommUserLinks(connectionId as string),
+    enabled: !!connectionId,
+  });
+}
+
+export function useCommUserLinkMutations(connectionId: string) {
+  const { client } = useApi();
+  const qc = useQueryClient();
+  const invalidate = () =>
+    void qc.invalidateQueries({ queryKey: qk.commUserLinks(connectionId) });
+  return {
+    upsert: useMutation({
+      mutationFn: (body: { user_id: string; mm_username?: string | null }) =>
+        client.upsertCommUserLink(connectionId, body),
+      onSuccess: invalidate,
+    }),
+    autoMatch: useMutation({
+      mutationFn: () => client.autoMatchCommUserLinks(connectionId),
+      onSuccess: invalidate,
+    }),
+  };
+}
+
+export function useBoardChannel(boardId: string | undefined) {
+  const { client } = useApi();
+  return useQuery({
+    queryKey: qk.boardChannel(boardId ?? "_"),
+    queryFn: () => client.getBoardChannel(boardId as string),
+    enabled: !!boardId,
+  });
+}
+
+export function useBoardChannelMutations(boardId: string) {
+  const { client } = useApi();
+  const qc = useQueryClient();
+  const invalidate = () => {
+    void qc.invalidateQueries({ queryKey: qk.boardChannel(boardId) });
+    void qc.invalidateQueries({ queryKey: qk.boardDeliveries(boardId) });
+  };
+  return {
+    save: useMutation({
+      mutationFn: (body: BoardChannelUpsertBody) => client.putBoardChannel(boardId, body),
+      onSuccess: invalidate,
+    }),
+    remove: useMutation({
+      mutationFn: () => client.deleteBoardChannel(boardId),
+      onSuccess: invalidate,
+    }),
+    test: useMutation({
+      mutationFn: () => client.testBoardChannel(boardId),
+    }),
+  };
+}
+
+export function useBoardDeliveries(boardId: string | undefined) {
+  const { client } = useApi();
+  return useQuery({
+    queryKey: qk.boardDeliveries(boardId ?? "_"),
+    queryFn: () => client.listBoardDeliveries(boardId as string),
+    enabled: !!boardId,
   });
 }
