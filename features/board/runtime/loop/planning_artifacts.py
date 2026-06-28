@@ -33,6 +33,11 @@ PLAN_CHANGE_REQUEST_PATH = f"{ARTIFACT_DIR}/PLAN_CHANGE_REQUEST.md"
 #: blocking, unanswered question gates the planning/execution phase until the
 #: human answers it via the cockpit.
 QUESTIONS_PATH = f"{ARTIFACT_DIR}/QUESTIONS.json"
+#: Append-only inbox where an agent suggests journal entries (one JSON object
+#: per line, JSONL). The backend ingests these into the durable task journal
+#: after each turn and then archives the file, so a write here is a *suggestion*
+#: that survives the agent's own context compaction.
+JOURNAL_NOTES_PATH = f"{ARTIFACT_DIR}/JOURNAL_NOTES.jsonl"
 ARCHIVE_DIR = f"{ARTIFACT_DIR}/archive"
 
 #: Artifacts that gate a strict approval. SPEC and PLAN are required; TASKS is
@@ -510,6 +515,72 @@ def archive_questions(workspace_path: str) -> str | None:
     write_text(workspace_path, rel_dest, text)
     try:
         os.remove(_safe_abs(workspace_path, QUESTIONS_PATH))
+    except OSError:
+        pass
+    return rel_dest
+
+
+# ---------------------------------------------------------------------------
+# Agent journal-note inbox (``JOURNAL_NOTES.jsonl``)
+# ---------------------------------------------------------------------------
+#
+# Agents append suggested journal entries here, one JSON object per line. The
+# backend ingests them into the durable DB journal and archives the file, so a
+# note survives even if the agent's own context is later compacted.
+
+
+def read_journal_notes(workspace_path: str) -> list[dict]:
+    """Parse the agent's journal-note inbox (JSONL); skip malformed lines.
+
+    Each line is one suggested entry: ``{"type", "title", "body", "severity",
+    "phase"}``. Only ``title`` is required; the rest default. Malformed lines
+    (bad JSON, non-objects, blank title) are skipped so one bad line never loses
+    the others.
+    """
+    text = read_text(workspace_path, JOURNAL_NOTES_PATH)
+    if not text:
+        return []
+    rows: list[dict] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        title = str(obj.get("title") or "").strip()
+        if not title:
+            continue
+        rows.append(
+            {
+                "type": str(obj.get("type") or "note").strip(),
+                "title": title,
+                "body": str(obj.get("body") or "").strip(),
+                "severity": str(obj.get("severity") or "info").strip(),
+                "phase": str(obj.get("phase") or "").strip(),
+            }
+        )
+    return rows
+
+
+def archive_journal_notes(workspace_path: str) -> str | None:
+    """Move an active ``JOURNAL_NOTES.jsonl`` into the archive, clearing it.
+
+    Called right after the backend ingests the notes so the same suggestions are
+    never ingested twice. Returns the archive path, or ``None`` when there was
+    no active inbox.
+    """
+    text = read_text(workspace_path, JOURNAL_NOTES_PATH)
+    if not text or not text.strip():
+        return None
+    stamp = datetime.now(tz=UTC).strftime("%Y%m%dT%H%M%SZ")
+    rel_dest = f"{ARCHIVE_DIR}/journal-notes/{stamp}.jsonl"
+    write_text(workspace_path, rel_dest, text)
+    try:
+        os.remove(_safe_abs(workspace_path, JOURNAL_NOTES_PATH))
     except OSError:
         pass
     return rel_dest

@@ -103,6 +103,7 @@ class AgentTeamPlugin(PluginBase):
             AgentTeamComment,
             AgentTeamConversation,
             AgentTeamEvaluation,
+            AgentTeamJournalEntry,
             AgentTeamKeySeq,
             AgentTeamRun,
             AgentTeamRunEvent,
@@ -132,6 +133,7 @@ class AgentTeamPlugin(PluginBase):
             AgentTeamTaskSchedule,
             AgentTeamAttempt,
             AgentTeamEvaluation,
+            AgentTeamJournalEntry,
         ]
 
     def routers(self) -> list[APIRouter]:

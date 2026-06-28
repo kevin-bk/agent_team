@@ -20,6 +20,7 @@ from agent_team.features.board.models import (
     RUN_ROLE_PLANNER,
     AgentTeamTask,
 )
+from agent_team.features.board.runtime import task_journal
 from agent_team.features.board.runtime.events import RUN_DONE
 from agent_team.features.board.runtime.loop import planning_artifacts as artifacts
 from agent_team.features.board.runtime.loop import planning_prompts
@@ -121,10 +122,32 @@ async def run_planning_job(
     )
     result = await _drive_to_completion(run_id)
 
+    # Fold any journal notes the planner left in its inbox into the durable
+    # journal (best-effort) before parking for approval/questions.
+    await asyncio.to_thread(
+        task_journal.ingest_agent_notes,
+        task_id=task_id,
+        workspace_path=workspace_path,
+        actor_id=planner_alias,
+        phase="planning",
+    )
+
     # The planner may stop early to ask the human blocking questions instead of
     # guessing. Honour that before treating missing artifacts as a failure: park
     # for answers and remember the agents so the answer endpoint can re-plan.
     if await asyncio.to_thread(artifacts.questions_pending, workspace_path):
+        open_qs = await asyncio.to_thread(artifacts.open_questions, workspace_path)
+        task_journal.record(
+            task_id=task_id,
+            phase="planning",
+            type="question",
+            title=f"Planner raised {len(open_qs)} blocking question(s)",
+            body="\n".join(f"- {q.get('question', q.get('id', ''))}" for q in open_qs),
+            actor_type="agent",
+            actor_id=planner_alias,
+            severity="blocking",
+            refs=task_journal.refs(run_id=run_id, artifacts=[artifacts.QUESTIONS_PATH]),
+        )
         _persist_planning(
             task_id,
             state=LoopState.WAITING_ANSWERS,
@@ -145,6 +168,17 @@ async def run_planning_job(
             if result.status != RUN_DONE
             else f"planner did not produce: {', '.join(missing)}"
         )
+        task_journal.record(
+            task_id=task_id,
+            phase="planning",
+            type="state_change",
+            title="Planning failed",
+            body=error,
+            actor_type="agent",
+            actor_id=planner_alias,
+            severity="blocking",
+            refs=task_journal.refs(run_id=run_id),
+        )
         _persist_planning(
             task_id,
             state=LoopState.FAILED,
@@ -160,7 +194,30 @@ async def run_planning_job(
             reviewer_alias=reviewer_alias,
             workspace_path=workspace_path,
         )
+        task_journal.record(
+            task_id=task_id,
+            phase="review",
+            type="plan_review",
+            title=f"Plan reviewer verdict: {review_verdict or 'unknown'}",
+            actor_type="agent",
+            actor_id=reviewer_alias,
+            severity="warning" if review_verdict not in (None, "pass") else "info",
+            refs=task_journal.refs(artifacts=[artifacts.PLAN_REVIEW_PATH]),
+        )
 
+    task_journal.record(
+        task_id=task_id,
+        phase="planning",
+        type="state_change",
+        title="Plan drafted — awaiting approval",
+        actor_type="agent",
+        actor_id=planner_alias,
+        refs=task_journal.refs(
+            run_id=run_id,
+            artifacts=[artifacts.SPEC_PATH, artifacts.PLAN_PATH, artifacts.TASKS_PATH],
+        ),
+        metadata={"review_verdict": review_verdict},
+    )
     _persist_planning(
         task_id,
         state=LoopState.WAITING_PLAN_APPROVAL,
@@ -190,6 +247,13 @@ async def _run_reviewer(
         attempt_id=None,
     )
     result = await _drive_to_completion(run_id)
+    await asyncio.to_thread(
+        task_journal.ingest_agent_notes,
+        task_id=task_id,
+        workspace_path=workspace_path,
+        actor_id=reviewer_alias,
+        phase="review",
+    )
     if result.status != RUN_DONE:
         return None
     data = artifacts.read_json(workspace_path, artifacts.PLAN_REVIEW_PATH)

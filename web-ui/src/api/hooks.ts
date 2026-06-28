@@ -10,6 +10,7 @@ import type {
   CreateBoardBody,
   CreateCronBody,
   CreateTaskBody,
+  JournalNoteBody,
   PlanningAnswerBody,
   PlanningRunBody,
   PlanningStartBody,
@@ -65,6 +66,7 @@ export const qk = {
   taskActivity: (taskId: string) => ["task-activity", taskId] as const,
   taskLoop: (taskId: string) => ["task-loop", taskId] as const,
   taskPlanning: (taskId: string) => ["task-planning", taskId] as const,
+  taskJournal: (taskId: string) => ["task-journal", taskId] as const,
   users: (q: string) => ["users", q] as const,
   repos: ["repos"] as const,
   boardRepos: (id: string) => ["board-repos", id] as const,
@@ -803,6 +805,24 @@ export function useAnswerTaskPlanning(boardId: string, taskId: string) {
       void qc.invalidateQueries({ queryKey: qk.taskLoop(taskId) });
       void qc.invalidateQueries({ queryKey: qk.boardTasks(boardId) });
     },
+  });
+}
+
+export function useTaskJournal(taskId: string | undefined, enabled = true) {
+  const { client } = useApi();
+  return useQuery({
+    queryKey: qk.taskJournal(taskId ?? "_"),
+    queryFn: () => client.getTaskJournal(taskId as string, { limit: 500 }),
+    enabled: !!taskId && enabled,
+  });
+}
+
+export function useAddTaskJournalNote(taskId: string) {
+  const { client } = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: JournalNoteBody) => client.addTaskJournalNote(taskId, body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.taskJournal(taskId) }),
   });
 }
 

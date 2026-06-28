@@ -20,6 +20,9 @@ import {
   type CsvImportResult,
   type JiraBatchResult,
   type JiraPreviewResponse,
+  type JournalEntryDTO,
+  type JournalFilters,
+  type JournalNoteBody,
   type LoopInfoDTO,
   type PlanningAnswerBody,
   type PlanningInfoDTO,
@@ -453,6 +456,25 @@ export class ApiClient {
       `/api/tasks/${taskId}/planning/answer`,
       { method: "POST", body: JSON.stringify(body) },
     );
+  }
+  // ── task journal (sổ cái) ────────────────────────────────────────
+  getTaskJournal(taskId: string, filters: JournalFilters = {}) {
+    const q = new URLSearchParams();
+    if (filters.type) q.set("type", filters.type);
+    if (filters.phase) q.set("phase", filters.phase);
+    if (filters.severity) q.set("severity", filters.severity);
+    if (filters.after_seq != null) q.set("after_seq", String(filters.after_seq));
+    if (filters.limit != null) q.set("limit", String(filters.limit));
+    const qs = q.toString();
+    return this.request<JournalEntryDTO[]>(
+      `/api/tasks/${taskId}/journal${qs ? `?${qs}` : ""}`,
+    );
+  }
+  addTaskJournalNote(taskId: string, body: JournalNoteBody) {
+    return this.request<JournalEntryDTO>(`/api/tasks/${taskId}/journal`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
   }
   editTaskPlanningArtifact(
     taskId: string,

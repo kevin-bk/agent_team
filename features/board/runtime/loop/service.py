@@ -24,7 +24,7 @@ from agent_team.features.board.models import (
 from agent_team.features.board.repositories import conversations as conversations_repo
 from agent_team.features.board.repositories import runs as runs_repo
 from agent_team.features.board.repositories.tasks import get_task
-from agent_team.features.board.runtime import registry
+from agent_team.features.board.runtime import registry, task_journal
 from agent_team.features.board.runtime.backend import get_run_backend
 from agent_team.features.board.runtime.events import RUN_CANCELLED, RUN_DONE
 from agent_team.features.board.runtime.loop import planning_artifacts as artifacts
@@ -158,9 +158,10 @@ async def _drive_to_completion(run_id: str) -> _RunResult:
 class BackendGenerator:
     """Runs one generator turn as a real run on the task's agent thread."""
 
-    def __init__(self, *, task_id: str, agent_alias: str) -> None:
+    def __init__(self, *, task_id: str, agent_alias: str, workspace_path: str = "") -> None:
         self._task_id = task_id
         self._agent_alias = agent_alias
+        self._workspace_path = workspace_path
 
     async def __call__(self, attempt_id: str, prompt: str) -> GeneratorTurn:
         run_id = await asyncio.to_thread(
@@ -172,6 +173,15 @@ class BackendGenerator:
             attempt_id=attempt_id,
         )
         result = await _drive_to_completion(run_id)
+        # Fold any journal notes the generator left in its inbox into the durable
+        # journal (best-effort) before the loop inspects markers / grades.
+        await asyncio.to_thread(
+            task_journal.ingest_agent_notes,
+            task_id=self._task_id,
+            workspace_path=self._workspace_path,
+            actor_id=self._agent_alias,
+            phase="execution",
+        )
         return GeneratorTurn(
             run_id=run_id,
             final_text=result.final_answer,
@@ -303,6 +313,14 @@ class WorkerEvaluator:
             attempt_id=attempt_id,
         )
         result = await _drive_to_completion(run_id)
+        # The evaluator can also leave journal notes (risks it spotted, etc.).
+        await asyncio.to_thread(
+            task_journal.ingest_agent_notes,
+            task_id=self._task_id,
+            workspace_path=workspace_path,
+            actor_id=self._evaluator_alias,
+            phase="verification",
+        )
         if result.status != RUN_DONE:
             return None  # could not evaluate → fail-open
         if self._strict:
@@ -389,7 +407,9 @@ async def run_autonomous_loop(
     workspace_path, board_id = await asyncio.to_thread(
         _task_workspace_and_board, task_id
     )
-    generator = BackendGenerator(task_id=task_id, agent_alias=agent_alias)
+    generator = BackendGenerator(
+        task_id=task_id, agent_alias=agent_alias, workspace_path=workspace_path
+    )
     on_status = _make_status_sink(board_id)
     # In strict mode the generator can pause execution by writing the
     # plan-change-request marker, or by raising blocking questions; detect both

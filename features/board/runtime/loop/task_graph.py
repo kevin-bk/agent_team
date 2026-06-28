@@ -21,6 +21,7 @@ import asyncio
 import logging
 from collections.abc import Callable
 
+from agent_team.features.board.runtime import task_journal
 from agent_team.features.board.runtime.loop import planning_artifacts as artifacts
 from agent_team.features.board.runtime.loop import planning_prompts
 from agent_team.features.board.runtime.loop.budget import LoopBudget, LoopLedger
@@ -110,7 +111,28 @@ async def run_task_graph(
         except Exception:  # noqa: BLE001 — status is best-effort, never fatal
             logger.debug("task-graph status emit failed", exc_info=True)
 
+    # Graph-level terminal lines. plan_change/needs_answers are already journaled
+    # by the per-task sub-loop, so they are omitted here to avoid duplicates.
+    _graph_terminal = {
+        OUTCOME_COMPLETE: ("state_change", "info", "Plan complete — all tasks verified"),
+        OUTCOME_NEEDS_HUMAN: ("state_change", "warning", "Plan stopped — needs human"),
+        OUTCOME_BUDGET: ("risk", "warning", "Plan stopped — resource budget exceeded"),
+        OUTCOME_CANCELLED: ("state_change", "warning", "Plan execution cancelled"),
+    }
+
     def _terminal(state: LoopState, outcome: str) -> LoopOutcome:
+        entry = _graph_terminal.get(outcome)
+        if entry is not None:
+            jtype, severity, title = entry
+            task_journal.record(
+                task_id=task_id,
+                phase="result",
+                type=jtype,
+                title=title,
+                actor_type="system",
+                severity=severity,
+                metadata={"outcome": outcome, "completed": _completed()},
+            )
         _publish(state, outcome=outcome)
         return LoopOutcome(outcome, _completed())
 
@@ -151,6 +173,16 @@ async def run_task_graph(
         await asyncio.to_thread(
             artifacts.set_task_status, workspace_path, nxt["id"], "in_progress"
         )
+        await asyncio.to_thread(
+            task_journal.record,
+            task_id=task_id,
+            phase="execution",
+            type="task_progress",
+            title=f"Task {nxt['id']} started",
+            body=str(nxt.get("title") or nxt.get("objective") or ""),
+            actor_type="system",
+            metadata={"task_key": nxt["id"]},
+        )
         _publish(LoopState.RUNNING)
 
         outcome = await run_loop(
@@ -167,11 +199,21 @@ async def run_task_graph(
             replan_requested=replan_requested,
             questions_pending=questions_pending,
             ledger=ledger,  # share the budget across every task
+            journal_terminal=False,  # the graph journals task-level lines instead
         )
 
         if outcome.outcome == "complete":
             await asyncio.to_thread(
                 artifacts.set_task_status, workspace_path, nxt["id"], "complete"
+            )
+            await asyncio.to_thread(
+                task_journal.record,
+                task_id=task_id,
+                phase="execution",
+                type="task_progress",
+                title=f"Task {nxt['id']} complete",
+                actor_type="system",
+                metadata={"task_key": nxt["id"]},
             )
             _publish(LoopState.RUNNING)
             continue
@@ -186,6 +228,16 @@ async def run_task_graph(
         # capped / budget / needs_human — this task could not be verified.
         await asyncio.to_thread(
             artifacts.set_task_status, workspace_path, nxt["id"], "blocked"
+        )
+        await asyncio.to_thread(
+            task_journal.record,
+            task_id=task_id,
+            phase="execution",
+            type="task_progress",
+            title=f"Task {nxt['id']} blocked — could not be verified",
+            actor_type="system",
+            severity="warning",
+            metadata={"task_key": nxt["id"], "outcome": outcome.outcome},
         )
         return _terminal(LoopState.WAITING_FOR_HUMAN, OUTCOME_NEEDS_HUMAN)
 
@@ -208,6 +260,17 @@ async def run_task_graph(
         passed = verdict is not None and verdict.verdict == LoopVerdict.PASS
         await asyncio.to_thread(
             _close_attempt, attempt_id, "complete" if passed else "needs_human"
+        )
+        await asyncio.to_thread(
+            task_journal.record,
+            task_id=task_id,
+            phase="verification",
+            type="verdict",
+            title=f"Final whole-SPEC verification: {'pass' if passed else 'fail'}",
+            body=(verdict.missing if verdict is not None else ""),
+            actor_type="agent",
+            severity="info" if passed else "warning",
+            refs=task_journal.refs(attempt_id=attempt_id),
         )
         if not passed:
             return _terminal(LoopState.WAITING_FOR_HUMAN, OUTCOME_NEEDS_HUMAN)

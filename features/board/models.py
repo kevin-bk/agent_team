@@ -92,6 +92,57 @@ AUTOPILOT_SCHEDULE_CRON = "cron"
 AUTOPILOT_MIN_INTERVAL_SECONDS = 60
 AUTOPILOT_MAX_INTERVAL_SECONDS = 604800
 
+#: Task Journal — who authored a journal entry.
+JOURNAL_ACTOR_HUMAN = "human"
+JOURNAL_ACTOR_AGENT = "agent"
+JOURNAL_ACTOR_SYSTEM = "system"
+JOURNAL_ACTORS = frozenset({JOURNAL_ACTOR_HUMAN, JOURNAL_ACTOR_AGENT, JOURNAL_ACTOR_SYSTEM})
+
+#: Severity of a journal entry (blocking entries should stand out in the UI).
+JOURNAL_SEVERITY_INFO = "info"
+JOURNAL_SEVERITY_WARNING = "warning"
+JOURNAL_SEVERITY_BLOCKING = "blocking"
+JOURNAL_SEVERITIES = frozenset(
+    {JOURNAL_SEVERITY_INFO, JOURNAL_SEVERITY_WARNING, JOURNAL_SEVERITY_BLOCKING}
+)
+
+#: Controlled entry types. Stored as plain VARCHAR (no CHECK) so new types need
+#: no migration; validation lives in the repository/helper layer.
+JOURNAL_TYPES = frozenset(
+    {
+        "decision",
+        "assumption",
+        "question",
+        "answer",
+        "approval",
+        "plan_review",
+        "plan_change",
+        "verdict",
+        "state_change",
+        "risk",
+        "note",
+        "artifact_update",
+        "task_progress",
+        "summary",
+        "correction",
+    }
+)
+
+#: Controlled lifecycle phases a journal entry can belong to.
+JOURNAL_PHASES = frozenset(
+    {
+        "intake",
+        "planning",
+        "review",
+        "approval",
+        "execution",
+        "verification",
+        "change_request",
+        "result",
+        "system",
+    }
+)
+
 
 class AgentTeamKeySeq(Base):
     """Monotonic counter for human-facing keys (e.g. ``T-142``).
@@ -644,6 +695,72 @@ class AgentTeamEvaluation(Base):
         """Return the decoded evidence payload (empty on error)."""
         try:
             value = json.loads(self.evidence_json or "{}")
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        return value if isinstance(value, dict) else {}
+
+
+class AgentTeamJournalEntry(Base):
+    """One append-only entry in a task's semantic journal ("sổ cái").
+
+    The journal is a curated, durable timeline of meaningful moments — decisions,
+    assumptions, questions, approvals, plan changes, verification verdicts and
+    human/agent notes — that a future human or agent needs to understand why the
+    task went the way it did. It is written mostly by the backend at lifecycle
+    points (so it stays complete regardless of any agent's context compaction)
+    and is intentionally distinct from raw run events (replay), ``EVIDENCE.json``
+    (verification record) and ``task.loop_state`` (lifecycle); entries reference
+    those sources through ``refs`` rather than replacing them.
+
+    Entries are append-only: a wrong entry is corrected by appending a
+    ``correction`` entry that points at the original via ``supersedes_id``.
+    ``seq`` is a task-local monotonic order assigned by the repository.
+    """
+
+    __tablename__ = "plugin_agent_team_journal_entry"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    task_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("plugin_agent_team_task.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    #: Task-local monotonic sequence for stable ordering/pagination.
+    seq: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: ``human`` / ``agent`` / ``system``.
+    actor_type: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=JOURNAL_ACTOR_SYSTEM
+    )
+    #: User id (human note) or agent alias (agent note); null for system events.
+    actor_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    phase: Mapped[str] = mapped_column(String(24), nullable=False, default="system")
+    type: Mapped[str] = mapped_column(String(24), nullable=False, default="note")
+    title: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    body: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    severity: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=JOURNAL_SEVERITY_INFO
+    )
+    #: JSON object of references (run_id, attempt_id, artifacts, files, etags).
+    refs_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    #: JSON object of free-form metadata (score, counts, guardrail name, ...).
+    metadata_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    #: Id of the entry this one corrects/supersedes, if any.
+    supersedes_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+    def refs(self) -> dict:
+        """Return the decoded references payload (empty on error)."""
+        try:
+            value = json.loads(self.refs_json or "{}")
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    def meta(self) -> dict:
+        """Return the decoded metadata payload (empty on error)."""
+        try:
+            value = json.loads(self.metadata_json or "{}")
         except (json.JSONDecodeError, TypeError):
             return {}
         return value if isinstance(value, dict) else {}

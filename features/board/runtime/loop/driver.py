@@ -16,6 +16,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from agent_team.features.board.repositories import attempts as attempts_repo
+from agent_team.features.board.runtime import task_journal
 from agent_team.features.board.runtime.loop.budget import LoopBudget, LoopLedger
 from agent_team.features.board.runtime.loop.controller import Done, LoopController
 from agent_team.features.board.runtime.loop.evaluator import Evaluator
@@ -40,6 +41,16 @@ OUTCOME_PLAN_CHANGE = "plan_change"
 #: Outcome recorded when the generator raised blocking questions (it wrote the
 #: questions marker) and the loop paused for a human to answer them.
 OUTCOME_NEEDS_ANSWERS = "needs_answers"
+
+#: How a terminal outcome reads in the journal. ``plan_change``/``needs_answers``
+#: get their own richer entries before the loop finishes, so they are omitted
+#: here to avoid a duplicate generic line.
+_TERMINAL_JOURNAL: dict[str, tuple[str, str, str]] = {
+    "complete": ("state_change", "info", "Loop complete — objective verified"),
+    "capped": ("state_change", "warning", "Loop stopped — attempt cap reached (needs human)"),
+    OUTCOME_BUDGET: ("risk", "warning", "Loop stopped — resource budget exceeded"),
+    OUTCOME_CANCELLED: ("state_change", "warning", "Loop cancelled"),
+}
 
 
 @dataclass
@@ -126,6 +137,7 @@ async def run_loop(
     replan_requested: Callable[[], bool] | None = None,
     questions_pending: Callable[[], bool] | None = None,
     ledger: LoopLedger | None = None,
+    journal_terminal: bool = True,
 ) -> LoopOutcome:
     """Drive a task to a verified result; returns the terminal outcome.
 
@@ -196,6 +208,19 @@ async def run_loop(
 
     def _finish(attempt_id: str, outcome: str) -> LoopOutcome:
         _close_attempt(attempt_id, outcome)
+        entry = _TERMINAL_JOURNAL.get(outcome) if journal_terminal else None
+        if entry is not None:
+            jtype, severity, title = entry
+            task_journal.record(
+                task_id=task_id,
+                phase="result",
+                type=jtype,
+                title=title,
+                actor_type="system",
+                severity=severity,
+                refs=task_journal.refs(attempt_id=attempt_id),
+                metadata={"outcome": outcome, "attempts": controller.attempts},
+            )
         _emit(outcome_to_state(outcome), outcome)
         return LoopOutcome(outcome, controller.attempts)
 
@@ -217,6 +242,18 @@ async def run_loop(
         # route the task back to a human to revise the plan rather than burning
         # more attempts against a plan the agent itself distrusts.
         if replan_requested is not None and await asyncio.to_thread(replan_requested):
+            await asyncio.to_thread(
+                task_journal.record,
+                task_id=task_id,
+                phase="change_request",
+                type="plan_change",
+                title="Generator requested a plan change",
+                body="The generator flagged the approved plan as wrong/unsafe "
+                "and wrote the change-request marker; the loop paused for a human.",
+                actor_type="agent",
+                severity="blocking",
+                refs=task_journal.refs(run_id=turn.run_id, attempt_id=attempt_id),
+            )
             return await asyncio.to_thread(_finish, attempt_id, OUTCOME_PLAN_CHANGE)
 
         # The generator can also pause itself by raising blocking questions
@@ -224,6 +261,18 @@ async def run_loop(
         # for a human to answer rather than evaluating a deliberately-incomplete
         # turn.
         if questions_pending is not None and await asyncio.to_thread(questions_pending):
+            await asyncio.to_thread(
+                task_journal.record,
+                task_id=task_id,
+                phase="execution",
+                type="question",
+                title="Generator raised blocking question(s)",
+                body="The generator wrote the questions marker and paused for a "
+                "human to answer before continuing.",
+                actor_type="agent",
+                severity="blocking",
+                refs=task_journal.refs(run_id=turn.run_id, attempt_id=attempt_id),
+            )
             return await asyncio.to_thread(_finish, attempt_id, OUTCOME_NEEDS_ANSWERS)
 
         verdict: Verdict | None = None
@@ -241,6 +290,19 @@ async def run_loop(
         if verdict is not None:
             await asyncio.to_thread(
                 _record_evaluation, task_id, attempt_id, turn.run_id, verdict
+            )
+            _v = verdict.verdict.value
+            await asyncio.to_thread(
+                task_journal.record,
+                task_id=task_id,
+                phase="verification",
+                type="verdict",
+                title=f"Evaluator verdict: {_v} (attempt {controller.attempts})",
+                body=verdict.missing,
+                actor_type="agent",
+                severity="info" if _v == "pass" else "warning",
+                refs=task_journal.refs(attempt_id=attempt_id),
+                metadata={"verdict": _v, "score": verdict.score},
             )
 
         step = controller.on_attempt_finished(verdict)

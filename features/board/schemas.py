@@ -366,6 +366,35 @@ class PlanningInfoDTO(BaseModel):
     questions: list[PlanningQuestionDTO] = Field(default_factory=list)
 
 
+class JournalEntryDTO(BaseModel):
+    """One entry in a task's semantic journal, for the cockpit timeline."""
+
+    id: str
+    task_id: str
+    seq: int = 0
+    actor_type: str
+    actor_id: str | None = None
+    phase: str
+    type: str
+    title: str
+    body: str = ""
+    severity: str = "info"
+    refs: dict = Field(default_factory=dict)
+    metadata: dict = Field(default_factory=dict)
+    supersedes_id: str | None = None
+    created_at: str | None = None
+
+
+class JournalEntryCreate(BaseModel):
+    """A manual journal note authored by a human in the cockpit."""
+
+    type: str = "note"
+    title: str = Field(min_length=1, max_length=200)
+    body: str = Field(default="", max_length=10000)
+    severity: str = "info"
+    refs: dict = Field(default_factory=dict)
+
+
 class CommentCreate(BaseModel):
     #: May be empty when ``attachments`` carries the whole note (validated in
     #: the route: a note needs text or at least one attachment).

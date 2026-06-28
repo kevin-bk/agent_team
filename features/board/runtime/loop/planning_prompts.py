@@ -38,6 +38,22 @@ ASK_QUESTIONS_INSTRUCTION = (
     "low-impact gaps."
 )
 
+#: Standing discipline: agents append meaningful moments to the journal inbox as
+#: they work. This is a durable record (it survives the agent's own context
+#: compaction) that a human or a later session can read back, so keep entries
+#: short and decision-grade — not a verbose log. Reused across planner/generator/
+#: evaluator prompts.
+JOURNAL_DISCIPLINE = (
+    "Keep a running journal of important moments. Whenever you make a notable "
+    "decision, rely on a key assumption, hit a risk, or change direction, append "
+    f"ONE JSON object per line to `{A.JOURNAL_NOTES_PATH}` (JSONL — append only, "
+    "never rewrite the file): "
+    '{"type": "decision|assumption|risk|note", "title": "short summary", '
+    '"body": "why / detail", "severity": "info|warning|blocking"}. '
+    "Keep it concise and meaningful; do not log routine steps and never put "
+    "secrets in a note."
+)
+
 #: System preamble for the planning turn. The planner must research first and
 #: only write artifacts — it must not implement the change.
 PLANNER_SYSTEM = (
@@ -117,6 +133,7 @@ def build_planning_prompt(
         "Keep each task small and independently verifiable. Use repo-relative "
         "paths. Do not implement. When done, end your reply with a one-line "
         "confirmation that all three files were written.\n\n"
+        f"## Journal\n{JOURNAL_DISCIPLINE}\n\n"
         f"## When you are blocked\n{ASK_QUESTIONS_INSTRUCTION}"
     )
 
@@ -171,7 +188,7 @@ GENERATOR_STRICT_PREAMBLE = (
     "(schema version 1: a list of {id, question, reason, blocking, options}) "
     "rather than guessing. In either case, END YOUR TURN IMMEDIATELY after "
     "writing the file — do not make further edits or run other steps in this "
-    "turn; wait for the human."
+    f"turn; wait for the human.\n\n{JOURNAL_DISCIPLINE}"
 )
 
 
@@ -200,7 +217,7 @@ TASK_GRAPH_PREAMBLE = (
     f"human to proceed, write `{A.QUESTIONS_PATH}` with blocking "
     "questions (schema version 1) rather than guessing. In either case, END "
     "YOUR TURN IMMEDIATELY after writing the file — do not make further edits "
-    "or run other steps in this turn; wait for the human."
+    f"or run other steps in this turn; wait for the human.\n\n{JOURNAL_DISCIPLINE}"
 )
 
 
@@ -281,7 +298,8 @@ def build_task_evaluator_prompt(
         "failures are explicitly non-blocking and explained under risks. Use "
         "`needs_human` only when a person must decide. Then end your reply with "
         'a single line of JSON as a fallback: {"verdict": "pass|fail|'
-        'needs_human", "score": 0.0, "missing": "short note"}'
+        'needs_human", "score": 0.0, "missing": "short note"}\n\n'
+        f"## Journal\n{JOURNAL_DISCIPLINE}"
     )
 
 
@@ -352,5 +370,6 @@ def build_strict_evaluator_prompt(
         "person must decide or safe verification is impossible here.\n\n"
         "Then end your reply with a single line of JSON as a fallback: "
         '{"verdict": "pass|fail|needs_human", "score": 0.0, '
-        '"missing": "short note"}'
+        '"missing": "short note"}\n\n'
+        f"## Journal\n{JOURNAL_DISCIPLINE}"
     )

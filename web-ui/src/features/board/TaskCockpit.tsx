@@ -17,6 +17,7 @@ import {
   FolderGit2,
   Gauge,
   History,
+  ListChecks,
   MessagesSquare,
   PanelRightClose,
   PanelRightOpen,
@@ -100,6 +101,7 @@ import { cn } from "@/lib/utils";
 import { useTaskAgentRun } from "./cockpit/useTaskAgentRun";
 import { useTypingIndicator } from "./cockpit/useTypingIndicator";
 import { LoopPanel } from "./cockpit/LoopPanel";
+import { JournalPanel } from "./cockpit/JournalPanel";
 import { LoopStatusChip } from "./cockpit/LoopStatusChip";
 import { FileViewerModal } from "./cockpit/FileViewerModal";
 import { NoteEditor } from "./cockpit/NoteEditor";
@@ -113,6 +115,7 @@ import { TaskScheduleDialog } from "./TaskScheduleDialog";
 
 const OVERVIEW = "__overview__";
 const LOOP = "__loop__";
+const JOURNAL = "__journal__";
 
 /** Short sub-labels for the loop thread item, by persisted loop state. */
 const LOOP_STATE_SUB: Record<string, string> = {
@@ -462,6 +465,17 @@ export function TaskCockpit({
               active={thread === LOOP}
               onClick={() => selectThread(LOOP)}
             />
+            <ThreadItem
+              icon={
+                <span className="flex h-6 w-6 items-center justify-center rounded bg-indigo-100 text-indigo-600 dark:bg-indigo-500/15 dark:text-indigo-300">
+                  <ListChecks className="h-3.5 w-3.5" />
+                </span>
+              }
+              label="Journal"
+              sub="Decisions & timeline"
+              active={thread === JOURNAL}
+              onClick={() => selectThread(JOURNAL)}
+            />
 
             <div className="px-2 pb-1 pt-3 text-[10.5px] font-semibold uppercase tracking-[0.06em] text-muted-foreground">
               Agents
@@ -561,6 +575,8 @@ export function TaskCockpit({
                 canEdit={canEdit}
               />
             </>
+          ) : thread === JOURNAL ? (
+            <JournalPanel task={task} canEdit={canEdit} />
           ) : activeAgent ? (
             <>
               <div className="flex items-center gap-2 border-b border-border px-4 py-2">

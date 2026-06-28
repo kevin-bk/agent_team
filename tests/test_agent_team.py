@@ -16,6 +16,7 @@ from agent_team.features.board.models import (
     AgentTeamComment,
     AgentTeamConversation,
     AgentTeamEvaluation,
+    AgentTeamJournalEntry,
     AgentTeamKeySeq,
     AgentTeamRun,
     AgentTeamRunEvent,
@@ -48,6 +49,7 @@ _PLUGIN_MODELS = (
     AgentTeamAutopilot,
     AgentTeamAttempt,
     AgentTeamEvaluation,
+    AgentTeamJournalEntry,
 )
 
 
@@ -117,6 +119,7 @@ def test_plugin_meta_models_and_menu():
         "plugin_agent_team_task_schedule",
         "plugin_agent_team_attempt",
         "plugin_agent_team_evaluation",
+        "plugin_agent_team_journal_entry",
     ]
     menu = plugin.menu_items()
     assert len(menu) == 1

@@ -423,6 +423,42 @@ export interface PlanningRunBody {
   max_wall_seconds?: number | null;
 }
 
+/** One entry in a task's semantic journal (sổ cái). */
+export interface JournalEntryDTO {
+  id: string;
+  task_id: string;
+  seq: number;
+  actor_type: "human" | "agent" | "system";
+  actor_id?: string | null;
+  phase: string;
+  type: string;
+  title: string;
+  body?: string;
+  severity: "info" | "warning" | "blocking";
+  refs?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+  supersedes_id?: string | null;
+  created_at?: string | null;
+}
+
+/** Query filters for the journal timeline. */
+export interface JournalFilters {
+  type?: string;
+  phase?: string;
+  severity?: string;
+  after_seq?: number;
+  limit?: number;
+}
+
+/** Body for a manual human journal note. */
+export interface JournalNoteBody {
+  type?: string;
+  title: string;
+  body?: string;
+  severity?: "info" | "warning" | "blocking";
+  refs?: Record<string, unknown>;
+}
+
 export interface CreateBoardBody {
   name: string;
   slug?: string | null;

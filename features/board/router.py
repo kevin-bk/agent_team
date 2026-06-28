@@ -49,6 +49,7 @@ from agent_team.features.board.schemas import (
     JiraPreviewItem,
     JiraPreviewResponse,
     JiraSyncBody,
+    JournalEntryCreate,
     LoopAttemptDTO,
     LoopEvaluationDTO,
     LoopInfoDTO,
@@ -1526,6 +1527,20 @@ async def start_task_planning(
     task.objective = objective
     task.execution_mode = TASK_EXEC_MODE_AUTONOMOUS
     task.planning_mode = PLANNING_MODE_STRICT
+
+    from agent_team.features.board.runtime import task_journal
+
+    task_journal.record_with(
+        db,
+        task_id=task_id,
+        phase="planning",
+        type="state_change",
+        title="Planning started",
+        body=objective,
+        actor_id=ctx.user.id,
+        actor_type="human",
+        metadata={"planner_id": payload.planner_id, "reviewer_id": payload.reviewer_id or None},
+    )
     db.commit()
 
     from agent_team.features.board.runtime.dispatch import capture_main_loop
@@ -1598,14 +1613,31 @@ async def edit_task_planning_artifact(
             return bad_request("; ".join(errors))
     new_etag = artifacts.write_text(task.workspace_path, rel, payload.content)
 
+    from agent_team.features.board.runtime import task_journal
+
     # A human edit invalidates a prior approval — it must be re-approved.
+    invalidated = False
     if task.planning_mode == PLANNING_MODE_STRICT:
         meta = task.planning_meta()
         if meta.get("approved"):
             meta.update({"approved": False, "approved_by": None, "approved_at": None})
             task.planning_meta_json = json.dumps(meta, ensure_ascii=False)
+            invalidated = True
         if task.loop_state == LoopState.PLAN_APPROVED.value:
             task.loop_state = LoopState.WAITING_PLAN_APPROVAL.value
+        task_journal.record_with(
+            db,
+            task_id=task_id,
+            phase="planning",
+            type="artifact_update",
+            title=f"Edited {artifact_name}"
+            + (" (approval invalidated)" if invalidated else ""),
+            actor_id=ctx.user.id,
+            actor_type="human",
+            severity="warning" if invalidated else "info",
+            refs=task_journal.refs(artifacts=[rel]),
+            metadata={"etag": new_etag},
+        )
         db.commit()
     return {"ok": True, "path": rel, "etag": new_etag}
 
@@ -1643,6 +1675,22 @@ def _approve_plan(ctx, db) -> object | None:
     )
     task.planning_meta_json = json.dumps(meta, ensure_ascii=False)
     task.loop_state = LoopState.PLAN_APPROVED.value
+
+    from agent_team.features.board.runtime import task_journal
+
+    task_journal.record_with(
+        db,
+        task_id=task.id,
+        phase="approval",
+        type="approval",
+        title="Plan approved",
+        actor_id=getattr(ctx.user, "id", None),
+        actor_type="human",
+        refs=task_journal.refs(
+            artifacts=[artifacts.SPEC_PATH, artifacts.PLAN_PATH, artifacts.TASKS_PATH]
+        ),
+        metadata={"artifact_etags": meta.get("artifact_etags", {})},
+    )
     db.commit()
     return None
 
@@ -1685,6 +1733,20 @@ async def request_task_planning_changes(
 
     meta.update({"approved": False, "approved_by": None, "approved_at": None})
     task.planning_meta_json = json.dumps(meta, ensure_ascii=False)
+
+    from agent_team.features.board.runtime import task_journal
+
+    task_journal.record_with(
+        db,
+        task_id=task_id,
+        phase="review",
+        type="plan_review",
+        title="Human requested plan changes",
+        body=feedback.strip(),
+        actor_id=ctx.user.id,
+        actor_type="human",
+        severity="warning",
+    )
     db.commit()
 
     # Re-planning supersedes any active change-request marker; archive it so a
@@ -1749,6 +1811,25 @@ async def approve_and_run_task_planning(
         "max_wall_seconds": payload.max_wall_seconds,
     }
     task.planning_meta_json = json.dumps(meta, ensure_ascii=False)
+
+    from agent_team.features.board.runtime import task_journal
+
+    task_journal.record_with(
+        db,
+        task_id=task_id,
+        phase="execution",
+        type="state_change",
+        title="Execution resumed after plan change" if was_plan_change else "Execution started",
+        actor_id=ctx.user.id,
+        actor_type="human",
+        metadata={
+            "agent_id": payload.agent_id,
+            "evaluator_id": payload.evaluator_id,
+            "task_graph": payload.task_graph,
+            "max_attempts": payload.max_attempts,
+            "resumed_from_plan_change": was_plan_change,
+        },
+    )
     db.commit()
 
     from agent_team.features.board.runtime.dispatch import capture_main_loop
@@ -1814,6 +1895,26 @@ async def answer_task_planning(
     answered = [q for q in artifacts.read_questions(task.workspace_path) if q["answer"]]
     addendum = planning_prompts.build_answers_addendum(answered, payload.note)
 
+    from agent_team.features.board.runtime import task_journal
+
+    _answers_body = "\n".join(
+        f"- {q.get('question', q['id'])} → {q['answer']}" for q in answered
+    )
+    if payload.note:
+        _answers_body = f"{_answers_body}\n\nNote: {payload.note}".strip()
+    task_journal.record_with(
+        db,
+        task_id=task_id,
+        phase="change_request",
+        type="answer",
+        title=f"Human answered {len(answered)} question(s)",
+        body=_answers_body,
+        actor_id=ctx.user.id,
+        actor_type="human",
+        metadata={"answers": payload.answers, "note": payload.note},
+    )
+    db.commit()
+
     meta = task.planning_meta()
     # Execution-phase answers only reach the generator's prompt, so also fold
     # them into SPEC.md as approved scope — otherwise the evaluator (which grades
@@ -1868,6 +1969,72 @@ async def answer_task_planning(
         reviewer_alias=meta.get("reviewer_id") or None,
     )
     return {"ok": True, "task_id": task_id, "resumed": "planning"}
+
+
+@router.get("/tasks/{task_id}/journal")
+async def list_task_journal(
+    task_id: str,
+    request: Request,
+    type: str | None = None,
+    phase: str | None = None,
+    severity: str | None = None,
+    after_seq: int | None = None,
+    before_seq: int | None = None,
+    limit: int = 200,
+    db: Session = Depends(get_db),
+):
+    """The task's semantic journal: an append-only timeline of key moments.
+
+    Optional ``type``/``phase``/``severity`` filter the entries; ``after_seq``/
+    ``before_seq`` page through them (entries come back in ascending ``seq``).
+    """
+    ctx, err = authz.guard_task(db, request, task_id, min_role="viewer")
+    if err:
+        return err
+    from agent_team.features.board.repositories import journal as journal_repo
+
+    entries = journal_repo.list_entries(
+        db,
+        task_id,
+        limit=limit,
+        before_seq=before_seq,
+        after_seq=after_seq,
+        type=type,
+        phase=phase,
+        severity=severity,
+    )
+    return [journal_repo.serialize_entry(e) for e in entries]
+
+
+@router.post("/tasks/{task_id}/journal")
+async def add_task_journal_note(
+    task_id: str,
+    payload: JournalEntryCreate,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Append a manual human note to the task journal."""
+    ctx, err = authz.guard_task(db, request, task_id, min_role="editor")
+    if err:
+        return err
+    from agent_team.features.board.models import JOURNAL_ACTOR_HUMAN
+    from agent_team.features.board.repositories import journal as journal_repo
+
+    entry = journal_repo.append_entry(
+        db,
+        task_id=task_id,
+        actor_type=JOURNAL_ACTOR_HUMAN,
+        actor_id=ctx.user.id,
+        phase="system",
+        type=payload.type,
+        title=payload.title,
+        body=payload.body,
+        severity=payload.severity,
+        refs=payload.refs,
+    )
+    db.commit()
+    db.refresh(entry)
+    return journal_repo.serialize_entry(entry)
 
 
 @router.get("/tasks/{task_id}/runs")
