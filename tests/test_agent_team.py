@@ -1870,6 +1870,64 @@ def test_has_verification_evidence():
     )
 
 
+def test_format_evidence_digest():
+    """The digest surfaces failed commands first, plus checks and risks."""
+    from agent_team.features.board.runtime.loop.verdict import format_evidence_digest
+
+    assert format_evidence_digest({}) == ""
+    assert format_evidence_digest({"verdict": "fail", "score": 0.2}) == ""
+
+    digest = format_evidence_digest(
+        {
+            "commands": [
+                {"cmd": "ruff check", "exit_code": 0, "summary": "clean"},
+                {"cmd": "pytest", "exit_code": 1, "summary": "3 failed"},
+            ],
+            "checks": "build succeeded",
+            "risks": ["migration not reversible"],
+        }
+    )
+    # The failing command is listed before the passing one.
+    assert digest.index("pytest") < digest.index("ruff check")
+    assert "exit 1 (FAILED)" in digest
+    assert "3 failed" in digest
+    assert "build succeeded" in digest
+    assert "migration not reversible" in digest
+
+    # Lightweight contract: free-text checks alone still produce a digest.
+    assert "ran pytest" in format_evidence_digest({"checks": "ran pytest, ok"})
+
+    # The digest is capped so the retry prompt stays small.
+    big = format_evidence_digest(
+        {"checks": ["x" * 5000]}, max_chars=200
+    )
+    assert len(big) <= 200
+
+
+def test_loop_controller_relays_evidence_in_followup():
+    """A failing attempt's evidence is fed back into the next prompt."""
+    from agent_team.features.board.runtime.loop.controller import (
+        Continue,
+        LoopController,
+    )
+    from agent_team.features.board.runtime.loop.verdict import LoopVerdict, Verdict
+
+    c = LoopController("obj", max_attempts=5)
+    step = c.on_attempt_finished(
+        Verdict(
+            LoopVerdict.FAIL,
+            missing="fix the build",
+            evidence={
+                "commands": [{"cmd": "npm run build", "exit_code": 2, "summary": "TS2345 cart.ts:42"}]
+            },
+        )
+    )
+    assert isinstance(step, Continue)
+    assert "fix the build" in step.followup
+    assert "npm run build" in step.followup
+    assert "TS2345 cart.ts:42" in step.followup
+
+
 async def test_run_loop_counts_evaluator_spend_in_budget(db, monkeypatch):
     """The evaluator turn's spend must count against the budget, not just the
     generator's — otherwise a token/cost cap silently overshoots."""

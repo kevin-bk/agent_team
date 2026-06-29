@@ -62,6 +62,82 @@ def has_verification_evidence(verdict: Verdict) -> bool:
     return any(evidence.get(key) for key in _VERIFICATION_EVIDENCE_KEYS)
 
 
+#: Soft cap on the rendered evidence digest so the retry prompt stays small and
+#: the cacheable prior prefix is preserved.
+_EVIDENCE_DIGEST_MAX_CHARS = 1500
+
+
+def _evidence_lines(value: object) -> list[str]:
+    """Coerce a str / list of strings into trimmed, non-empty lines."""
+    if isinstance(value, str):
+        return [value.strip()] if value.strip() else []
+    if isinstance(value, list):
+        return [s for s in (str(item).strip() for item in value) if s]
+    return []
+
+
+def _command_exit_code(command: dict) -> int:
+    try:
+        return int(command.get("exit_code", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def format_evidence_digest(
+    evidence: dict, *, max_chars: int = _EVIDENCE_DIGEST_MAX_CHARS
+) -> str:
+    """Render an evaluator's evidence into a compact digest for the next attempt.
+
+    Surfaces the concrete signal a generator can act on — the commands the
+    evaluator ran (with exit codes; failures first), any free-text ``checks``,
+    and noted ``risks`` — capped so the retry prompt stays small and
+    cache-friendly. Returns ``""`` when there is nothing actionable to relay.
+    """
+    if not isinstance(evidence, dict) or not evidence:
+        return ""
+    sections: list[str] = []
+
+    commands = evidence.get("commands")
+    if isinstance(commands, list) and commands:
+        # Failed commands first — they are what the next attempt must address.
+        ordered = sorted(
+            (c for c in commands if isinstance(c, dict)),
+            key=lambda c: 0 if _command_exit_code(c) != 0 else 1,
+        )
+        lines: list[str] = []
+        for command in ordered:
+            cmd = str(command.get("cmd") or command.get("command") or "").strip()
+            if not cmd:
+                continue
+            code = _command_exit_code(command)
+            summary = str(command.get("summary") or "").strip()
+            line = f"- `{cmd}` → exit {code} ({'FAILED' if code != 0 else 'ok'})"
+            if summary:
+                line += f": {summary}"
+            lines.append(line)
+        if lines:
+            sections.append("Commands the evaluator ran:\n" + "\n".join(lines))
+
+    check_lines = _evidence_lines(evidence.get("checks"))
+    if check_lines:
+        sections.append(
+            "Checks observed:\n" + "\n".join(f"- {line}" for line in check_lines)
+        )
+
+    risk_lines = _evidence_lines(evidence.get("risks"))
+    if risk_lines:
+        sections.append(
+            "Risks noted:\n" + "\n".join(f"- {line}" for line in risk_lines)
+        )
+
+    if not sections:
+        return ""
+    digest = "\n\n".join(sections)
+    if len(digest) > max_chars:
+        digest = digest[: max_chars - 1].rstrip() + "…"
+    return digest
+
+
 def _coerce_verdict(value: object) -> LoopVerdict | None:
     text = str(value or "").strip().lower()
     for member in LoopVerdict:

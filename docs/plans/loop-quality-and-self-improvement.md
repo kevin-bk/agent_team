@@ -8,7 +8,8 @@ This doc proposes the next layer on top of the shipped autonomous loop. It is
 organised in three parts, each independently shippable:
 
 - **Part 1 — Loop intelligence.** Stop wasting attempts and make each retry
-  sharper. (plateau detection, evidence-in-retry, risk lanes)
+  sharper. (evidence-in-retry **shipped**; risk lanes via the project-harness;
+  plateau detection considered and rejected)
 - **Part 2 — Autonomy & operations.** Make unattended (autopilot) work actually
   trustworthy and make escalations fast to triage.
 - **Part 3 — Self-improvement.** Turn per-task friction into cross-task learning
@@ -46,7 +47,17 @@ The work below builds on these.
 
 ## Part 1 — Loop intelligence
 
-### 1.1 Plateau / no-progress detection
+### 1.1 Plateau / no-progress detection — **rejected (for now)**
+
+> **Decision.** Not pursued: the only forward-progress signal we have is the
+> evaluator's `score`, which is **self-reported by the evaluator agent with no
+> rubric** (see `evaluator.py::_VERDICT_SHAPE` — the prompt asks for
+> `"score": 0.0-1.0` with no guidance on how to assign it; `parse_verdict` only
+> float-coerces and clamps it). A stall metric built on a vibe-number is
+> unreliable. Revisit only if/when the evaluator is given a real scoring rubric
+> (e.g. % of acceptance criteria met, % of commands exiting 0). The attempt +
+> budget caps remain the backstop in the meantime. The original analysis is
+> kept below for context.
 
 **Problem.** `LoopController.on_attempt_finished` (`runtime/loop/controller.py`)
 treats every non-`pass` verdict identically: it continues until `max_attempts`.
@@ -89,7 +100,13 @@ later (v2): a `fail` at `score≥0.9` is "almost there" → allow one extra targ
 attempt even past a tight cap, while `score≤0.2` repeated → escalate fast. Ship
 the repeat/score-stall detector in v1; keep the asymmetric policy for v2.
 
-### 1.2 Feed evaluator evidence back into the retry prompt
+### 1.2 Feed evaluator evidence back into the retry prompt — **shipped**
+
+> **Status.** Implemented. `verdict.format_evidence_digest` renders failed
+> commands (failures first, with exit codes), free-text `checks`, and `risks`
+> into a capped digest; `LoopController._followup` appends it under "What the
+> evaluator observed (address this directly)". Pure functions, unit-tested
+> (`test_format_evidence_digest`, `test_loop_controller_relays_evidence_in_followup`).
 
 **Problem.** `LoopController._followup` only injects `verdict.missing` (prose).
 But the evaluator usually ran commands and observed concrete failures, captured
@@ -113,12 +130,12 @@ churn). Pure function change — no new I/O.
 - A tiny formatter (`verdict.py::format_evidence_digest`) so it's unit-tested in
   isolation and reused by §2.3 (escalation summary).
 
-### 1.3 Risk lanes (graduated process by risk)
+### 1.3 Risk lanes via the **project-harness** (graduated process by risk)
 
 **Problem.** `max_attempts`, evaluator depth, and whether a planner/reviewer runs
 are **fixed per task** regardless of blast radius. A copy tweak and a DB
-migration get the same machinery. This is both wasteful (overhead on trivial
-work) and unsafe (no extra rigor on dangerous work).
+migration get the same machinery — wasteful on trivial work, unsafe on dangerous
+work.
 
 > **Example A (waste).** "Change button label 'Sign in' → 'Log in'" goes through
 > full strict planning + reviewer + an evaluator that runs the whole test suite
@@ -127,30 +144,148 @@ work) and unsafe (no extra rigor on dangerous work).
 > **Example B (risk).** "Alter the `payment` table schema" gets the *same* depth
 > as the label change — no mandatory decision record, no deeper evidence.
 
-**Design.** Introduce a `risk_lane ∈ {tiny, normal, high_risk}` on the task
-(default `normal`), set at intake (human, label rule, or a cheap classifier) and
-used to pick a **profile**, not a new state machine (keep `loop_state`
-canonical, D4):
+**Solution: a `risk_lane ∈ {quick, normal, risk}` on the task**, chosen by a
+deterministic checklist, used to pick an execution **profile** — *not* a new
+state machine (`task.loop_state` stays canonical, D4).
+
+#### The two-part split (this is the load-bearing design decision)
+
+The lane system has two kinds of component with opposite requirements, so they
+live in two places:
+
+- **(A) Methodology — the `project-harness` (an injected workspace artifact).**
+  The risk checklist, the lane definitions, the per-lane "what to do",
+  intake/decision instructions, and story/decision templates are **content**
+  that should be editable without a code deploy, versioned in git, and readable
+  by both LLM and CLI agents (file-first, D7). It lives in a **`project-harness`
+  repo** marked on the board and **injected into each task workspace** — exactly
+  the existing pattern for the board wiki (`AgentTeamBoardRepo.is_wiki`) and the
+  `wiki/skill_pack`. **Improving the methodology = updating that repo; no plugin
+  release.** This makes the project-harness the shared home for the later
+  context-rules (Part-3-adjacent) and friction rules (Part 3) too.
+
+- **(B) Enforcement — backend code + board config (never the workspace).**
+  Computing the lane from the flags, pinning it on the task, mapping lane →
+  profile, applying the budget, and the completion gate **must** be backend
+  logic. The workspace is **agent-writable**, so if a gate or budget lived in a
+  workspace file an agent could weaken its own gate — breaking the
+  evaluator-owns-completion invariant (D5). The lane→profile mapping is **board
+  config in the DB** (tunable via UI), not a workspace file.
+
+```
+┌─ project-harness repo (injected into workspace) ─┐  update repo = update method
+│  risk checklist (11 flags) · lane definitions ·  │  (no deploy; LLM+CLI readable)
+│  intake guidance · story/decision templates ·    │
+│  preview classifier script                       │
+└──────────────────┬────────────────────────────────┘
+                   │ planner reads → fills flags → writes INTAKE.json
+                   ▼
+┌─ backend code + board config (DB) ────────────────┐  tamper-proof, UI-tunable
+│  compute lane (count + hard-gate) · pin on task   │
+│  map lane→profile · apply budget · completion gate │
+└─────────────────────────────────────────────────────┘
+```
+
+#### Where it runs in the lifecycle
+
+No new agent step (that would add a model turn + latency). Classification folds
+into the **planning phase**, enforcement into **execution**:
+
+| Step | Who | Where |
+|---|---|---|
+| Fill the risk checklist (needs semantic judgement) | **planner** (already reads the workspace + writes SPEC's Risks) | planning phase → writes `.agent-team/INTAKE.json` |
+| Compute the lane from the flags (must be deterministic/auditable) | **backend code** | on reading the planner's artifact |
+| Approve / override the lane | **human** | at `waiting_plan_approval` (lane shown in the plan) |
+| Apply the profile (reviewer?, attempts, evaluator strictness, decision-note requirement) | **backend code** | at `approve-and-run` + during the loop |
+
+Tasks that never enter planning (plain chat, direct autopilot) default to
+`normal`.
+
+#### The deterministic classifier (lives in the project-harness, computed in code)
+
+Eleven binary risk flags the planner marks (definitions in the project-harness so
+they can evolve without a deploy):
+
+`auth`, `authorization`, `data_model`, `secrets_config`, `audit_security`,
+`external_systems`, `public_contracts`, `cross_platform`, `existing_behavior`,
+`weak_proof`, `multi_domain`.
+
+Lane rule (computed in backend code over the planner's flags):
+
+```
+0–1 flags          → quick  (or normal if code impact is non-trivial)
+2–3 flags          → normal
+4+ flags           → risk
+any HARD GATE flag → risk    (regardless of count)
+```
+
+**Hard gates** (one is enough): `auth`, `authorization`, `data_model`
+(loss/migration), `secrets_config` (secrets/credentials/env), `audit_security`,
+`external_systems`, or any change that **weakens validation**. Hard gates are
+re-checked in code from task labels/objective signals — an agent cannot
+self-classify dangerous work as `quick` to skip rigor, and a lane may only be
+**tightened** by a human, never loosened below §0.2.
+
+#### Lane → profile
 
 | Lane | Planner/Reviewer | `max_attempts` | Evaluator | Completion gate |
 |---|---|---|---|---|
-| `tiny` | skip planner; legacy/no plan | 1–2 | light (lint/build only) | `pass` + evidence |
-| `normal` | planner, reviewer optional | ~5 (today's default) | full tests/build | `pass` + evidence (§0.2) |
-| `high_risk` | planner **and** reviewer required | ~5 + plateau early-exit | full + must list `commands` with exit codes | `pass` + evidence **+** a durable decision note in the journal |
+| `quick` | skip planner | 1–2 | light (lint/build) | `pass` + evidence (§0.2) — **never skipped** |
+| `normal` | planner; reviewer optional | ~5 (today's default) | full tests/build | `pass` + evidence (§0.2) |
+| `risk` | planner **and** reviewer required | ~5 | full + must list `commands` with exit codes | `pass` + evidence **+** a durable decision note in the journal |
+
+> Note: even `quick` keeps the evaluator + evidence gate — it only gets *lighter*,
+> never bypassed, so the verified-completion invariant (D5) holds for every lane.
+
+#### How the backend drives the agent per lane
+
+All three lanes run the **same loop machinery** (`LoopController` +
+`driver.run_loop` / `task_graph`); the lane only changes config knobs, never the
+lifecycle (D4). After each attempt the driver sends the continuation **followup**
+(a normal user message, D1 — now carrying the §1.2 evidence digest) until the
+lane's completion gate is met.
+
+- **`quick`** — backend skips heavy planning: no PLAN/TASKS generation, no plan
+  approval gate. It calls `driver.run_loop(objective, max_attempts=1–2)` with a
+  *light* evaluator (lint/build). The agent gets the objective prompt → works →
+  one evaluator turn → `pass`+evidence completes; otherwise 1–2 retries then
+  `capped`/`needs_human`. Evidence gate still applies.
+- **`normal`** — today's full flow: `planning.py` produces SPEC → PLAN → TASKS →
+  human approve → `task_graph.run_task_graph` with `max_attempts≈5`, full
+  tests/build evaluator, optional reviewer; per-task generator+evaluator loop
+  plus the final whole-SPEC verify.
+- **`risk`** — `normal` plus three tightenings the backend toggles in the
+  profile: (1) **reviewer required** — backend will not move to `plan_approved`
+  without a reviewer pass; (2) **strict evaluator addendum** — a `pass` whose
+  `commands` are empty or have non-zero exit codes is downgraded to `fail` by
+  `WorkerEvaluator` (on top of the shipped §0.2 gate); (3)
+  **`require_decision_note`** — the completion gate also checks for a durable
+  `decision` journal entry; if missing, the driver sends a followup demanding it
+  (or routes to `needs_human`) rather than completing.
 
 **Landing points.**
-- Model: `risk_lane` on `AgentTeamTask` (+ migration), surfaced in
-  `planning_meta_json` / the planning API body.
-- `service.py`: map lane → `{run_planner, run_reviewer, max_attempts,
-  evaluator_strictness}` when assembling the loop; this replaces hard-coded
-  defaults, it does not branch the lifecycle.
-- `planning_prompts.py`: a high-risk evaluator addendum that **rejects** a
-  `pass` whose `commands` are empty or have non-zero exit codes (tightening
-  §0.2 for the dangerous lane only).
-- UI: a lane chip on the card + a lane selector in the planning panel.
-
-This is the highest-leverage idea borrowed from `repository-harness`'s
-tiny/normal/high-risk lanes, expressed natively in our model.
+- **project-harness repo role:** a board-repo marker beside `is_wiki` (e.g.
+  `AgentTeamBoardRepo.is_harness`) + injection of its files into the task
+  workspace, reusing the wiki/`skill_pack` injection path. Seeded with a default
+  checklist + lane docs + templates + the preview classifier script.
+- **Shared pure classifier:** one function `classify_lane(flags) → lane` used by
+  both the project-harness preview script (advisory) and the backend
+  (authoritative); the backend never trusts the workspace script's output.
+- **Model:** `risk_lane` on `AgentTeamTask` (+ migration), pinned in
+  `planning_meta_json`; lane→profile defaults as **board config**
+  (`AgentTeamAutopilot`/board settings) so they're UI-tunable.
+- **`planning_prompts.py`:** the planner prompt points at the project-harness
+  checklist and asks for `.agent-team/INTAKE.json` (flags + reasons) *before*
+  PLAN/TASKS; a `risk`-lane evaluator addendum that **rejects** a `pass` whose
+  `commands` are empty or have non-zero exit codes (tightening §0.2 for the
+  dangerous lane only).
+- **`planning.py` / `service.py`:** gate on `INTAKE.json`, compute+pin the lane,
+  then map lane → `{run_reviewer, max_attempts, evaluator_strictness,
+  require_decision_note}` and route (`quick` → light `run_loop`; `normal`/`risk`
+  → full PLAN/TASKS + graph). Replaces hard-coded defaults; does **not** branch
+  the lifecycle.
+- **UI:** a lane chip on the card + a lane selector / override in the planning
+  panel.
 
 ---
 
@@ -226,7 +361,8 @@ it failed:
 - On `RUN_ERROR`, capture a short failure reason (last error frame / run error
   field) into the task (or journal) and **prepend it** to the next auto-run's
   seed prompt ("Your previous attempt failed with: …; address this first.").
-- Detect **repeated near-identical errors** (reuse the §1.1 fingerprint) and
+- Detect **repeated near-identical errors** (a normalised error fingerprint —
+  lowercased, whitespace-collapsed hash) and
   **escalate early** to the error/review column instead of exhausting
   `max_attempts` on the same wall.
 
@@ -278,9 +414,9 @@ problem is invisible.
 > improvement task: "add test fixtures + a `how to run tests` doc", which would
 > unblock all future work on that board.
 
-This is the missing "**harness delta**" loop: the system should not only produce
-*product* deltas (the task's code) but also *process* deltas that make the next
-task easier.
+This is the missing **process-improvement** loop: each task should not only
+produce a *product* delta (its code) but also, when it hits friction, a *process*
+delta that makes the next task easier.
 
 ### 3.2 Design: friction capture → rollup → proposed backlog tasks
 
@@ -292,13 +428,15 @@ the `JOURNAL_NOTES.jsonl` inbox (`task_journal.ingest_agent_notes`) and prompts
 carry `JOURNAL_DISCIPLINE`. Add `friction` to the allowed note/journal types and
 extend the discipline text: "if something was missing, ambiguous, stale, or a
 repeated manual step, log a `friction` note naming the concrete pain." The
-backend also emits `friction` automatically on `blocked` / `capped` / plateau
-(§1.1) terminal states, carrying the evidence digest.
+backend also emits `friction` automatically on `blocked` / `capped` / `budget`
+terminal states, carrying the evidence digest (§1.2). *What counts as friction*
+and the recurrence threshold are guidance that belongs in the **project-harness**
+(§1.3) so they can evolve without a deploy.
 
 **(b) Cross-task rollup query.** Add `journal_repo.list_board_friction(board_id,
 since=…)` (the journal table is per-task but joinable to `task → board`). Group
-by a normalised fingerprint of the friction title/body (reuse §1.1's
-fingerprint) to surface **repeated** patterns and their count.
+by a normalised fingerprint of the friction title/body (lowercased,
+whitespace-collapsed, hashed) to surface **repeated** patterns and their count.
 
 **(c) Deterministic proposal pass (a retrospective tick).** A scheduled job
 (piggyback on `autopilot_scheduler`) runs, e.g., daily per board:
@@ -307,13 +445,14 @@ fingerprint) to surface **repeated** patterns and their count.
 2. For any cluster seen ≥ `recurrence_threshold` (default 2), draft an
    **improvement task** in the board's backlog/source column: title = the
    pattern, body = the evidence (which tasks, how often, sample friction text),
-   labelled `harness-improvement`, left **unassigned and unstarted** (a human
-   triages — mirrors `repository-harness`'s propose → human-review → implement).
+   labelled `process-improvement`, left **unassigned and unstarted** so a human
+   triages it (propose → human review → implement; the system never silently
+   changes its own process).
 3. Record the proposal in the journal so it isn't re-proposed next run
    (idempotency via a stored "last rollup seq/time" per board).
 
 > **Example, continued.** After the third "no test fixtures" friction note this
-> week, the daily rollup auto-creates a card: *"[harness-improvement] Repo lacks
+> week, the daily rollup auto-creates a card: *"[process-improvement] Repo lacks
 > test fixtures + run-tests docs — blocked US-101, US-108, US-114 (3×)"* in
 > Backlog. You glance at it, approve, and one task fixes the root cause for every
 > future task. The tool got better on its own.
@@ -337,21 +476,21 @@ dashboard: track human-intervention rate and evaluator pass-rate over time.
 ## Phasing (design v3, build v1 — D8)
 
 **v1 (highest value / lowest risk, mostly contained in the loop layer):**
-- §1.1 plateau detection (pure controller change + 2 knobs).
-- §1.2 evidence-in-retry (pure formatter).
+- ~~§1.1 plateau detection~~ — rejected (score is not a reliable signal).
+- §1.2 evidence-in-retry (pure formatter) — **shipped**.
 - §2.3 escalation summary (reuses §1.2 + ledger).
 - §3.2 (a)+(b): `friction` journal type + cross-task rollup query.
 
 **v2 (touches models/migrations/UI):**
-- §1.3 risk lanes (`risk_lane` model + profile mapping + UI chip).
+- §1.3 risk lanes + the **project-harness** repo role (`is_harness` injection,
+  `risk_lane` model, lane→profile board config, INTAKE.json, UI chip).
 - §2.1 verified autopilot (autopilot verification mode + review column).
-- §3.2 (c): scheduled proposal pass writing backlog cards.
+- §3.2 (c): scheduled proposal pass writing backlog cards (friction rules hosted
+  in the project-harness).
 
 **v3 (production polish):**
 - §2.2 context-aware autopilot retries + early escalation.
 - §3.2 (d) board drift/health KPIs + intervention-rate trend.
-- §1.1 asymmetric score policy (near-pass gets one more attempt; far-off
-  escalates immediately).
 
 Each phase ships a stable contract the next extends — never a v1 that v2 must
 delete.

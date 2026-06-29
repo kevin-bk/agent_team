@@ -21,7 +21,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from agent_team.features.board.runtime.loop.verdict import LoopVerdict, Verdict
+from agent_team.features.board.runtime.loop.verdict import (
+    LoopVerdict,
+    Verdict,
+    format_evidence_digest,
+)
 
 #: Loop outcomes (the terminal decision).
 OUTCOME_COMPLETE = "complete"
@@ -109,6 +113,17 @@ class LoopController:
 
     def _followup(self, verdict: Verdict | None) -> str:
         missing = (verdict.missing if verdict is not None else "").strip()
+        # Relay the evaluator's concrete findings (failed commands, checks,
+        # risks) so the next attempt can act on the actual error instead of
+        # re-deriving it from the prose `missing` alone.
+        evidence = (
+            format_evidence_digest(verdict.evidence) if verdict is not None else ""
+        )
+        evidence_block = (
+            f"\n\nWhat the evaluator observed (address this directly):\n{evidence}"
+            if evidence
+            else ""
+        )
         plan_ref = (
             f" Consult the plan in `{self._plan_path}` for the remaining steps."
             if self._plan_path
@@ -124,10 +139,11 @@ class LoopController:
         if missing:
             return (
                 "The task is not complete yet. Outstanding work:\n\n"
-                f"{missing}\n\n"
+                f"{missing}"
+                f"{evidence_block}\n\n"
                 f"{reinspect}"
             )
         return (
             "The task does not appear complete and verified yet. Review what is "
-            f"still missing against the objective. {reinspect}"
+            f"still missing against the objective.{evidence_block}\n\n{reinspect}"
         )
