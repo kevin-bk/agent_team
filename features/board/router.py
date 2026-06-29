@@ -1435,12 +1435,12 @@ async def ack_task_loop(task_id: str, request: Request, db: Session = Depends(ge
     ctx, err = authz.guard_task(db, request, task_id, min_role="editor")
     if err:
         return err
-    from agent_team.features.board.runtime.loop.service import is_loop_running
+    from agent_team.features.board.runtime.loop import human_actions
 
-    if is_loop_running(task_id):
-        return bad_request("The loop is still running — cancel it first.")
-    ctx.task.loop_state = None
-    db.commit()
+    try:
+        human_actions.ack_loop(db, ctx.task, ctx.user)
+    except human_actions.ActionError as e:
+        return bad_request(str(e))
     return {"ok": True, "task_id": task_id}
 
 
@@ -1644,54 +1644,12 @@ async def edit_task_planning_artifact(
 
 def _approve_plan(ctx, db) -> object | None:
     """Validate artifacts and stamp approval metadata; return an error or None."""
-    from datetime import datetime
+    from agent_team.features.board.runtime.loop import human_actions
 
-    from agent_team.features.board.runtime.loop import planning_artifacts as artifacts
-    from agent_team.features.board.runtime.loop.status import LoopState
-
-    task = ctx.task
-    missing = artifacts.missing_required(task.workspace_path)
-    if missing:
-        return bad_request(f"Cannot approve — missing artifacts: {', '.join(missing)}")
-    tasks_data = artifacts.read_json(task.workspace_path, artifacts.TASKS_PATH)
-    if tasks_data is not None:
-        errors = artifacts.validate_tasks(tasks_data)
-        if errors:
-            return bad_request("; ".join(errors))
-
-    # Clear any active plan-change-request marker: approving (re)settles the plan,
-    # so the gate that would otherwise immediately re-pause execution is removed.
-    artifacts.archive_change_request(task.workspace_path)
-
-    meta = task.planning_meta()
-    meta.update(
-        {
-            "approved": True,
-            "approved_by": getattr(ctx.user, "id", None),
-            "approved_at": datetime.now(UTC).isoformat(),
-            "artifact_etags": artifacts.approved_etags(task.workspace_path),
-            "last_error": None,
-        }
-    )
-    task.planning_meta_json = json.dumps(meta, ensure_ascii=False)
-    task.loop_state = LoopState.PLAN_APPROVED.value
-
-    from agent_team.features.board.runtime import task_journal
-
-    task_journal.record_with(
-        db,
-        task_id=task.id,
-        phase="approval",
-        type="approval",
-        title="Plan approved",
-        actor_id=getattr(ctx.user, "id", None),
-        actor_type="human",
-        refs=task_journal.refs(
-            artifacts=[artifacts.SPEC_PATH, artifacts.PLAN_PATH, artifacts.TASKS_PATH]
-        ),
-        metadata={"artifact_etags": meta.get("artifact_etags", {})},
-    )
-    db.commit()
+    try:
+        human_actions.approve_plan(db, ctx.task, ctx.user)
+    except human_actions.ActionError as e:
+        return bad_request(str(e))
     return None
 
 
@@ -1874,101 +1832,16 @@ async def answer_task_planning(
     ctx, err = authz.guard_task(db, request, task_id, min_role="editor")
     if err:
         return err
-    task = ctx.task
 
-    from agent_team.features.board.runtime.loop import planning_artifacts as artifacts
-    from agent_team.features.board.runtime.loop import planning_prompts
-    from agent_team.features.board.runtime.loop.service import is_loop_running
-    from agent_team.features.board.runtime.loop.status import LoopState
+    from agent_team.features.board.runtime.loop import human_actions
 
-    if task.loop_state != LoopState.WAITING_ANSWERS.value:
-        return bad_request("This task is not waiting for answers.")
-    if is_loop_running(task_id):
-        return bad_request("A loop is still running for this task.")
-
-    artifacts.answer_questions(task.workspace_path, payload.answers)
-    still_open = artifacts.open_questions(task.workspace_path)
-    if still_open:
-        ids = ", ".join(q["id"] for q in still_open)
-        return bad_request(f"Please answer all blocking questions first: {ids}")
-
-    answered = [q for q in artifacts.read_questions(task.workspace_path) if q["answer"]]
-    addendum = planning_prompts.build_answers_addendum(answered, payload.note)
-
-    from agent_team.features.board.runtime import task_journal
-
-    _answers_body = "\n".join(
-        f"- {q.get('question', q['id'])} → {q['answer']}" for q in answered
-    )
-    if payload.note:
-        _answers_body = f"{_answers_body}\n\nNote: {payload.note}".strip()
-    task_journal.record_with(
-        db,
-        task_id=task_id,
-        phase="change_request",
-        type="answer",
-        title=f"Human answered {len(answered)} question(s)",
-        body=_answers_body,
-        actor_id=ctx.user.id,
-        actor_type="human",
-        metadata={"answers": payload.answers, "note": payload.note},
-    )
-    db.commit()
-
-    meta = task.planning_meta()
-    # Execution-phase answers only reach the generator's prompt, so also fold
-    # them into SPEC.md as approved scope — otherwise the evaluator (which grades
-    # against the SPEC) would never see the human's decisions. Re-planning
-    # (planning phase) regenerates the SPEC, so it does not need this.
-    if meta.get("approved") and meta.get("run_params"):
-        artifacts.append_clarifications(task.workspace_path, answered, payload.note)
-
-    # Archive the answered questionnaire so the resumed phase does not re-pause.
-    artifacts.archive_questions(task.workspace_path)
-
-    from agent_team.features.board.runtime.dispatch import capture_main_loop
-
-    capture_main_loop()
-    if meta.get("approved") and meta.get("run_params"):
-        # Execution-phase pause: resume the loop with the remembered parameters.
-        # The answers ride along as a resume note (folded into the generator
-        # preamble) so they reach even per-task prompts in task-graph mode.
-        from agent_team.features.board.runtime.loop.budget import LoopBudget
-        from agent_team.features.board.runtime.loop.service import start_autonomous_loop
-
-        rp = meta["run_params"]
-        start_autonomous_loop(
-            task_id=task_id,
-            agent_alias=rp["agent_id"],
-            evaluator_alias=rp["evaluator_id"],
-            objective=task.objective or "",
-            max_attempts=int(rp.get("max_attempts", 10)),
-            budget=LoopBudget(
-                max_tokens=rp.get("max_tokens"),
-                max_cost_usd=rp.get("max_cost_usd"),
-                max_wall_seconds=rp.get("max_wall_seconds"),
-            ),
-            strict=True,
-            task_graph=bool(rp.get("task_graph", True)),
-            resume_note=addendum,
+    try:
+        resumed = human_actions.answer_questions(
+            db, ctx.task, ctx.user, answers=payload.answers, note=payload.note
         )
-        return {"ok": True, "task_id": task_id, "resumed": "execution"}
-
-    # Planning-phase pause: re-plan with the answers folded into the objective.
-    objective = f"{task.objective or ''}\n\n{addendum}".strip()
-    planner_id = meta.get("planner_id")
-    if not planner_id:
-        return bad_request("No planner is set for this task; start planning first.")
-
-    from agent_team.features.board.runtime.loop.planning import start_planning_job
-
-    start_planning_job(
-        task_id=task_id,
-        planner_alias=planner_id,
-        objective=objective,
-        reviewer_alias=meta.get("reviewer_id") or None,
-    )
-    return {"ok": True, "task_id": task_id, "resumed": "planning"}
+    except human_actions.ActionError as e:
+        return bad_request(str(e))
+    return {"ok": True, "task_id": task_id, "resumed": resumed}
 
 
 @router.get("/tasks/{task_id}/journal")

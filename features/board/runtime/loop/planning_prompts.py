@@ -11,6 +11,14 @@ from __future__ import annotations
 
 from agent_team.features.board.runtime.loop import planning_artifacts as A
 
+#: Explicit phase banner placed as the FIRST line of every loop prompt so the
+#: agent (and anyone reading a transcript) can tell at a glance which lifecycle
+#: phase it is acting in. Kept short and stable: ``PHASE: <NAME>``.
+PHASE_PLAN = "PHASE: PLAN"
+PHASE_REVIEW = "PHASE: REVIEW"
+PHASE_IMPLEMENT = "PHASE: IMPLEMENT"
+PHASE_VERIFY = "PHASE: VERIFY"
+
 #: Shared escape hatch: rather than guessing a materially-impacting decision, an
 #: agent writes structured blocking questions for the human and stops. Reused by
 #: the planner and the strict/task-graph generator preambles.
@@ -118,6 +126,7 @@ def build_planning_prompt(
     """Compose the planner turn that writes SPEC.md, PLAN.md and TASKS.json."""
     objective = (objective or "").strip() or "(no explicit objective given)"
     return (
+        f"{PHASE_PLAN}\n\n"
         f"{PLANNER_SYSTEM}\n\n"
         f"## Task\n{objective}\n\n"
         "## Available context\n"
@@ -152,6 +161,7 @@ REVIEWER_SYSTEM = (
 def build_review_prompt() -> str:
     """Compose the reviewer turn that grades the drafted artifacts to JSON."""
     return (
+        f"{PHASE_REVIEW}\n\n"
         f"{REVIEWER_SYSTEM}\n\n"
         "## Inputs\n"
         f"- `{A.SPEC_PATH}`\n- `{A.PLAN_PATH}`\n- `{A.TASKS_PATH}`\n\n"
@@ -180,6 +190,7 @@ def build_review_prompt() -> str:
 #: Prepended to the strict generator's prompts (opening + follow-ups). It points
 #: the generator at the approved contract and forbids silent scope expansion.
 GENERATOR_STRICT_PREAMBLE = (
+    f"{PHASE_IMPLEMENT}\n\n"
     "This task runs under an approved plan. Before editing, read the approved "
     f"contract in `{A.SPEC_PATH}` and the plan in `{A.PLAN_PATH}`. Implement the "
     "plan exactly; keep changes within the approved scope. If you discover the "
@@ -210,6 +221,7 @@ PLAN_REVISED_NOTE = (
 #: execution. Scopes the agent to the single current task and keeps the same
 #: change-request escape hatch as whole-objective strict mode.
 TASK_GRAPH_PREAMBLE = (
+    f"{PHASE_IMPLEMENT}\n\n"
     "You are executing ONE task of an approved plan. Read the approved contract "
     f"`{A.SPEC_PATH}` and plan `{A.PLAN_PATH}` for context, but implement ONLY "
     "the current task described above — do not start other tasks or expand "
@@ -265,6 +277,7 @@ def build_task_evaluator_prompt(
     acceptance = [str(a) for a in (task.get("acceptance") or [])]
     validation = [str(v) for v in (task.get("validation") or [])]
     return (
+        f"{PHASE_VERIFY}\n\n"
         "You are an independent verifier grading a SINGLE task of an approved "
         "plan. Assume it is incomplete until proven otherwise, and verify "
         "evidence rather than trusting the agent's summary.\n\n"
@@ -338,6 +351,7 @@ def build_strict_evaluator_prompt(
     objective = (objective or "").strip() or "(no explicit objective given)"
     summary = (generator_summary or "").strip() or "(the agent provided no summary)"
     return (
+        f"{PHASE_VERIFY}\n\n"
         "You are an independent verifier. Assume the implementation is "
         "incomplete until proven otherwise, and verify evidence rather than "
         "trusting the agent's summary.\n\n"

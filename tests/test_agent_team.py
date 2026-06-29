@@ -124,6 +124,9 @@ def test_plugin_meta_models_and_menu():
         "plugin_agent_team_board_channel",
         "plugin_agent_team_comm_delivery",
         "plugin_agent_team_comm_user_link",
+        "plugin_agent_team_comm_external_thread",
+        "plugin_agent_team_comm_action_request",
+        "plugin_agent_team_comm_inbound_message",
     ]
     menu = plugin.menu_items()
     assert len(menu) == 1

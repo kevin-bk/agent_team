@@ -116,6 +116,9 @@ class AgentTeamPlugin(PluginBase):
             AgentTeamCommConnection,
             AgentTeamCommDelivery,
             AgentTeamCommUserLink,
+            AgentTeamExternalThread,
+            AgentTeamHumanActionRequest,
+            AgentTeamInboundMessage,
         )
         from agent_team.features.repos.models import (
             AgentTeamBoardRepo,
@@ -144,6 +147,9 @@ class AgentTeamPlugin(PluginBase):
             AgentTeamBoardChannel,
             AgentTeamCommDelivery,
             AgentTeamCommUserLink,
+            AgentTeamExternalThread,
+            AgentTeamHumanActionRequest,
+            AgentTeamInboundMessage,
         ]
 
     def routers(self) -> list[APIRouter]:

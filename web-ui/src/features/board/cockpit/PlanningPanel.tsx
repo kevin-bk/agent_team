@@ -211,6 +211,62 @@ function PlanSetupForm({
  * SPEC/PLAN/TASKS artifacts, then either approve & run, or send the planner
  * feedback (which returns the goal to the planning stage to re-draft).
  */
+/**
+ * Read-only list of the NON-blocking questions an agent noted while planning.
+ * These never pause the build (the agent picked a safe default), so they never
+ * reach the answer panel — but surfacing them here lets a human catch a wrong
+ * assumption and "Request changes" instead of discovering it after execution.
+ */
+function NotedQuestions({ questions }: { questions: PlanningQuestion[] }) {
+  const noted = useMemo(
+    () => questions.filter((q) => q.blocking === false),
+    [questions],
+  );
+  if (noted.length === 0) return null;
+  return (
+    <div className="mt-2 rounded-md border border-sky-300 bg-sky-50 p-2.5 dark:border-sky-500/30 dark:bg-sky-500/10">
+      <div className="mb-1 flex items-center gap-1.5 text-[12px] font-semibold text-sky-800 dark:text-sky-300">
+        <HelpCircle className="h-3.5 w-3.5" />
+        The agent noted {noted.length} assumption{noted.length > 1 ? "s" : ""}{" "}
+        (non-blocking)
+      </div>
+      <p className="mb-2 text-[11.5px] text-sky-800/80 dark:text-sky-300/80">
+        It proceeded with a safe default for each. If one is wrong, use “Request
+        changes” below to redirect the planner.
+      </p>
+      <ul className="space-y-2">
+        {noted.map((q) => (
+          <li
+            key={q.id}
+            className="rounded border border-sky-200/70 bg-card/60 p-2 dark:border-sky-500/20"
+          >
+            <div className="text-[12.5px] font-medium text-foreground">
+              {q.question}
+            </div>
+            {q.reason && (
+              <div className="mt-0.5 text-[11.5px] text-muted-foreground">
+                {q.reason}
+              </div>
+            )}
+            {q.options && q.options.length > 0 && (
+              <div className="mt-1 flex flex-wrap gap-1">
+                {q.options.map((opt) => (
+                  <span
+                    key={opt}
+                    className="rounded bg-surface-1 px-1.5 py-0.5 text-[11px] text-muted-foreground"
+                  >
+                    {opt}
+                  </span>
+                ))}
+              </div>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 export function ReviewStage({
   task,
   agents,
@@ -286,6 +342,8 @@ export function ReviewStage({
           </p>
         </div>
       )}
+
+      <NotedQuestions questions={info.questions ?? []} />
 
       <ArtifactTabs taskId={task.id} artifacts={editable} canEdit={canEdit} />
 
