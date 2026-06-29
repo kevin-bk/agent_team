@@ -244,20 +244,9 @@ export function BoardChannelDialog({
 
             {channel && (
               <div className="mt-1 grid gap-1.5 rounded-md border border-border p-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-[12.5px] font-medium text-foreground">
-                    Recent deliveries
-                  </span>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={doTest}
-                    disabled={test.isPending}
-                  >
-                    {test.isPending ? <Spinner className="h-3.5 w-3.5" /> : null}
-                    Send test
-                  </Button>
-                </div>
+                <span className="text-[12.5px] font-medium text-foreground">
+                  Recent deliveries
+                </span>
                 {(deliveries.data ?? []).length === 0 ? (
                   <p className="text-[12px] text-muted-foreground">No deliveries yet.</p>
                 ) : (
@@ -295,6 +284,19 @@ export function BoardChannelDialog({
             <span />
           )}
           <div className="flex gap-2">
+            <Button
+              variant="secondary"
+              onClick={doTest}
+              disabled={!channel || test.isPending}
+              title={!channel ? "Save the channel first, then send a test" : undefined}
+            >
+              {test.isPending ? (
+                <Spinner className="h-3.5 w-3.5" />
+              ) : (
+                <Send className="h-3.5 w-3.5" />
+              )}
+              Send test
+            </Button>
             <Button variant="secondary" onClick={onClose} disabled={busy}>
               Cancel
             </Button>

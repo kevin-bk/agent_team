@@ -35,11 +35,35 @@ _SEVERITY_MARK = {
 }
 
 
+def _mm_detail(resp: httpx.Response) -> str:
+    """Extract Mattermost's own error message from a 4xx/5xx body.
+
+    Mattermost error envelopes look like ``{"id": "...", "message": "...",
+    "status_code": 403}``. Surfacing ``message`` (rather than a generic
+    string) is what makes a 403 actionable — it names the real cause.
+    """
+    try:
+        data = resp.json()
+    except ValueError:
+        return resp.text[:200].strip()
+    if isinstance(data, dict):
+        return str(data.get("message") or data.get("detailed_error") or "").strip()
+    return ""
+
+
 class MattermostProvider:
     provider = "mattermost"
 
     def _headers(self, token: str) -> dict[str, str]:
-        return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        # ``X-Requested-With`` is required: Mattermost's CSRF guard rejects a
+        # bearer-token request that looks like a browser navigation with a 401
+        # unless it is marked as an AJAX/programmatic call. The token is stripped
+        # because a pasted bot token often carries a trailing newline/space.
+        return {
+            "Authorization": f"Bearer {token.strip()}",
+            "Content-Type": "application/json",
+            "X-Requested-With": "XMLHttpRequest",
+        }
 
     def render_text(self, message: CommMessage) -> str:
         """Build the Markdown post body (title + body + mentions + link)."""
@@ -71,12 +95,24 @@ class MattermostProvider:
         except httpx.RequestError as exc:
             return DeliveryResult(ok=False, error=f"Could not reach Mattermost: {exc}")
         if resp.status_code == 401:
-            return DeliveryResult(ok=False, error="Mattermost rejected the bot token (401)")
-        if resp.status_code == 403:
-            return DeliveryResult(ok=False, error="The bot lacks permission for this channel (403)")
-        if resp.status_code >= 400:
             return DeliveryResult(
-                ok=False, error=f"Mattermost returned an error ({resp.status_code})"
+                ok=False,
+                error=f"Mattermost rejected the bot token (401). {_mm_detail(resp)}".strip(),
+            )
+        if resp.status_code == 403:
+            return DeliveryResult(
+                ok=False,
+                error=(
+                    "Mattermost denied posting to this channel (403) — usually the bot "
+                    "is not a member of the channel, or the channel_id belongs to a "
+                    f"different server than this connection. {_mm_detail(resp)}"
+                ).strip(),
+            )
+        if resp.status_code >= 400:
+            detail = _mm_detail(resp)
+            return DeliveryResult(
+                ok=False,
+                error=f"Mattermost returned an error ({resp.status_code}). {detail}".strip(),
             )
         try:
             data = resp.json()
