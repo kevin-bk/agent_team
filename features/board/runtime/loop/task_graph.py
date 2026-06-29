@@ -256,6 +256,9 @@ async def run_task_graph(
         except Exception:  # noqa: BLE001 — fail-open: a broken judge must not wedge
             logger.warning("task-graph final verify failed for %s", task_id, exc_info=True)
         if verdict is not None:
+            # The final whole-SPEC verification is also a real evaluator run;
+            # count its spend against the graph-wide budget.
+            ledger.add(tokens=verdict.eval_tokens, cost_usd=verdict.eval_cost_usd)
             await asyncio.to_thread(_record_evaluation, task_id, attempt_id, None, verdict)
         passed = verdict is not None and verdict.verdict == LoopVerdict.PASS
         await asyncio.to_thread(

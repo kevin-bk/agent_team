@@ -40,7 +40,11 @@ from agent_team.features.board.runtime.loop.evaluator import (
     build_evaluator_prompt,
 )
 from agent_team.features.board.runtime.loop.status import LoopStatus
-from agent_team.features.board.runtime.loop.verdict import LoopVerdict, parse_verdict
+from agent_team.features.board.runtime.loop.verdict import (
+    LoopVerdict,
+    has_verification_evidence,
+    parse_verdict,
+)
 from core.database.base import SessionLocal
 
 logger = logging.getLogger(__name__)
@@ -259,6 +263,37 @@ def _coerce_loop_verdict(value: object) -> LoopVerdict | None:
     return None
 
 
+#: Fed back to the generator when an evaluator returns ``pass`` without any
+#: proof it verified anything — the whole point of an independent evaluator is
+#: that completion is earned with evidence, not asserted.
+_UNVERIFIED_PASS_NOTE = (
+    "The evaluator reported pass but recorded NO verification evidence (no "
+    "commands run, no checks observed). A completion claim without evidence does "
+    "not count. Re-run the project's tests/build/lint, observe the actual "
+    "results, and record them as evidence before the task can be marked complete."
+)
+
+
+def _downgrade_unverified_pass(verdict: Verdict) -> Verdict:
+    """Turn an evidence-less ``pass`` into a ``fail`` so the loop keeps going.
+
+    Preserves the score/evidence and the accounting fields; prepends a clear
+    note to ``missing`` so the next attempt knows real verification is required.
+    The attempt budget remains the backstop if the evaluator keeps refusing to
+    produce evidence.
+    """
+    missing = (verdict.missing or "").strip()
+    combined = f"{_UNVERIFIED_PASS_NOTE}\n\n{missing}" if missing else _UNVERIFIED_PASS_NOTE
+    return Verdict(
+        verdict=LoopVerdict.FAIL,
+        score=verdict.score,
+        missing=combined,
+        evidence=verdict.evidence,
+        eval_tokens=verdict.eval_tokens,
+        eval_cost_usd=verdict.eval_cost_usd,
+    )
+
+
 class WorkerEvaluator:
     """Grades an attempt by running a separate evaluator agent over the task.
 
@@ -332,17 +367,28 @@ class WorkerEvaluator:
             return None  # could not evaluate → fail-open
         if self._strict:
             verdict = await asyncio.to_thread(_verdict_from_evidence, workspace_path)
-            if verdict is not None:
-                return verdict
-            return parse_verdict(result.final_answer)
-        # Prefer the file the evaluator wrote (robust for noisy CLI stdout), then
-        # fall back to parsing the JSON it echoed in its reply.
-        verdict = await asyncio.to_thread(
-            _read_verdict_file, workspace_path, rel_path
-        )
-        if verdict is not None:
-            return verdict
-        return parse_verdict(result.final_answer)
+            if verdict is None:
+                verdict = parse_verdict(result.final_answer)
+        else:
+            # Prefer the file the evaluator wrote (robust for noisy CLI stdout),
+            # then fall back to parsing the JSON it echoed in its reply.
+            verdict = await asyncio.to_thread(
+                _read_verdict_file, workspace_path, rel_path
+            )
+            if verdict is None:
+                verdict = parse_verdict(result.final_answer)
+        if verdict is None:
+            return None
+        # Fold the evaluator turn's spend into the budget (it ran a real agent
+        # turn with tests/build); the driver reads these off the verdict.
+        verdict.eval_tokens = result.tokens
+        verdict.eval_cost_usd = result.cost_usd
+        # A pass with no proof of verification is not a verified completion —
+        # downgrade it so the backend never marks the task complete on an
+        # evidence-less claim (the core invariant of an independent evaluator).
+        if verdict.verdict == LoopVerdict.PASS and not has_verification_evidence(verdict):
+            return _downgrade_unverified_pass(verdict)
+        return verdict
 
 
 def _task_workspace_and_board(task_id: str) -> tuple[str, str | None]:

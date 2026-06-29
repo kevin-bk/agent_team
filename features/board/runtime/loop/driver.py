@@ -288,6 +288,10 @@ async def run_loop(
             verdict = None
 
         if verdict is not None:
+            # The evaluator turn is a real agent run (it executes tests/build);
+            # fold its spend into the budget so the cap reflects total cost, not
+            # just the generator's half.
+            ledger.add(tokens=verdict.eval_tokens, cost_usd=verdict.eval_cost_usd)
             await asyncio.to_thread(
                 _record_evaluation, task_id, attempt_id, turn.run_id, verdict
             )

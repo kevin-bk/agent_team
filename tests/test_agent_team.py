@@ -1839,6 +1839,84 @@ def test_loop_budget_ledger_caps():
     assert free.exceeded() is None
 
 
+def test_has_verification_evidence():
+    """A pass only counts when it carries proof the evaluator actually verified."""
+    from agent_team.features.board.runtime.loop.verdict import (
+        LoopVerdict,
+        Verdict,
+        has_verification_evidence,
+    )
+
+    # No evidence at all → not trustworthy.
+    assert not has_verification_evidence(Verdict(LoopVerdict.PASS, score=1.0))
+    assert not has_verification_evidence(Verdict(LoopVerdict.PASS, evidence={}))
+    # A document that only echoes verdict/score is not proof of verification.
+    assert not has_verification_evidence(
+        Verdict(LoopVerdict.PASS, evidence={"verdict": "pass", "score": 1.0})
+    )
+    # Free-text "checks" (lightweight contract) counts.
+    assert has_verification_evidence(
+        Verdict(LoopVerdict.PASS, evidence={"checks": "ran pytest, 42 passed"})
+    )
+    # A non-empty strict "commands" list counts; an empty one does not.
+    assert has_verification_evidence(
+        Verdict(
+            LoopVerdict.PASS,
+            evidence={"commands": [{"cmd": "pytest", "exit_code": 0}]},
+        )
+    )
+    assert not has_verification_evidence(
+        Verdict(LoopVerdict.PASS, evidence={"commands": []})
+    )
+
+
+async def test_run_loop_counts_evaluator_spend_in_budget(db, monkeypatch):
+    """The evaluator turn's spend must count against the budget, not just the
+    generator's — otherwise a token/cost cap silently overshoots."""
+    from sqlalchemy.orm import sessionmaker
+
+    from agent_team.features.board.runtime.loop import driver
+    from agent_team.features.board.runtime.loop.budget import LoopBudget
+    from agent_team.features.board.runtime.loop.driver import GeneratorTurn, run_loop
+    from agent_team.features.board.runtime.loop.verdict import LoopVerdict, Verdict
+
+    factory = sessionmaker(bind=db.get_bind(), autoflush=False, future=True)
+    monkeypatch.setattr(driver, "SessionLocal", factory)
+
+    board = boards_repo.create_board(db, name="B", description=None, columns=None, owner_id=None)
+    db.flush()
+    task = tasks_repo.create_task(
+        db, board_id=board.id, title="T", description=None, status="todo",
+        assignee_id=None, labels=None, priority=None, created_by=None,
+    )
+    db.commit()
+
+    async def fake_generator(attempt_id, prompt):
+        # The generator alone stays well under the cap.
+        return GeneratorTurn(run_id=None, final_text="...", cancelled=False, tokens=10)
+
+    class HeavyEvaluator:
+        """A failing evaluator whose own turn is expensive."""
+
+        async def evaluate(self, **_kwargs):
+            return Verdict(LoopVerdict.FAIL, missing="x", eval_tokens=200)
+
+    outcome = await run_loop(
+        task_id=task.id,
+        objective="obj",
+        workspace_path="/tmp/ws",
+        run_generator=fake_generator,
+        evaluator=HeavyEvaluator(),
+        max_attempts=5,
+        budget=LoopBudget(max_tokens=100),
+    )
+
+    # Generator spend (10) is under the cap; only by counting the evaluator's
+    # 200 does the budget trip — and on the first attempt, not after 5.
+    assert outcome.outcome == "budget"
+    assert outcome.attempts == 1
+
+
 def test_outcome_to_state_routes_caps_to_human():
     from agent_team.features.board.runtime.loop.status import LoopState, outcome_to_state
 

@@ -31,6 +31,35 @@ class Verdict:
     #: generator on the next attempt).
     missing: str = ""
     evidence: dict = field(default_factory=dict)
+    #: Resource use of the *evaluator turn* that produced this verdict. The
+    #: evaluator is a full agent run (it runs the project's tests/build), so its
+    #: spend must count against the loop budget just like the generator's. The
+    #: driver folds these into the ledger; only the backend evaluator sets them,
+    #: so internally- or test-constructed verdicts default to 0.
+    eval_tokens: int = 0
+    eval_cost_usd: float = 0.0
+
+
+#: Evidence keys that constitute *concrete proof of verification*: free-text the
+#: evaluator wrote about what it ran (``checks``) or the strict EVIDENCE schema's
+#: executed commands. Keys like ``verdict``/``score`` echoed back are not proof.
+_VERIFICATION_EVIDENCE_KEYS = ("checks", "commands", "checks_run", "tests")
+
+
+def has_verification_evidence(verdict: Verdict) -> bool:
+    """Whether a verdict carries concrete proof that verification happened.
+
+    A ``pass`` is only trustworthy if the evaluator actually ran or observed
+    something. We accept any non-empty value under the keys the evaluator
+    prompts ask for — free-text ``checks`` (lightweight contract) or a non-empty
+    ``commands`` list (strict ``EVIDENCE.json`` schema). A bare ``{}`` or a
+    document that only echoes ``verdict``/``score`` counts as *no* evidence, so
+    the loop must not treat such a ``pass`` as a verified completion.
+    """
+    evidence = verdict.evidence
+    if not isinstance(evidence, dict) or not evidence:
+        return False
+    return any(evidence.get(key) for key in _VERIFICATION_EVIDENCE_KEYS)
 
 
 def _coerce_verdict(value: object) -> LoopVerdict | None:
