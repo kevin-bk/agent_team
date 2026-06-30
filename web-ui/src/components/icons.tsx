@@ -227,3 +227,17 @@ export const UserRound = makeIcon(PersonIcon);
 export const Users = makeIcon(PeopleGroupIcon);
 export const X = makeIcon(CrossIcon);
 export const XCircle = makeIcon(CrossCircleIcon);
+
+/* ── Expressive identity glyphs (lucide-react) ─────────────────────────────
+   The ADS core glyphs above are kept for utilitarian/Jira-flavoured UI. These
+   richer lucide icons are used where a surface needs a distinct identity — the
+   task threads (Overview / Goal / Journal / Workspace) and the agent kinds.
+   They keep the same `className`-driven sizing API as the wrapped icons. */
+export {
+  LayoutDashboard as OverviewGlyph,
+  Target as GoalGlyph,
+  NotebookPen as JournalGlyph,
+  Code2 as WorkspaceGlyph,
+  SquareTerminal as CliAgentGlyph,
+  Bot as AgentGlyph,
+} from "lucide-react";

@@ -1,4 +1,5 @@
 import {
+  AgentGlyph,
   AlignLeft,
   Archive,
   ArrowLeft,
@@ -9,6 +10,7 @@ import {
   ChevronDown,
   CircleDot,
   CircleSlash,
+  CliAgentGlyph,
   ExternalLink,
   Eye,
   EyeOff,
@@ -16,9 +18,11 @@ import {
   FileText,
   FolderGit2,
   Gauge,
+  GoalGlyph,
   History,
-  ListChecks,
+  JournalGlyph,
   MessagesSquare,
+  OverviewGlyph,
   PanelRightClose,
   PanelRightOpen,
   Paperclip,
@@ -30,6 +34,7 @@ import {
   Sparkles,
   TerminalSquare,
   UserRound,
+  WorkspaceGlyph,
   X,
 } from "@/components/icons";
 import { toast } from "sonner";
@@ -110,7 +115,7 @@ import { RunChanges, changedFileCount } from "./cockpit/RunChanges";
 import { ARTIFACT_DND_TYPE, TaskFiles } from "./cockpit/TaskFiles";
 
 // Monaco-backed code workspace is heavy → code-split it so it only loads when
-// the user opens the "Code" thread.
+// the user opens the "Workspace" thread.
 const CodeWorkspace = lazy(() =>
   import("./cockpit/code/CodeWorkspace").then((m) => ({
     default: m.CodeWorkspace,
@@ -465,8 +470,8 @@ export function TaskCockpit({
           <div className="min-h-0 flex-1 space-y-0.5 overflow-auto px-2 pb-2 scrollbar-thin">
             <ThreadItem
               icon={
-                <span className="flex h-6 w-6 items-center justify-center rounded bg-primary/10 text-primary">
-                  <MessagesSquare className="h-3.5 w-3.5" />
+                <span className="flex h-6 w-6 items-center justify-center rounded-md bg-sky-100 text-sky-600 dark:bg-sky-500/15 dark:text-sky-300">
+                  <OverviewGlyph className="h-3.5 w-3.5" strokeWidth={2.25} />
                 </span>
               }
               label="Overview"
@@ -476,8 +481,8 @@ export function TaskCockpit({
             />
             <ThreadItem
               icon={
-                <span className="flex h-6 w-6 items-center justify-center rounded bg-indigo-100 text-indigo-600 dark:bg-indigo-500/15 dark:text-indigo-300">
-                  <Gauge className="h-3.5 w-3.5" />
+                <span className="flex h-6 w-6 items-center justify-center rounded-md bg-emerald-100 text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-300">
+                  <GoalGlyph className="h-3.5 w-3.5" strokeWidth={2.25} />
                 </span>
               }
               label="Goal"
@@ -491,8 +496,8 @@ export function TaskCockpit({
             />
             <ThreadItem
               icon={
-                <span className="flex h-6 w-6 items-center justify-center rounded bg-indigo-100 text-indigo-600 dark:bg-indigo-500/15 dark:text-indigo-300">
-                  <ListChecks className="h-3.5 w-3.5" />
+                <span className="flex h-6 w-6 items-center justify-center rounded-md bg-violet-100 text-violet-600 dark:bg-violet-500/15 dark:text-violet-300">
+                  <JournalGlyph className="h-3.5 w-3.5" strokeWidth={2.25} />
                 </span>
               }
               label="Journal"
@@ -502,11 +507,11 @@ export function TaskCockpit({
             />
             <ThreadItem
               icon={
-                <span className="flex h-6 w-6 items-center justify-center rounded bg-primary/10 text-primary">
-                  <FileDiff className="h-3.5 w-3.5" />
+                <span className="flex h-6 w-6 items-center justify-center rounded-md bg-amber-100 text-amber-600 dark:bg-amber-500/15 dark:text-amber-300">
+                  <WorkspaceGlyph className="h-3.5 w-3.5" strokeWidth={2.25} />
                 </span>
               }
-              label="Code"
+              label="Workspace"
               sub={
                 changedFiles > 0
                   ? `${changedFiles} file${changedFiles === 1 ? "" : "s"} changed`
@@ -540,7 +545,7 @@ export function TaskCockpit({
                           c.soft,
                         )}
                       >
-                        <Bot className="h-3.5 w-3.5" />
+                        <AgentGlyph className="h-3.5 w-3.5" strokeWidth={2.25} />
                         {runningAgents.has(a.id) && (
                           <span className="absolute -right-0.5 -top-0.5 h-2 w-2 animate-pulse rounded-full bg-emerald-500 ring-2 ring-white dark:ring-surface-1" />
                         )}
@@ -564,8 +569,8 @@ export function TaskCockpit({
                   <ThreadItem
                     key={a.id}
                     icon={
-                      <span className="relative flex h-6 w-6 items-center justify-center rounded-md bg-surface-3 text-foreground">
-                        <TerminalSquare className="h-3.5 w-3.5" />
+                      <span className="relative flex h-6 w-6 items-center justify-center rounded-md bg-slate-200 text-slate-700 dark:bg-slate-500/20 dark:text-slate-200">
+                        <CliAgentGlyph className="h-3.5 w-3.5" strokeWidth={2.25} />
                         {runningAgents.has(a.id) && (
                           <span className="absolute -right-0.5 -top-0.5 h-2 w-2 animate-pulse rounded-full bg-emerald-500 ring-2 ring-white dark:ring-surface-1" />
                         )}
@@ -619,14 +624,14 @@ export function TaskCockpit({
           ) : thread === CODE ? (
             <div className="flex min-h-0 flex-1 flex-col bg-background">
               <div className="flex items-center gap-2 border-b border-border px-4 py-2">
-                <span className="flex h-6 w-6 items-center justify-center rounded bg-primary/10 text-primary">
-                  <FileDiff className="h-3.5 w-3.5" />
+                <span className="flex h-6 w-6 items-center justify-center rounded-md bg-amber-100 text-amber-600 dark:bg-amber-500/15 dark:text-amber-300">
+                  <WorkspaceGlyph className="h-3.5 w-3.5" strokeWidth={2.25} />
                 </span>
                 <span className="text-sm font-semibold text-foreground">
-                  Code
+                  Workspace
                 </span>
                 <span className="text-[11px] text-muted-foreground">
-                  · workspace diffs
+                  · diffs & files
                 </span>
               </div>
               <Suspense
@@ -655,9 +660,9 @@ export function TaskCockpit({
                   )}
                 >
                   {isDirectCli ? (
-                    <TerminalSquare className="h-3.5 w-3.5" />
+                    <CliAgentGlyph className="h-3.5 w-3.5" strokeWidth={2.25} />
                   ) : (
-                    <Bot className="h-3.5 w-3.5" />
+                    <AgentGlyph className="h-3.5 w-3.5" strokeWidth={2.25} />
                   )}
                 </span>
                 <span className="text-sm font-semibold text-foreground">
@@ -2229,7 +2234,7 @@ function Conversation({
           ) : blocks.length === 0 && !running ? (
             <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-sm text-muted-foreground">
               <span className="flex h-12 w-12 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                <Bot className="h-6 w-6" />
+                <AgentGlyph className="h-6 w-6" strokeWidth={2} />
               </span>
               Message {`@${agentName}`} to get started.
               {canEdit && starterPrompt.trim() && (
