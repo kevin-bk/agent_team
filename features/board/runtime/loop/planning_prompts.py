@@ -81,18 +81,18 @@ PLANNER_SYSTEM = (
     "assumption and proceed."
 )
 
-_SPEC_STRUCTURE = (
-    "# SPEC\n\n"
-    "## Goal\n## Original Request\n## Current Context\n## In Scope\n"
-    "## Non Goals\n## Constraints\n## Acceptance Criteria\n"
-    "## Verification Expectations\n## Open Questions\n## Assumptions\n## Risks"
+#: Lightweight fallback structure for SPEC.md / PLAN.md, used only when the
+#: ``project-harness`` skill is not available in the workspace. The skill owns
+#: the authoritative, risk-graded section structure (the backend only reads
+#: these files as text and shows them — it does not parse their headings), so we
+#: keep just a one-line essence here instead of a rigid section list.
+_SPEC_FALLBACK = (
+    "goal, original request, scope/non-goals, acceptance criteria, verification "
+    "expectations, assumptions and risks"
 )
-
-_PLAN_STRUCTURE = (
-    "# PLAN\n\n"
-    "## Summary\n## Files And Components\n## Approach\n## Alternatives Considered\n"
-    "## Implementation Steps\n## Data And API Changes\n## UI Changes\n"
-    "## Verification Plan\n## Rollback Or Recovery\n## Risks"
+_PLAN_FALLBACK = (
+    "approach, alternatives considered, files/components, implementation steps, "
+    "data and API changes, verification plan, and rollback/recovery"
 )
 
 _TASKS_SCHEMA = (
@@ -135,12 +135,15 @@ def build_planning_prompt(
         f"- Repository: {repo or 'unknown'}\n\n"
         "## Required outputs\n"
         f"Write these files (create parent dirs; overwrite existing content):\n\n"
-        f"1. `{A.SPEC_PATH}` — the human-readable contract, using exactly this "
-        f"structure:\n\n{_SPEC_STRUCTURE}\n\n"
-        f"2. `{A.PLAN_PATH}` — the engineering plan, using exactly this "
-        f"structure:\n\n{_PLAN_STRUCTURE}\n\n"
+        f"1. `{A.SPEC_PATH}` — the human-readable contract.\n"
+        f"2. `{A.PLAN_PATH}` — the engineering plan.\n"
         f"3. `{A.TASKS_PATH}` — a machine-readable task list (schema version 1):\n\n"
         f"{_TASKS_SCHEMA}\n\n"
+        "Use the `project-harness` skill in this workspace (see the skills "
+        "manifest / `.claude/skills/project-harness/`) to classify the task's risk "
+        "and structure `SPEC.md` and `PLAN.md` to the right depth and sections. If "
+        f"that skill is unavailable, still cover {_SPEC_FALLBACK} in `SPEC.md` and "
+        f"{_PLAN_FALLBACK} in `PLAN.md`.\n\n"
         "Keep each task small and independently verifiable. Use repo-relative "
         "paths. Do not implement. When done, end your reply with a one-line "
         "confirmation that all three files were written.\n\n"
