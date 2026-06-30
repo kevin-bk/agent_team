@@ -34,7 +34,7 @@ import {
 } from "@/components/icons";
 import { toast } from "sonner";
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useApi } from "@/api/ApiProvider";
 import {
@@ -51,6 +51,7 @@ import {
   useTaskActivity,
   useTaskAttemptMessages,
   useTaskAttempts,
+  useTaskChanges,
   useTaskComments,
   useTaskFileBlobUrl,
   useTaskRuns,
@@ -107,6 +108,14 @@ import { FileViewerModal } from "./cockpit/FileViewerModal";
 import { NoteEditor } from "./cockpit/NoteEditor";
 import { RunChanges, changedFileCount } from "./cockpit/RunChanges";
 import { ARTIFACT_DND_TYPE, TaskFiles } from "./cockpit/TaskFiles";
+
+// Monaco-backed code workspace is heavy → code-split it so it only loads when
+// the user opens the "Code" thread.
+const CodeWorkspace = lazy(() =>
+  import("./cockpit/code/CodeWorkspace").then((m) => ({
+    default: m.CodeWorkspace,
+  })),
+);
 import { TaskRepoCard } from "./cockpit/TaskRepoCard";
 import { PRIORITY_META, PRIORITY_ORDER, PriorityIcon } from "./priority";
 import { SelectMenu } from "@/components/ui/select-menu";
@@ -116,6 +125,7 @@ import { TaskScheduleDialog } from "./TaskScheduleDialog";
 const OVERVIEW = "__overview__";
 const LOOP = "__loop__";
 const JOURNAL = "__journal__";
+const CODE = "__code__";
 
 /** Short sub-labels for the loop thread item, by persisted loop state. */
 const LOOP_STATE_SUB: Record<string, string> = {
@@ -229,6 +239,8 @@ export function TaskCockpit({
       }));
   }, [cliTargets.data, board.data]);
   const runs = useTaskRuns(task.id);
+  const taskChanges = useTaskChanges(task.id);
+  const changedFiles = taskChanges.data?.files.length ?? 0;
   const runningAgents = useMemo(() => {
     const set = new Set<string>();
     for (const r of runs.data ?? []) {
@@ -286,6 +298,16 @@ export function TaskCockpit({
       },
       { replace: true },
     );
+  };
+
+  // Open a workspace file as a tab inside the Code workspace (instead of the
+  // blocking modal). Bumping `seq` re-triggers the open even for the same path.
+  const [codeOpenReq, setCodeOpenReq] = useState<{ path: string; seq: number }>();
+  const codeOpenSeq = useRef(0);
+  const openInCode = (path: string) => {
+    codeOpenSeq.current += 1;
+    setCodeOpenReq({ path, seq: codeOpenSeq.current });
+    selectThread(CODE);
   };
 
   const attempts = useTaskAttempts(task.id, activeAgent?.id);
@@ -409,19 +431,21 @@ export function TaskCockpit({
                 <Pencil className="h-3.5 w-3.5" /> Edit
               </Button>
             )}
-            <Button
-              variant="ghost"
-              size="icon"
-              aria-label={artifactsOpen ? "Hide details" : "Show details"}
-              title={artifactsOpen ? "Hide details" : "Show details"}
-              onClick={() => setArtifactsOpen((v) => !v)}
-            >
-              {artifactsOpen ? (
-                <PanelRightClose className="h-4 w-4" />
-              ) : (
-                <PanelRightOpen className="h-4 w-4" />
-              )}
-            </Button>
+            {thread !== CODE && (
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label={artifactsOpen ? "Hide details" : "Show details"}
+                title={artifactsOpen ? "Hide details" : "Show details"}
+                onClick={() => setArtifactsOpen((v) => !v)}
+              >
+                {artifactsOpen ? (
+                  <PanelRightClose className="h-4 w-4" />
+                ) : (
+                  <PanelRightOpen className="h-4 w-4" />
+                )}
+              </Button>
+            )}
           </div>
         </div>
         <h1
@@ -475,6 +499,21 @@ export function TaskCockpit({
               sub="Decisions & timeline"
               active={thread === JOURNAL}
               onClick={() => selectThread(JOURNAL)}
+            />
+            <ThreadItem
+              icon={
+                <span className="flex h-6 w-6 items-center justify-center rounded bg-primary/10 text-primary">
+                  <FileDiff className="h-3.5 w-3.5" />
+                </span>
+              }
+              label="Code"
+              sub={
+                changedFiles > 0
+                  ? `${changedFiles} file${changedFiles === 1 ? "" : "s"} changed`
+                  : "Review diffs & files"
+              }
+              active={thread === CODE}
+              onClick={() => selectThread(CODE)}
             />
 
             <div className="px-2 pb-1 pt-3 text-[10.5px] font-semibold uppercase tracking-[0.06em] text-muted-foreground">
@@ -577,6 +616,29 @@ export function TaskCockpit({
             </>
           ) : thread === JOURNAL ? (
             <JournalPanel task={task} canEdit={canEdit} />
+          ) : thread === CODE ? (
+            <div className="flex min-h-0 flex-1 flex-col bg-background">
+              <div className="flex items-center gap-2 border-b border-border px-4 py-2">
+                <span className="flex h-6 w-6 items-center justify-center rounded bg-primary/10 text-primary">
+                  <FileDiff className="h-3.5 w-3.5" />
+                </span>
+                <span className="text-sm font-semibold text-foreground">
+                  Code
+                </span>
+                <span className="text-[11px] text-muted-foreground">
+                  · workspace diffs
+                </span>
+              </div>
+              <Suspense
+                fallback={
+                  <div className="flex flex-1 items-center justify-center">
+                    <Spinner className="h-6 w-6 text-brand-400" />
+                  </div>
+                }
+              >
+                <CodeWorkspace taskId={task.id} openRequest={codeOpenReq} />
+              </Suspense>
+            </div>
           ) : activeAgent ? (
             <>
               <div className="flex items-center gap-2 border-b border-border px-4 py-2">
@@ -672,7 +734,9 @@ export function TaskCockpit({
         </section>
 
         {/* Right — Details (status / people) + Artifacts (collapsible) */}
-        {artifactsOpen && (
+        {/* The Code workspace is a full-width review surface, so the right-hand
+            Details/Artifacts rail is hidden while the Code thread is open. */}
+        {artifactsOpen && thread !== CODE && (
           <aside className="flex w-96 shrink-0 flex-col border-l border-border">
             <TaskDetailsPanel
               task={task}
@@ -702,11 +766,12 @@ export function TaskCockpit({
             </div>
             <TaskFiles
               taskId={task.id}
-              selected={filePath}
-              onSelect={setFilePath}
+              selected={codeOpenReq?.path ?? ""}
+              // Selecting an artifact opens it as a tab in the Code workspace
+              // (non-blocking) rather than the old single-file modal.
+              onSelect={openInCode}
               canDelete={canEdit}
               onDeleted={(p) => {
-                // Close the viewer if the open file (or its folder) was deleted.
                 if (filePath === p || filePath.startsWith(`${p}/`)) setFilePath("");
               }}
             />

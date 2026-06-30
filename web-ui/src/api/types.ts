@@ -176,6 +176,46 @@ export interface WorkspaceFileResponse {
   truncated: boolean;
 }
 
+// ── Task code changes (git diff of the per-task repo copies) ─────────
+// Git status letters: A added · M modified · D deleted · R renamed · U untracked.
+export type GitChangeStatus = "A" | "M" | "D" | "R" | "U";
+
+/** One changed file in a task's repo working copy (repo-relative `path`). */
+export interface TaskChangeEntry {
+  repo: string;
+  path: string;
+  old_path?: string;
+  status: GitChangeStatus;
+  additions: number;
+  deletions: number;
+  binary: boolean;
+}
+
+/** Per-repo summary returned alongside the flat file list. */
+export interface TaskChangeRepo {
+  slug: string;
+  base_branch: string | null;
+  branch: string;
+  present: boolean;
+}
+
+export interface TaskChangesResponse {
+  repos: TaskChangeRepo[];
+  files: TaskChangeEntry[];
+  truncated: boolean;
+}
+
+/** Old/new content for a single changed file (lazy-loaded per file). */
+export interface TaskFileDiff {
+  repo: string;
+  path: string;
+  original: string;
+  modified: string;
+  status: GitChangeStatus;
+  binary: boolean;
+  truncated: boolean;
+}
+
 // ── Agent-team platform (plan 16): boards + tasks ───────────────────
 
 export interface BoardColumn {

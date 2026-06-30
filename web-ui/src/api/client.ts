@@ -71,6 +71,8 @@ import {
   type TaskRunDTO,
   type WorkspaceFileResponse,
   type WorkspaceTreeResponse,
+  type TaskChangesResponse,
+  type TaskFileDiff,
 } from "./types";
 import { apiUrl } from "./config";
 
@@ -693,6 +695,17 @@ export class ApiClient {
   taskWorkspaceFileRawUrl(taskId: string, path: string) {
     const q = new URLSearchParams({ path });
     return apiUrl(`/api/tasks/${taskId}/files/raw?${q}`);
+  }
+
+  // ── task code changes (git diff of per-task repo copies) ─────────
+  getTaskChanges(taskId: string) {
+    return this.request<TaskChangesResponse>(`/api/tasks/${taskId}/changes`);
+  }
+  getTaskChangeDiff(taskId: string, repo: string, path: string) {
+    const q = new URLSearchParams({ repo, path });
+    return this.request<TaskFileDiff>(
+      `/api/tasks/${taskId}/changes/diff?${q}`,
+    );
   }
 
   // ── code repositories ────────────────────────────────────────────

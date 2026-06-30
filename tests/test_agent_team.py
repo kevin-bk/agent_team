@@ -3461,6 +3461,122 @@ def test_pre_push_hook_blocks_default_branch():
     assert "refusing to push to protected branch" in body
 
 
+def _seed_task_repo_copy(tmp_path, slug="kb", branch="agent/team-T-1"):
+    """Create a git repo copy at ``<ws>/<slug>`` with a base + agent branch.
+
+    Stages every change kind the Changes view must surface: a committed
+    modify/delete/rename/add on the agent branch, an uncommitted working-tree
+    edit, and an untracked file. Returns ``(workspace_path, copy_path)``.
+    """
+    import subprocess
+    from pathlib import Path
+
+    from agent_team.features.repos.paths import task_copy_path
+
+    workspace = tmp_path / "ws"
+    copy = Path(task_copy_path(str(workspace), slug))
+    copy.parent.mkdir(parents=True, exist_ok=True)
+
+    def git(*args):
+        subprocess.run(["git", "-C", str(copy), *args], check=True, capture_output=True)
+
+    subprocess.run(["git", "init", "-q", "-b", "main", str(copy)], check=True)
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "Tester")
+
+    # Base commit on `main`.
+    (copy / "keep.py").write_text("base\n")
+    (copy / "mod.py").write_text("line1\nline2\n")
+    (copy / "del.py").write_text("bye\n")
+    (copy / "ren_old.py").write_text("rename me unchanged\n")
+    git("add", "-A")
+    git("commit", "-q", "-m", "base")
+
+    # Agent branch: modify / delete / rename / add (committed).
+    git("checkout", "-q", "-b", branch)
+    (copy / "mod.py").write_text("line1\nchanged\nline3\n")
+    (copy / "del.py").unlink()
+    git("mv", "ren_old.py", "ren_new.py")
+    (copy / "added.py").write_text("brand new\n")
+    git("add", "-A")
+    git("commit", "-q", "-m", "work")
+
+    # Uncommitted working-tree edit + untracked file (must still be captured).
+    (copy / "keep.py").write_text("base\nuncommitted\n")
+    (copy / "untracked.txt").write_text("scratch\n")
+
+    return str(workspace), copy
+
+
+def test_diff_service_detects_all_change_kinds(tmp_path):
+    from agent_team.features.repos import diff_service
+
+    workspace, _copy = _seed_task_repo_copy(tmp_path)
+    specs = [{"slug": "kb", "base_branch": "main"}]
+
+    result = diff_service.compute_changes(workspace, "agent/team-T-1", specs)
+    assert result["repos"][0]["present"] is True
+    assert result["truncated"] is False
+    by_path = {f["path"]: f for f in result["files"]}
+
+    assert by_path["mod.py"]["status"] == "M"
+    assert by_path["mod.py"]["additions"] >= 1
+    assert by_path["mod.py"]["deletions"] >= 1
+    assert by_path["del.py"]["status"] == "D"
+    assert by_path["added.py"]["status"] == "A"
+    assert by_path["untracked.txt"]["status"] == "U"
+    # Uncommitted edit on a committed file is part of the on-disk truth.
+    assert by_path["keep.py"]["status"] == "M"
+    # Rename carries the old path under the new path key.
+    assert by_path["ren_new.py"]["status"] == "R"
+    assert by_path["ren_new.py"]["old_path"] == "ren_old.py"
+
+
+def test_diff_service_file_diff_added_modified_deleted(tmp_path):
+    from agent_team.features.repos import diff_service
+
+    workspace, _copy = _seed_task_repo_copy(tmp_path)
+    spec = {"slug": "kb", "base_branch": "main"}
+
+    mod = diff_service.compute_file_diff(workspace, spec, "mod.py")
+    assert mod["status"] == "M"
+    assert "line2" in mod["original"]
+    assert "changed" in mod["modified"]
+    assert mod["binary"] is False
+
+    added = diff_service.compute_file_diff(workspace, spec, "added.py")
+    assert added["status"] == "A"
+    assert added["original"] == ""
+    assert "brand new" in added["modified"]
+
+    deleted = diff_service.compute_file_diff(workspace, spec, "del.py")
+    assert deleted["status"] == "D"
+    assert deleted["modified"] == ""
+    assert "bye" in deleted["original"]
+
+
+def test_diff_service_file_diff_rejects_traversal(tmp_path):
+    import pytest
+
+    from agent_team.features.repos import diff_service
+
+    workspace, _copy = _seed_task_repo_copy(tmp_path)
+    spec = {"slug": "kb", "base_branch": "main"}
+    with pytest.raises(ValueError):
+        diff_service.compute_file_diff(workspace, spec, "../../etc/passwd")
+
+
+def test_diff_service_skips_missing_repo_copy(tmp_path):
+    from agent_team.features.repos import diff_service
+
+    # No copy on disk → repo reported as not present, no files, no error.
+    result = diff_service.compute_changes(
+        str(tmp_path / "empty-ws"), "agent/team-T-9", [{"slug": "kb", "base_branch": "main"}]
+    )
+    assert result["repos"][0]["present"] is False
+    assert result["files"] == []
+
+
 def test_repo_schedule_sets_next_pull(db):
     from agent_team.features.repos import repositories as repos_repo
     from agent_team.features.repos.schemas import RepoCreate

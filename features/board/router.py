@@ -2621,6 +2621,64 @@ async def workspace_delete(
 
 
 # ---------------------------------------------------------------------------
+# Task code changes (git diff of the task's repo copies vs their base branch)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/tasks/{task_id}/changes")
+async def task_changes(task_id: str, request: Request, db: Session = Depends(get_db)):
+    """Aggregated git changeset for every repo copy in the task workspace.
+
+    Reflects on-disk truth (commits + staged/unstaged edits + untracked files)
+    on the ``agent/<task-key>`` branch vs its base, so it covers any agent / run
+    / direct-CLI push — unlike the thread-local, tool-call-derived "Changes" tab.
+    """
+    _, err = authz.guard_task(db, request, task_id, min_role="viewer")
+    if err:
+        return err
+    task = _task_workspace(db, task_id)
+    if task is None:
+        return not_found("Task not found")
+    from agent_team.features.repos import diff_service
+    from agent_team.features.repos.task_copy import task_branch_name
+
+    specs = diff_service.repo_specs(db, task)
+    work_branch = task_branch_name(task)
+    return await asyncio.to_thread(
+        diff_service.compute_changes, task.workspace_path, work_branch, specs
+    )
+
+
+@router.get("/tasks/{task_id}/changes/diff")
+async def task_change_diff(
+    task_id: str,
+    request: Request,
+    repo: str,
+    path: str,
+    db: Session = Depends(get_db),
+):
+    """Old/new content for a single changed file (lazy-loaded per file)."""
+    _, err = authz.guard_task(db, request, task_id, min_role="viewer")
+    if err:
+        return err
+    task = _task_workspace(db, task_id)
+    if task is None:
+        return not_found("Task not found")
+    from agent_team.features.repos import diff_service
+
+    specs = diff_service.repo_specs(db, task)
+    spec = next((s for s in specs if s["slug"] == repo), None)
+    if spec is None:
+        return not_found("Repo not assigned to this task")
+    try:
+        return await asyncio.to_thread(
+            diff_service.compute_file_diff, task.workspace_path, spec, path
+        )
+    except ValueError:
+        return JSONResponse(status_code=400, content={"detail": "invalid path"})
+
+
+# ---------------------------------------------------------------------------
 # Attachments: uploads land in the task workspace (chat under _attachments/,
 # comments under _notes/) so agents can open them and file routes can serve them
 # ---------------------------------------------------------------------------

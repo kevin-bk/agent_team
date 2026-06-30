@@ -9,7 +9,7 @@
 > [`pages/board-wiki.md`](pages/board-wiki.md)). Knowledge is **compiled once and
 > kept current** instead of disappearing into chat threads and PR descriptions.
 
-Last updated: 2026-06-29 · Owner: `agent_team` plugin
+Last updated: 2026-06-30 · Owner: `agent_team` plugin
 
 ---
 
@@ -59,7 +59,7 @@ Last updated: 2026-06-29 · Owner: `agent_team` plugin
 ### Subsystems (one page each)
 | Page | Subsystem | Raw design source |
 |---|---|---|
-| [`pages/boards-tasks-workspaces.md`](pages/boards-tasks-workspaces.md) | Boards, tasks, conversations, per-task workspaces, notes/attachments | `README.md` |
+| [`pages/boards-tasks-workspaces.md`](pages/boards-tasks-workspaces.md) | Boards, tasks, conversations, per-task workspaces, notes/attachments, the Code review surface (git Changes + Files) | `README.md` |
 | [`pages/runtime-and-runs.md`](pages/runtime-and-runs.md) | Run backend, `AgentWorker` abstraction, event store, streaming/SSE, ACP | [`../plans/loop-engineering.md`](../plans/loop-engineering.md) |
 | [`pages/autonomous-loop.md`](pages/autonomous-loop.md) | The controller/evaluator loop, budgets, the task state machine | [`../plans/loop-engineering.md`](../plans/loop-engineering.md) |
 | [`pages/planning-workflow.md`](pages/planning-workflow.md) | Strict planning, the `.agent-team/` artifact contract, approval gate | [`../plans/planning-workflow-upgrade.md`](../plans/planning-workflow-upgrade.md), [`../plans/planning-workflow-implementation-decisions.md`](../plans/planning-workflow-implementation-decisions.md) |

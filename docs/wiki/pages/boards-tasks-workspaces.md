@@ -1,6 +1,6 @@
 # Boards, tasks & workspaces
 
-Last updated: 2026-06-29 · [↩ index](../index.md) · Source: `README.md`,
+Last updated: 2026-06-30 · [↩ index](../index.md) · Source: `README.md`,
 `features/board/`
 
 The foundation everything else builds on.
@@ -50,6 +50,32 @@ Follow-up turns send only the **delta** to keep the prompt prefix cache-friendly
 Context builders: `runtime/context.py` (LLM) and `runtime/cli_context.py`
 (direct-CLI brief, e.g. `.agent-team/TASK.md`).
 
+## Code workspace (review surface)
+
+The task cockpit has a dedicated **Code** thread for reviewing what a task
+changed — important because a large task is edited across many files, runs and
+attempts (LLM tool calls *and* direct-CLI agents). It has two sub-views:
+
+- **Changes** — git is the source of truth. For each assigned repo copy
+  (`<workspace>/<slug>` on `agent/<task-key>`) the backend diffs the working
+  tree against the **merge-base** with the repo's base branch, so the list spans
+  commits + staged/unstaged edits + untracked files, regardless of which agent
+  produced them. Each file is a collapsible card with a lazily-loaded
+  side-by-side diff (Monaco, unchanged regions folded) and an old/diff/new
+  toggle; markdown renders as a preview.
+- **Files** — a searchable workspace tree (a "Changed only" mode with per-file
+  status dots, or the full tree) plus quick-access pills for high-priority
+  changed files, opening into a multi-tab content viewer (Monaco source /
+  markdown / image / binary download). Selecting a file in the right-hand
+  Artifacts panel opens it as a tab here instead of a blocking modal.
+
+Backend: `features/repos/diff_service.py` (pure git via `asyncio.to_thread`) +
+endpoints `GET /tasks/{id}/changes` and
+`GET /tasks/{id}/changes/diff?repo=<slug>&path=<rel>` (viewer-guarded,
+path-sanitised). The view refreshes live on run/loop SSE events. Frontend lives
+under `web-ui/src/features/board/cockpit/code/` with the `<TaskDiff>` Monaco
+primitive in `web-ui/src/components/`.
+
 ## Data-access layout
 
 Repository-style data access lives in `features/board/repositories/` — one module
@@ -66,7 +92,8 @@ per entity (`boards.py`, `tasks.py`, `runs.py`, `comments.py`, `conversations.py
 - **Workspace file browser API** — the cockpit's Artifacts panel is backed by
   `GET /tasks/{id}/files/tree`, `GET …/files` (+ `…/files/raw`),
   `PUT …/files` (write), `DELETE …/files`. Paths are resolved inside the task
-  workspace only.
+  workspace only. Git review uses `GET …/changes` + `…/changes/diff` (see the
+  [Code workspace](#code-workspace-review-surface) section).
 - **Attachments** — task attachments (`POST/DELETE /tasks/{id}/attachments`) and
   comment attachments (`…/comment-attachments`), stored workspace-backed.
 - **Per-agent thread controls** — list/reset a `(task, agent)` conversation,

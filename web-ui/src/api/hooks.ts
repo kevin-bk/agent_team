@@ -66,6 +66,9 @@ export const qk = {
     ["task-file-tree", taskId, path] as const,
   taskFile: (taskId: string, path: string) =>
     ["task-file", taskId, path] as const,
+  taskChanges: (taskId: string) => ["task-changes", taskId] as const,
+  taskChangeDiff: (taskId: string, repo: string, path: string) =>
+    ["task-change-diff", taskId, repo, path] as const,
   taskComments: (taskId: string) => ["task-comments", taskId] as const,
   taskActivity: (taskId: string) => ["task-activity", taskId] as const,
   taskLoop: (taskId: string) => ["task-loop", taskId] as const,
@@ -567,6 +570,40 @@ export function useTaskComments(taskId: string | undefined) {
     queryKey: qk.taskComments(taskId ?? "_"),
     queryFn: () => client.listTaskComments(taskId as string),
     enabled: !!taskId,
+  });
+}
+
+/**
+ * Git changeset for a task's repo working copies (the "Changes" view). Reflects
+ * on-disk truth vs the base branch, so it spans every agent/run/CLI. Callers
+ * (e.g. the cockpit) invalidate `qk.taskChanges(id)` on run SSE / file writes.
+ */
+export function useTaskChanges(taskId: string | undefined) {
+  const { client } = useApi();
+  return useQuery({
+    queryKey: qk.taskChanges(taskId ?? "_"),
+    queryFn: () => client.getTaskChanges(taskId as string),
+    enabled: !!taskId,
+  });
+}
+
+/**
+ * Old/new content for one changed file. Lazy: pass `enabled` so the diff is only
+ * fetched when its card is expanded.
+ */
+export function useTaskChangeDiff(args: {
+  taskId: string | undefined;
+  repo: string;
+  path: string;
+  enabled?: boolean;
+}) {
+  const { taskId, repo, path, enabled = true } = args;
+  const { client } = useApi();
+  return useQuery({
+    queryKey: qk.taskChangeDiff(taskId ?? "_", repo, path),
+    queryFn: () => client.getTaskChangeDiff(taskId as string, repo, path),
+    enabled: enabled && !!taskId && !!repo && !!path,
+    staleTime: 5 * 60_000,
   });
 }
 

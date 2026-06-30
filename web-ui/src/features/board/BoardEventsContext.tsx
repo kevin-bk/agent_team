@@ -63,6 +63,12 @@ export function BoardEventsProvider({
         case "run.finished":
           if (e.task_id) {
             void qc.invalidateQueries({ queryKey: qk.taskRuns(e.task_id) });
+            // Agents mutate the repo working copies + workspace files, so keep
+            // the Code workspace (git changes + file tree) live as runs land.
+            void qc.invalidateQueries({ queryKey: qk.taskChanges(e.task_id) });
+            void qc.invalidateQueries({
+              queryKey: ["task-file-tree", e.task_id],
+            });
             if (e.agent_id) {
               void qc.invalidateQueries({
                 queryKey: qk.taskRuns(e.task_id, e.agent_id),
@@ -80,6 +86,7 @@ export function BoardEventsProvider({
           if (e.task_id) {
             void qc.invalidateQueries({ queryKey: qk.taskLoop(e.task_id) });
             void qc.invalidateQueries({ queryKey: qk.taskPlanning(e.task_id) });
+            void qc.invalidateQueries({ queryKey: qk.taskChanges(e.task_id) });
             // The journal grows as the loop advances (system entries + ingested
             // agent notes), so keep the timeline fresh too.
             void qc.invalidateQueries({ queryKey: qk.taskJournal(e.task_id) });

@@ -122,15 +122,18 @@
     --shadow-card: 0px 1px 2px 0px rgba(9, 30, 66, 0.25);
   }
 
-  /* ── Dark: Atlassian dark neutrals (DN) + Jira blue ───────────────── */
+  /* ── Dark: deep cool-grey neutrals + Jira blue ────────────────────────
+     A near-black, slightly blue-cool canvas with low-chroma elevated surfaces
+     and hairline borders. Hierarchy comes from subtle surface steps + the blue
+     accent used sparingly (primary action / active / focus). */
   .dark {
-    --background: 210 12% 13%; /* #1D2125 dark canvas */
+    --background: 220 20% 8%; /* #10141A app canvas */
     --foreground: 210 22% 76%; /* #B6C2CF text */
     --foreground-strong: 210 25% 86%; /* brighter reading text in dark mode */
 
-    --surface-1: 207 12% 15%; /* #22272B cards / lanes */
-    --surface-2: 208 12% 18%; /* #282E33 elevated / popover */
-    --surface-3: 210 13% 20%; /* #2C333A hover */
+    --surface-1: 220 17% 10%; /* #16191F cards / lanes */
+    --surface-2: 220 18% 13%; /* #1B1F27 elevated / popover */
+    --surface-3: 222 20% 17%; /* #232834 hover */
 
     --card: var(--surface-1);
     --card-foreground: var(--foreground);
@@ -138,36 +141,36 @@
     --popover-foreground: var(--foreground);
 
     --primary: 215 100% 67%; /* #579DFF Atlassian Blue400 */
-    --primary-foreground: 210 12% 13%; /* dark text on light-blue bold */
+    --primary-foreground: 220 20% 8%; /* dark text on light-blue bold */
 
-    /* Dark nav rail — near-black navy so the rail still reads as a distinct
-       tier without the bright-blue glare of light mode. */
-    --nav: 210 16% 11%; /* #161A1D */
+    /* Dark nav rail — darkest tier so the rail reads as distinct chrome
+       without the bright-blue glare of light mode. */
+    --nav: 222 24% 6%; /* #0B0E13 */
     --nav-foreground: 210 18% 72%; /* #9FADBC idle glyphs */
-    --nav-hover: 210 13% 20%; /* #2C333A hover */
+    --nav-hover: 222 20% 17%; /* #232834 hover */
     --nav-selected: 215 100% 67%; /* #579DFF active accent */
-    --secondary: 210 13% 20%;
+    --secondary: 222 20% 17%;
     --secondary-foreground: 210 22% 76%;
-    --muted: 210 13% 20%;
+    --muted: 222 20% 17%;
     --muted-foreground: 210 18% 68%; /* #9FADBC subtle text */
-    --accent: 210 13% 20%;
+    --accent: 222 20% 17%;
     --accent-foreground: 210 22% 76%;
     --destructive: 4 91% 69%; /* #F87168 dark danger */
-    --destructive-foreground: 210 12% 13%;
+    --destructive-foreground: 220 20% 8%;
 
-    --border: 210 13% 20%; /* #2C333A hairline */
-    --border-strong: 210 13% 31%; /* #454F59 */
-    --input: 208 12% 22%;
+    --border: 219 17% 20%; /* #2A303B hairline */
+    --border-strong: 219 14% 30%; /* #424B58 */
+    --input: 220 18% 13%; /* #1B1F27 */
     --ring: 215 100% 67%;
 
     --success: 155 57% 55%; /* #4BCE97 Green400 */
-    --success-foreground: 210 12% 13%;
+    --success-foreground: 220 20% 8%;
     --warning: 46 90% 62%; /* #F5CD47 Yellow400 */
-    --warning-foreground: 210 12% 13%;
+    --warning-foreground: 220 20% 8%;
     --discovery: 250 75% 75%; /* #9F8FEF Purple300 */
-    --discovery-foreground: 210 12% 13%;
+    --discovery-foreground: 220 20% 8%;
 
-    --code-bg: 210 13% 9%; /* #161A1D */
+    --code-bg: 218 22% 7%; /* #0E1116 — deepest editor surface */
 
     /* Dark elevation shadows — deeper black for visible lift on dark surfaces. */
     --shadow-raised: 0px 1px 1px #03040480, 0px 0px 1px #03040480;
