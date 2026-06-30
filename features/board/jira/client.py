@@ -9,6 +9,7 @@ configured Jira site + credentials.
 from __future__ import annotations
 
 import base64
+from typing import Any
 
 import httpx
 
@@ -121,6 +122,24 @@ class JiraClient:
             if not batch or not next_token:
                 break
         return issues[:max_results]
+
+    def search_users(self, query: str, *, max_results: int = 10) -> list[dict]:
+        """Find Jira users by name or email; returns user objects (incl. accountId).
+
+        Runs server-side with the board's own credentials, so Jira can resolve an
+        ``accountId`` from an email even when that email is hidden on issue
+        payloads (privacy/GDPR). Returns ``[]`` on any error so a sync never fails
+        just because the lookup didn't pan out.
+        """
+        q = (query or "").strip()
+        if not q:
+            return []
+        try:
+            # /user/search returns a JSON array (not the object _get is typed for).
+            data: Any = self._get("/rest/api/2/user/search", {"query": q, "maxResults": max_results})
+        except JiraError:
+            return []
+        return data if isinstance(data, list) else []
 
     def get_comments(self, key: str, *, max_results: int = 200) -> list[dict]:
         """Fetch an issue's comments (oldest first), paginated via startAt/total."""

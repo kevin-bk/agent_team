@@ -131,23 +131,37 @@ def build_task_changes(issue: dict, *, board: AgentTeamBoard) -> dict:
     if isinstance(labels, list):
         changes["labels"] = [str(x) for x in labels]
 
-    # People: surface the Jira account email so the service layer can map it to
-    # a local user. Jira may hide the email (GDPR) → emailAddress is then null,
-    # in which case we simply can't auto-assign. Resolution happens in service.py
-    # because it needs DB access (this module stays pure/unit-testable).
-    assignee_email = _account_email(fields.get("assignee"))
-    if assignee_email:
-        changes["assignee_email"] = assignee_email
-    reporter_email = _account_email(fields.get("reporter"))
-    if reporter_email:
-        changes["reporter_email"] = reporter_email
+    # People: surface a normalized reference (accountId + email + displayName) so
+    # the service layer can map it to a local user. Jira often hides the email
+    # (GDPR), but the accountId is always present — the service uses it (via a
+    # cached per-member lookup) so non-owner assignees still map. Resolution lives
+    # in service.py because it needs DB access (this module stays pure/testable).
+    assignee = _account_ref(fields.get("assignee"))
+    if assignee is not None:
+        changes["assignee"] = assignee
+        # Kept for backward compatibility with callers/tests that read the email.
+        if assignee.get("email"):
+            changes["assignee_email"] = assignee["email"]
+    reporter = _account_ref(fields.get("reporter"))
+    if reporter is not None:
+        changes["reporter"] = reporter
+        if reporter.get("email"):
+            changes["reporter_email"] = reporter["email"]
 
     return changes
 
 
-def _account_email(account: object) -> str | None:
-    """Pull a usable email from a Jira user object (or None if absent/hidden)."""
+def _account_ref(account: object) -> dict | None:
+    """Normalize a Jira user object to ``{account_id, email, display_name}``.
+
+    Returns ``None`` only when the object carries no identifying field at all.
+    Any individual field may be ``None`` (Jira hides emails by default).
+    """
     if not isinstance(account, dict):
         return None
-    email = (account.get("emailAddress") or "").strip()
-    return email or None
+    account_id = (account.get("accountId") or "").strip() or None
+    email = (account.get("emailAddress") or "").strip() or None
+    display = (account.get("displayName") or "").strip() or None
+    if not (account_id or email or display):
+        return None
+    return {"account_id": account_id, "email": email, "display_name": display}

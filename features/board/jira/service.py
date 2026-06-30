@@ -27,6 +27,34 @@ _ATTACH_COMMENT_ID = "__jira_attachments__"
 _JIRA_IMG_RE = re.compile(r"!([^!|\n]+?)(?:\|[^!\n]*)?!")
 #: Jira wiki-markup attachment link: ``[^name]``.
 _JIRA_LINK_RE = re.compile(r"\[\^([^\]\n]+)\]")
+#: Jira wiki-markup external link: ``[text|url]`` / ``[url]`` (optionally with a
+#: trailing ``|smart-link``/``|smart-card`` render hint). Excludes attachment
+#: links (``[^name]``) and user mentions (``[~accountid]``).
+_JIRA_WIKI_LINK_RE = re.compile(r"\[(?![\^~])([^\[\]\n]+?)\]")
+#: Trailing render hints Jira appends to smart links — dropped on conversion.
+_JIRA_LINK_HINTS = {"smart-link", "smart-card", "smartlink", "smartcard"}
+#: Jira wiki-markup code macro: ``{code}…{code}`` / ``{code:lang}…{code}`` /
+#: ``{code:language=js|title=…}…{code}``. DOTALL so it spans multiple lines.
+_JIRA_CODE_RE = re.compile(r"\{code(?::([^}]*))?\}(.*?)\{code\}", re.DOTALL)
+#: Jira wiki-markup preformatted block: ``{noformat}…{noformat}``.
+_JIRA_NOFORMAT_RE = re.compile(r"\{noformat\}(.*?)\{noformat\}", re.DOTALL)
+#: Jira wiki-markup inline monospace: ``{{text}}``.
+_JIRA_MONO_RE = re.compile(r"\{\{(.+?)\}\}", re.DOTALL)
+#: A Markdown fenced code block, used to avoid rewriting markup *inside* code.
+_MD_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
+#: Jira block macros that wrap content: ``{quote}``, ``{panel[:…]}``, ``{color[:…]}``.
+_JIRA_QUOTE_RE = re.compile(r"\{quote\}(.*?)\{quote\}", re.DOTALL)
+_JIRA_PANEL_RE = re.compile(r"\{panel(?::[^}]*)?\}(.*?)\{panel\}", re.DOTALL)
+_JIRA_COLOR_RE = re.compile(r"\{color(?::[^}]*)?\}(.*?)\{color\}", re.DOTALL)
+#: Line-level Jira markup. ``h1.``–``h6.`` headings, ``bq.`` blockquote, and
+#: ``*``/``#`` (possibly nested) list items — the latter matters because a Jira
+#: numbered item ``# x`` would otherwise render as a Markdown H1.
+_JIRA_HEADING_RE = re.compile(r"^h([1-6])\.\s+(.*)$")
+_JIRA_BQ_RE = re.compile(r"^bq\.\s+(.*)$")
+_JIRA_LIST_RE = re.compile(r"^([*#]+)\s+(.*)$")
+#: Inline Jira markup: ``*bold*`` (single-star bold) and ``[~user]`` mentions.
+_JIRA_BOLD_RE = re.compile(r"(?<![\w*])\*(?!\s)([^*\n]+?)(?<!\s)\*(?![\w*])")
+_JIRA_MENTION_RE = re.compile(r"\[~([^\]\n]+)\]")
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -79,6 +107,245 @@ def rewrite_jira_media(text: str, name_to_path: dict[str, str]) -> tuple[str, se
     return text, referenced
 
 
+def _looks_like_url(value: str) -> bool:
+    return value.startswith(("http://", "https://", "mailto:"))
+
+
+def _apply_outside_fences(text: str, fn) -> str:
+    """Run ``fn`` on the parts of ``text`` that aren't inside a ```` ``` ```` block."""
+    out: list[str] = []
+    last = 0
+    for m in _MD_FENCE_RE.finditer(text):
+        out.append(fn(text[last : m.start()]))
+        out.append(m.group(0))
+        last = m.end()
+    out.append(fn(text[last:]))
+    return "".join(out)
+
+
+def _code_lang(params: str | None) -> str:
+    """Pull the language out of a Jira ``{code:…}`` parameter string."""
+    if not params:
+        return ""
+    for part in params.split("|"):
+        part = part.strip()
+        if "=" in part:
+            key, val = part.split("=", 1)
+            if key.strip().lower() in ("language", "lang"):
+                return val.strip()
+        elif part:  # bare token like ``{code:javascript}``
+            return part
+    return ""
+
+
+def rewrite_jira_code(text: str) -> str:
+    """Convert Jira code/preformat/monospace markup to Markdown.
+
+    Jira's v2 API returns ``{code:lang}…{code}`` and ``{noformat}…{noformat}``
+    blocks plus inline ``{{monospace}}``. Untouched they render as literal
+    ``{code}`` noise in the Markdown viewer (and the agent sees the same), so we
+    turn blocks into fenced code (carrying the language when given) and inline
+    spans into backticks. Inline conversion skips inside fenced blocks so code
+    bodies stay verbatim.
+    """
+    if not text:
+        return text
+
+    if "{code" in text:
+        text = _JIRA_CODE_RE.sub(
+            lambda m: f"\n```{_code_lang(m.group(1))}\n{m.group(2).strip(chr(10))}\n```\n",
+            text,
+        )
+    if "{noformat}" in text:
+        text = _JIRA_NOFORMAT_RE.sub(
+            lambda m: f"\n```\n{m.group(1).strip(chr(10))}\n```\n", text
+        )
+    if "{{" in text:
+        text = _apply_outside_fences(
+            text, lambda s: _JIRA_MONO_RE.sub(lambda m: f"`{m.group(1)}`", s)
+        )
+    return text
+
+
+def rewrite_jira_links(text: str) -> str:
+    """Convert Jira wiki-markup external links to Markdown.
+
+    Jira's v2 API returns descriptions/comments as wiki markup, where links look
+    like ``[label|url]`` or ``[url]`` — and "smart links" tack on a render hint
+    (``[url|url|smart-link]``). Left untouched these render as literal ``[…|…]``
+    brackets in the Markdown viewer (and the agent sees the same noise), so we
+    rewrite them to ``[label](url)`` (or a bare ``<url>`` autolink when there is
+    no distinct label). Non-link brackets, attachment links (``[^name]``) and
+    user mentions (``[~id]``) are left as-is.
+    """
+    if not text or "[" not in text:
+        return text
+
+    def _sub(m: re.Match) -> str:
+        parts = [p.strip() for p in m.group(1).split("|")]
+        if len(parts) >= 2 and parts[-1].lower() in _JIRA_LINK_HINTS:
+            parts = parts[:-1]
+        if len(parts) == 1:
+            target = parts[0]
+            return f"<{target}>" if _looks_like_url(target) else m.group(0)
+        label, target = parts[0], parts[1]
+        if not _looks_like_url(target):
+            return m.group(0)
+        if not label or label == target:
+            return f"<{target}>"
+        return f"[{label}]({target})"
+
+    # Skip fenced code so e.g. JS array/bracket syntax isn't mistaken for a link.
+    return _apply_outside_fences(text, lambda s: _JIRA_WIKI_LINK_RE.sub(_sub, s))
+
+
+def _blockquote(inner: str) -> str:
+    """Wrap ``inner`` lines as a Markdown blockquote."""
+    lines = inner.strip("\n").split("\n")
+    body = "\n".join(("> " + ln) if ln.strip() else ">" for ln in lines)
+    return f"\n{body}\n"
+
+
+def _rewrite_jira_block_macros(text: str) -> str:
+    """Convert ``{quote}``/``{panel}``/``{color}`` wrappers (outside code)."""
+    if "{quote}" not in text and "{panel" not in text and "{color" not in text:
+        return text
+
+    def fn(s: str) -> str:
+        s = _JIRA_QUOTE_RE.sub(lambda m: _blockquote(m.group(1)), s)
+        s = _JIRA_PANEL_RE.sub(lambda m: _blockquote(m.group(1)), s)
+        s = _JIRA_COLOR_RE.sub(lambda m: m.group(1), s)  # drop color, keep text
+        return s
+
+    return _apply_outside_fences(text, fn)
+
+
+def _list_line(m: "re.Match") -> str:
+    """Render a Jira ``*``/``#`` list item as a Markdown list item."""
+    markers = m.group(1)
+    depth = len(markers)
+    bullet = "1." if markers[-1] == "#" else "-"
+    return "  " * (depth - 1) + bullet + " " + m.group(2)
+
+
+def _parse_table_row(line: str) -> list[str]:
+    """Split a Jira table row (``|a|b|`` or ``||h||h||``) into cell strings."""
+    s = line.strip().replace("||", "|")
+    cells = [c.strip() for c in s.split("|")]
+    if cells and cells[0] == "":
+        cells = cells[1:]
+    if cells and cells[-1] == "":
+        cells = cells[:-1]
+    return cells
+
+
+def _convert_table(lines: list[str], start: int) -> tuple[list[str], int]:
+    """Turn a run of Jira table rows into a GFM table; returns (rows, consumed)."""
+    rows: list[list[str]] = []
+    j = start
+    while j < len(lines) and lines[j].strip().startswith("|"):
+        rows.append(_parse_table_row(lines[j]))
+        j += 1
+    ncols = max((len(r) for r in rows), default=0)
+
+    def fmt(cells: list[str]) -> str:
+        padded = cells + [""] * (ncols - len(cells))
+        return "| " + " | ".join(padded) + " |"
+
+    out = [fmt(rows[0]), "| " + " | ".join(["---"] * ncols) + " |"]
+    out.extend(fmt(r) for r in rows[1:])
+    return out, (j - start)
+
+
+def _rewrite_jira_lines(text: str) -> str:
+    """Apply line-level Jira markup (headings, lists, blockquotes, tables).
+
+    Walks line by line, skipping fenced code, so block constructs are converted
+    without touching code bodies.
+    """
+    if not text:
+        return text
+    lines = text.split("\n")
+    out: list[str] = []
+    in_fence = False
+    i = 0
+    n = len(lines)
+    while i < n:
+        line = lines[i]
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            out.append(line)
+            i += 1
+            continue
+        if in_fence:
+            out.append(line)
+            i += 1
+            continue
+        if line.strip().startswith("|"):
+            block, consumed = _convert_table(lines, i)
+            if out and out[-1].strip() != "":
+                out.append("")  # GFM tables want a preceding blank line
+            out.extend(block)
+            i += consumed
+            if i < n and lines[i].strip() != "":
+                out.append("")
+            continue
+        heading = _JIRA_HEADING_RE.match(line)
+        if heading:
+            out.append("#" * int(heading.group(1)) + " " + heading.group(2))
+            i += 1
+            continue
+        bq = _JIRA_BQ_RE.match(line)
+        if bq:
+            out.append("> " + bq.group(1))
+            i += 1
+            continue
+        listed = _JIRA_LIST_RE.match(line)
+        if listed:
+            out.append(_list_line(listed))
+            i += 1
+            continue
+        out.append(line)
+        i += 1
+    return "\n".join(out)
+
+
+def _mention(m: "re.Match") -> str:
+    """Render a Jira ``[~user]`` mention as ``@user`` (opaque ids → ``@user``)."""
+    value = m.group(1).strip()
+    if value.lower().startswith("accountid:"):
+        return "@user"
+    return "@" + value.lstrip("@")
+
+
+def _rewrite_jira_inline(s: str) -> str:
+    """Inline Jira markup: single-star bold and ``[~user]`` mentions."""
+    s = _JIRA_BOLD_RE.sub(lambda m: f"**{m.group(1)}**", s)
+    s = _JIRA_MENTION_RE.sub(_mention, s)
+    return s
+
+
+def jira_to_markdown(text: str, name_to_path: dict[str, str] | None = None) -> tuple[str, set]:
+    """Convert a full Jira wiki-markup body to Markdown.
+
+    Runs the whole pipeline in a fence-safe order: attachments → code blocks (so
+    later steps can skip them) → block macros → line-level constructs → inline →
+    links. Returns the Markdown plus the set of attachment filenames referenced
+    inline (so the caller can avoid duplicating them in the attachments note).
+    """
+    if not text:
+        return text, set()
+    referenced: set = set()
+    if name_to_path:
+        text, referenced = rewrite_jira_media(text, name_to_path)
+    text = rewrite_jira_code(text)
+    text = _rewrite_jira_block_macros(text)
+    text = _rewrite_jira_lines(text)
+    text = _apply_outside_fences(text, _rewrite_jira_inline)
+    text = rewrite_jira_links(text)
+    return text, referenced
+
+
 def apply_issue_to_task(
     db: Session,
     *,
@@ -115,7 +382,7 @@ def apply_issue_to_task(
     if "description" in changes:
         desc = changes["description"]
         if desc:
-            desc, ref = rewrite_jira_media(desc, name_to_path)
+            desc, ref = jira_to_markdown(desc, name_to_path)
             referenced |= ref
         task.description = desc
         applied.append("description")
@@ -132,13 +399,13 @@ def apply_issue_to_task(
         task.labels_json = json.dumps(changes["labels"])
         applied.append("labels")
 
-    # Map Jira people to local users by email. Only set when a matching user
-    # exists; never wipe an existing assignment when Jira hides the email.
-    assignee_uid = _user_id_for_email(db, changes.get("assignee_email"))
+    # Map Jira people to local users. Only set when a confident match exists;
+    # never wipe an existing assignment when Jira gives us nothing to match on.
+    assignee_uid = _resolve_person(db, board=board, account=changes.get("assignee"), client=client)
     if assignee_uid and assignee_uid != task.assignee_id:
         task.assignee_id = assignee_uid
         applied.append("assignee")
-    reporter_uid = _user_id_for_email(db, changes.get("reporter_email"))
+    reporter_uid = _resolve_person(db, board=board, account=changes.get("reporter"), client=client)
     if reporter_uid and reporter_uid != task.reporter_id:
         task.reporter_id = reporter_uid
         applied.append("reporter")
@@ -185,6 +452,158 @@ def _user_id_for_email(db: Session, email: str | None) -> str | None:
         .first()
     )
     return row[0] if row else None
+
+
+def _resolve_person(
+    db: Session,
+    *,
+    board: AgentTeamBoard,
+    account: dict | None,
+    client: object | None,
+) -> str | None:
+    """Map a Jira person ``{account_id, email, display_name}`` to a local user id.
+
+    Resolution order, stopping at the first confident match:
+
+    1. A board member already bound to this Jira ``accountId`` (the warm cache).
+    2. A user whose email matches (works for the syncing account itself and any
+       account whose email Jira exposes).
+    3. Email hidden? Warm the member→accountId cache via Jira user-search and
+       retry (1) — this is what lets non-owner assignees map at all.
+    4. Last resort: a board member whose name matches the Jira ``displayName``.
+
+    Whenever (2)/(4) lands on a board member and we know the ``accountId``, we
+    cache it on the membership so later syncs are a direct lookup.
+    """
+    if not account:
+        return None
+    account_id = account.get("account_id")
+    email = account.get("email")
+    display = account.get("display_name")
+
+    if account_id:
+        uid = _member_user_by_account(db, board.id, account_id)
+        if uid:
+            return uid
+
+    if email:
+        uid = _user_id_for_email(db, email)
+        if uid:
+            if account_id:
+                _bind_member_account(db, board.id, uid, account_id)
+            return uid
+
+    if account_id and client is not None and hasattr(client, "search_users"):
+        _warm_member_accounts(db, board, client)
+        uid = _member_user_by_account(db, board.id, account_id)
+        if uid:
+            return uid
+
+    if display:
+        uid = _member_user_by_name(db, board.id, display)
+        if uid:
+            if account_id:
+                _bind_member_account(db, board.id, uid, account_id)
+            return uid
+
+    return None
+
+
+def _member_user_by_account(db: Session, board_id: str, account_id: str) -> str | None:
+    """User id of the board member bound to ``account_id`` (or None)."""
+    from agent_team.features.board.models import AgentTeamBoardMember
+
+    row = (
+        db.query(AgentTeamBoardMember.user_id)
+        .filter(
+            AgentTeamBoardMember.board_id == board_id,
+            AgentTeamBoardMember.jira_account_id == account_id,
+        )
+        .first()
+    )
+    return row[0] if row else None
+
+
+def _member_user_by_name(db: Session, board_id: str, display: str) -> str | None:
+    """User id of the board member whose name matches ``display`` (unique only)."""
+    from sqlalchemy import func
+
+    from agent_team.features.board.models import AgentTeamBoardMember
+    from core.database.models import User
+
+    name = display.strip().lower()
+    if not name:
+        return None
+    rows = (
+        db.query(AgentTeamBoardMember.user_id)
+        .join(User, User.id == AgentTeamBoardMember.user_id)
+        .filter(
+            AgentTeamBoardMember.board_id == board_id,
+            (func.lower(User.full_name) == name) | (func.lower(User.username) == name),
+        )
+        .all()
+    )
+    # Only trust a unique match — names are not guaranteed unique.
+    return rows[0][0] if len(rows) == 1 else None
+
+
+def _bind_member_account(db: Session, board_id: str, user_id: str, account_id: str) -> None:
+    """Cache ``account_id`` on a board member (no-op if already set or no row)."""
+    from agent_team.features.board.models import AgentTeamBoardMember
+
+    member = (
+        db.query(AgentTeamBoardMember)
+        .filter(
+            AgentTeamBoardMember.board_id == board_id,
+            AgentTeamBoardMember.user_id == user_id,
+        )
+        .first()
+    )
+    if member is not None and not member.jira_account_id:
+        member.jira_account_id = account_id
+        db.flush()
+
+
+def _warm_member_accounts(db: Session, board: AgentTeamBoard, client: object) -> None:
+    """Resolve & cache the Jira accountId for members that don't have one yet.
+
+    For each unbound member we search Jira by their email; Jira matches it
+    server-side and returns the accountId even when the email is hidden on issue
+    payloads. We only bind when the match is unambiguous (a result whose email
+    matches, or a single result) so we never mis-attribute an assignee.
+    """
+    from agent_team.features.board.repositories import members as members_repo
+
+    search = getattr(client, "search_users", None)
+    if search is None:
+        return
+    for member, user in members_repo.list_members(db, board.id):
+        if member.jira_account_id or not (user.email or "").strip():
+            continue
+        try:
+            results = search(user.email) or []
+        except Exception:  # never let a lookup break the sync
+            continue
+        account_id = _pick_account_id(results, user.email)
+        if account_id:
+            member.jira_account_id = account_id
+    db.flush()
+
+
+def _pick_account_id(results: list, email: str) -> str | None:
+    """Choose an unambiguous accountId from Jira user-search results."""
+    target = (email or "").strip().lower()
+    candidates = [r for r in results if isinstance(r, dict) and r.get("accountId")]
+    if not candidates:
+        return None
+    # Prefer an exact email match when Jira exposes it.
+    for r in candidates:
+        if (r.get("emailAddress") or "").strip().lower() == target and target:
+            return str(r["accountId"])
+    # Otherwise only trust a single result (avoid mis-binding on ambiguity).
+    if len(candidates) == 1:
+        return str(candidates[0]["accountId"])
+    return None
 
 
 def _comment_body(comment: dict) -> str:
@@ -242,7 +661,7 @@ def import_comments(
         body = _comment_body(c).strip()
         if not body:
             continue
-        body, ref = rewrite_jira_media(body, name_to_path)
+        body, ref = jira_to_markdown(body, name_to_path)
         if referenced is not None:
             referenced |= ref
         author = (c.get("author") or {}).get("displayName") or "Jira"

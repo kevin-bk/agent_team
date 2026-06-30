@@ -402,6 +402,130 @@ def test_jira_apply_maps_people_and_status_toggle(db, monkeypatch):
     assert "status" not in applied2
 
 
+def test_jira_apply_maps_member_by_account_id_when_email_hidden(db):
+    """A non-owner assignee with a hidden email still maps via accountId.
+
+    Reproduces the reported bug: Jira returns ``emailAddress: null`` for members
+    (privacy), so the old email-only mapping only ever resolved the owner. The
+    accountId path (warmed by a user-search on the member's email) fixes it.
+    """
+    from agent_team.features.board.jira import service as jira_service
+    from agent_team.features.board.models import AgentTeamBoardMember
+    from agent_team.features.board.repositories import members as members_repo
+
+    carol = _make_user(db, username="carol")
+    board = boards_repo.create_board(
+        db, name="Team", description=None, columns=None, owner_id=None
+    )
+    board.jira_base_url = "https://acme.atlassian.net"
+    db.flush()
+    members_repo.add_member(db, board_id=board.id, user_id=carol.id, role="editor")
+    db.flush()
+    task = tasks_repo.create_task(
+        db, board_id=board.id, title="t", description=None, status="todo",
+        assignee_id=None, labels=None, priority=None, created_by=None,
+    )
+    db.flush()
+
+    searches: list[str] = []
+
+    class FakeClient:
+        def get_issue(self, key):
+            # Member assignee: accountId + displayName present, email hidden.
+            return {
+                "fields": {
+                    "summary": "Synced",
+                    "assignee": {"accountId": "acc-carol", "displayName": "Carol"},
+                }
+            }
+
+        def search_users(self, query, *, max_results=10):
+            searches.append(query)
+            return [
+                {
+                    "accountId": "acc-carol",
+                    "emailAddress": "carol@example.com",
+                    "displayName": "Carol",
+                }
+            ]
+
+        def get_comments(self, key, *, max_results=200):
+            return []
+
+        def browse_url(self, key):
+            return f"https://acme.atlassian.net/browse/{key}"
+
+    client = FakeClient()
+    applied = jira_service.apply_issue_to_task(
+        db, board=board, task=task, client=client, key="ACME-1", actor_id=None
+    )
+    db.flush()
+    assert task.assignee_id == carol.id
+    assert "assignee" in applied
+    # The accountId is now cached on the membership…
+    member = (
+        db.query(AgentTeamBoardMember)
+        .filter(AgentTeamBoardMember.board_id == board.id, AgentTeamBoardMember.user_id == carol.id)
+        .first()
+    )
+    assert member.jira_account_id == "acc-carol"
+    assert len(searches) == 1
+
+    # …so a second sync resolves via the cache without searching again.
+    task.assignee_id = None
+    db.flush()
+    jira_service.apply_issue_to_task(
+        db, board=board, task=task, client=client, key="ACME-1", actor_id=None
+    )
+    db.flush()
+    assert task.assignee_id == carol.id
+    assert len(searches) == 1  # no new user-search
+
+
+def test_jira_apply_maps_member_by_display_name_fallback(db):
+    """When email is hidden and user-search finds nothing, fall back to name."""
+    from agent_team.features.board.jira import service as jira_service
+    from agent_team.features.board.repositories import members as members_repo
+
+    dave = _make_user(db, username="dave")  # full_name == "Dave"
+    board = boards_repo.create_board(
+        db, name="Team", description=None, columns=None, owner_id=None
+    )
+    board.jira_base_url = "https://acme.atlassian.net"
+    db.flush()
+    members_repo.add_member(db, board_id=board.id, user_id=dave.id, role="editor")
+    db.flush()
+    task = tasks_repo.create_task(
+        db, board_id=board.id, title="t", description=None, status="todo",
+        assignee_id=None, labels=None, priority=None, created_by=None,
+    )
+    db.flush()
+
+    class FakeClient:
+        def get_issue(self, key):
+            return {
+                "fields": {
+                    "summary": "Synced",
+                    "assignee": {"accountId": "acc-dave", "displayName": "Dave"},
+                }
+            }
+
+        def search_users(self, query, *, max_results=10):
+            return []  # email lookup yields nothing (strict privacy org)
+
+        def get_comments(self, key, *, max_results=200):
+            return []
+
+        def browse_url(self, key):
+            return f"https://acme.atlassian.net/browse/{key}"
+
+    jira_service.apply_issue_to_task(
+        db, board=board, task=task, client=FakeClient(), key="ACME-1", actor_id=None
+    )
+    db.flush()
+    assert task.assignee_id == dave.id
+
+
 def test_jira_task_matches_filter():
     from types import SimpleNamespace
 
@@ -765,6 +889,106 @@ def test_jira_rewrite_inline_media():
     # Plain exclamation text isn't a known attachment → left untouched.
     assert "Exciting news! No match here!" in out
     assert referenced == {"img.png", "spec.pdf"}
+
+
+def test_jira_rewrite_wiki_links():
+    """Jira ``[label|url]`` / smart-link markup becomes proper Markdown."""
+    from agent_team.features.board.jira import service as jira_service
+
+    rw = jira_service.rewrite_jira_links
+
+    # Labelled link → Markdown link.
+    assert rw("see [docs|https://x.io/a]") == "see [docs](https://x.io/a)"
+    # Smart-link (label == url, trailing hint) → a single bare autolink.
+    assert (
+        rw("at [https://x.io/p|https://x.io/p|smart-link]")
+        == "at <https://x.io/p>"
+    )
+    # Smart-card hint with a distinct label is preserved as a labelled link.
+    assert (
+        rw("[Page|https://x.io/p|smart-card]") == "[Page](https://x.io/p)"
+    )
+    # Bare URL bracket → autolink.
+    assert rw("[https://x.io]") == "<https://x.io>"
+    # Non-link brackets, attachment links and mentions are left untouched.
+    assert rw("a [plain] note") == "a [plain] note"
+    assert rw("doc [^spec.pdf]") == "doc [^spec.pdf]"
+    assert rw("cc [~accountid:123]") == "cc [~accountid:123]"
+    # Already-Markdown links aren't double-rewritten.
+    assert rw("[label](https://x.io)") == "[label](https://x.io)"
+
+
+def test_jira_rewrite_code_macros():
+    """Jira ``{code}``/``{noformat}``/``{{mono}}`` markup becomes Markdown."""
+    from agent_team.features.board.jira import service as jira_service
+
+    rc = jira_service.rewrite_jira_code
+
+    # Language-tagged code block → fenced block with the language.
+    out = rc("before {code:javascript}var a = [1,2];{code} after")
+    assert "```javascript\nvar a = [1,2];\n```" in out
+    assert "{code" not in out
+
+    # language=…|title=… parameter form is parsed for the language.
+    out = rc("{code:language=python|title=x}print(1){code}")
+    assert "```python\nprint(1)\n```" in out
+
+    # Plain {code} (no language) and {noformat} → bare fenced blocks.
+    assert "```\nplain\n```" in rc("{code}plain{code}")
+    assert "```\nraw text\n```" in rc("{noformat}raw text{noformat}")
+
+    # Inline monospace → backticks, but not inside a fenced block.
+    assert rc("use {{npm i}} now") == "use `npm i` now"
+    fenced = rc("{code}keep {{x}} literal{code}")
+    assert "keep {{x}} literal" in fenced
+
+    # Bracket-heavy code isn't mangled by the link rewriter (fences are skipped).
+    piped = jira_service.rewrite_jira_links(rc("{code:js}var a=[x|0];{code}"))
+    assert "var a=[x|0];" in piped
+
+
+def test_jira_to_markdown_full_pipeline():
+    """Headings, lists, tables, quotes, bold and mentions all convert."""
+    from agent_team.features.board.jira import service as jira_service
+
+    def md(text):
+        return jira_service.jira_to_markdown(text)[0]
+
+    # Headings.
+    assert md("h1. Title") == "# Title"
+    assert md("h3. Sub") == "### Sub"
+
+    # Numbered list (``#``) must NOT become a heading; nesting indents.
+    out = md("# first\n# second\n#* nested")
+    assert "1. first" in out and "1. second" in out and "  - nested" in out
+
+    # Bullet list.
+    assert "- item" in md("* item")
+
+    # Bold (single star) → Markdown bold; spaced asterisks are left alone.
+    assert md("a *bold* word") == "a **bold** word"
+    assert md("2 * 3 = 6") == "2 * 3 = 6"
+
+    # Blockquote macros.
+    assert "> hi" in md("{quote}hi{quote}")
+    assert md("bq. quoted") == "> quoted"
+
+    # Color macro drops the wrapper but keeps the text.
+    assert md("{color:red}warn{color}") == "warn"
+
+    # Mentions become @handles; opaque account ids collapse to @user.
+    assert md("cc [~jdoe]") == "cc @jdoe"
+    assert md("cc [~accountid:557058:abc]") == "cc @user"
+
+    # Table → GFM table with a separator row.
+    table = md("||A||B||\n|1|2|")
+    assert "| A | B |" in table
+    assert "| --- | --- |" in table
+    assert "| 1 | 2 |" in table
+
+    # Code is untouched by all of the above (heading-looking text stays literal).
+    code = md("{code}\nh1. not a heading\n# not a list\n{code}")
+    assert "h1. not a heading" in code and "# not a list" in code
 
 
 def test_jira_inline_attachments_excluded_from_note(db, tmp_path, monkeypatch):

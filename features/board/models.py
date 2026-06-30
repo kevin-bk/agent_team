@@ -309,6 +309,10 @@ class AgentTeamBoardMember(Base):
     )
     #: One of ``owner``, ``editor``, ``viewer``.
     role: Mapped[str] = mapped_column(String(16), nullable=False, default="editor")
+    #: Cached Jira accountId for this member (resolved by user-search on their
+    #: email). Used to map an issue's assignee/reporter back to this user even
+    #: when Jira hides the account email on issue payloads.
+    jira_account_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
