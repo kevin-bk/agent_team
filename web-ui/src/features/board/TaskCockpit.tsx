@@ -306,16 +306,6 @@ export function TaskCockpit({
     );
   };
 
-  // Open a workspace file as a tab inside the Code workspace (instead of the
-  // blocking modal). Bumping `seq` re-triggers the open even for the same path.
-  const [codeOpenReq, setCodeOpenReq] = useState<{ path: string; seq: number }>();
-  const codeOpenSeq = useRef(0);
-  const openInCode = (path: string) => {
-    codeOpenSeq.current += 1;
-    setCodeOpenReq({ path, seq: codeOpenSeq.current });
-    selectThread(CODE);
-  };
-
   const attempts = useTaskAttempts(task.id, activeAgent?.id);
   const attemptList = attempts.data ?? [];
   const activeAttempt = attemptList.find((a) => a.is_active);
@@ -437,7 +427,7 @@ export function TaskCockpit({
                 <Pencil className="h-3.5 w-3.5" /> Edit
               </Button>
             )}
-            {thread !== CODE && (
+            {(thread === OVERVIEW || !!activeAgent) && (
               <Button
                 variant="ghost"
                 size="icon"
@@ -633,11 +623,7 @@ export function TaskCockpit({
                   </div>
                 }
               >
-                <CodeWorkspace
-                  taskId={task.id}
-                  openRequest={codeOpenReq}
-                  canEdit={canEdit}
-                />
+                <CodeWorkspace taskId={task.id} canEdit={canEdit} />
               </Suspense>
             </div>
           ) : activeAgent ? (
@@ -725,10 +711,11 @@ export function TaskCockpit({
           )}
         </section>
 
-        {/* Right — Details (status / people) + Artifacts (collapsible) */}
-        {/* The Code workspace is a full-width review surface, so the right-hand
-            Details/Artifacts rail is hidden while the Code thread is open. */}
-        {artifactsOpen && thread !== CODE && (
+        {/* Right — Details (status / people) + Artifacts (collapsible). The rail
+            only makes sense on the Overview tab and the agent threads (where you
+            review what an agent touched); it's hidden on Goal, Journal and the
+            full-width Workspace review surface. */}
+        {artifactsOpen && (thread === OVERVIEW || !!activeAgent) && (
           <aside className="flex w-96 shrink-0 flex-col border-l border-border">
             {/* Task details (status / people) + the repo card belong to the
                 Overview tab; every other thread shows just the Artifacts rail. */}
@@ -764,10 +751,10 @@ export function TaskCockpit({
             </div>
             <TaskFiles
               taskId={task.id}
-              selected={codeOpenReq?.path ?? ""}
-              // Selecting an artifact opens it as a tab in the Code workspace
-              // (non-blocking) rather than the old single-file modal.
-              onSelect={openInCode}
+              selected={filePath}
+              // Artifacts are for a quick look: open the file in a lightweight
+              // dialog. (The Workspace tab is the place for deep review/editing.)
+              onSelect={setFilePath}
               canDelete={canEdit}
               onDeleted={(p) => {
                 if (filePath === p || filePath.startsWith(`${p}/`)) setFilePath("");

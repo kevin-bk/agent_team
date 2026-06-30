@@ -157,104 +157,128 @@ export function LoopPanel({
     );
   }
 
+  const showTasks =
+    !!info?.tasks && info.tasks.some((t) => t.status !== "pending");
+  const showTimeline = attempts.length > 0;
+  // The right-hand "telemetry" rail (task graph + iteration history) only earns
+  // its space once there's progress to show; until then the flow stays a single
+  // centred column.
+  const hasRail = showTasks || showTimeline;
+
   return (
     <div className="min-h-0 flex-1 overflow-auto scrollbar-thin">
-      <div className="mx-auto max-w-3xl space-y-4 px-4 py-4">
+      <div
+        className={cn(
+          "mx-auto px-4 py-4 lg:px-6",
+          hasRail ? "max-w-6xl" : "max-w-3xl",
+        )}
+      >
         <GoalStepper current={stage} />
 
-        {awaitingAnswers && pinfo && (
-          <QuestionStage task={task} info={pinfo} canEdit={canEdit} />
-        )}
-
-        {!awaitingAnswers && stage === "plan" && (
-          <PlanStage
-            task={task}
-            agents={agents}
-            cliAgents={cliAgents}
-            canEdit={canEdit}
-            drafting={drafting}
-            lastError={pinfo?.last_error}
-          />
-        )}
-
-        {!awaitingAnswers && stage === "review" && pinfo && (
-          <ReviewStage
-            task={task}
-            agents={agents}
-            cliAgents={cliAgents}
-            canEdit={canEdit}
-            info={pinfo}
-          />
-        )}
-
-        {!awaitingAnswers && stage === "run" && state && (
-          <>
-            <StatusBanner state={state} live={live} info={info} />
-            {running && canEdit && (
-              <div className="flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2">
-                <Loader2 className="h-4 w-4 animate-spin text-sky-500" />
-                <span className="text-[13px] text-muted-foreground">
-                  Working on the goal autonomously…
-                </span>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="ml-auto"
-                  onClick={() =>
-                    cancel.mutate(undefined, {
-                      onSuccess: (r) =>
-                        r.ok
-                          ? toast.success("Stopping after the current iteration")
-                          : toast.message("No running goal to stop"),
-                    })
-                  }
-                  disabled={cancel.isPending}
-                >
-                  <CircleSlash className="h-4 w-4" /> Stop
-                </Button>
-              </div>
+        <div className="mt-4 flex flex-col gap-5 lg:flex-row lg:items-start">
+          {/* Primary flow: wizard stage + live work transcript. */}
+          <div className="min-w-0 flex-1 space-y-4">
+            {awaitingAnswers && pinfo && (
+              <QuestionStage task={task} info={pinfo} canEdit={canEdit} />
             )}
-          </>
-        )}
 
-        {!awaitingAnswers && stage === "result" && state && (
-          <>
-            <StatusBanner state={state} live={live} info={info} />
-            {canEdit && (
-              <ReviewActions
-                state={state}
-                missing={latestEval?.missing ?? ""}
-                onRunAgain={() => setRestarting(true)}
-                onAck={() => {
-                  ack.mutate(undefined, {
-                    // The ack clears server state without emitting a loop.status
-                    // event, so drop the live SSE snapshot too — otherwise the
-                    // banner would linger until the task is reopened.
-                    onSuccess: () => clearLive(),
-                    onError: (err) =>
-                      toast.error(
-                        err instanceof Error ? err.message : "Could not acknowledge",
-                      ),
-                  });
-                }}
-                acking={ack.isPending}
+            {!awaitingAnswers && stage === "plan" && (
+              <PlanStage
+                task={task}
+                agents={agents}
+                cliAgents={cliAgents}
+                canEdit={canEdit}
+                drafting={drafting}
+                lastError={pinfo?.last_error}
               />
             )}
-          </>
-        )}
 
-        {/* Live task-graph progress (only when executing task-by-task — i.e. at
-            least one task has moved off `pending`; a plain TASKS.json sitting
-            unused in whole-objective mode stays hidden). */}
-        {info?.tasks && info.tasks.some((t) => t.status !== "pending") && (
-          <TaskGraphProgress tasks={info.tasks} />
-        )}
+            {!awaitingAnswers && stage === "review" && pinfo && (
+              <ReviewStage
+                task={task}
+                agents={agents}
+                cliAgents={cliAgents}
+                canEdit={canEdit}
+                info={pinfo}
+              />
+            )}
 
-        {/* Full work transcripts for every role (plan / build / critic) */}
-        {info && <GoalActivity taskId={task.id} info={info} running={running} />}
+            {!awaitingAnswers && stage === "run" && state && (
+              <>
+                <StatusBanner state={state} live={live} info={info} />
+                {running && canEdit && (
+                  <div className="flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2">
+                    <Loader2 className="h-4 w-4 animate-spin text-sky-500" />
+                    <span className="text-[13px] text-muted-foreground">
+                      Working on the goal autonomously…
+                    </span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="ml-auto"
+                      onClick={() =>
+                        cancel.mutate(undefined, {
+                          onSuccess: (r) =>
+                            r.ok
+                              ? toast.success(
+                                  "Stopping after the current iteration",
+                                )
+                              : toast.message("No running goal to stop"),
+                        })
+                      }
+                      disabled={cancel.isPending}
+                    >
+                      <CircleSlash className="h-4 w-4" /> Stop
+                    </Button>
+                  </div>
+                )}
+              </>
+            )}
 
-        {/* Iteration / evaluation timeline (run & result stages) */}
-        {attempts.length > 0 && <AttemptTimeline attempts={attempts} />}
+            {!awaitingAnswers && stage === "result" && state && (
+              <>
+                <StatusBanner state={state} live={live} info={info} />
+                {canEdit && (
+                  <ReviewActions
+                    state={state}
+                    missing={latestEval?.missing ?? ""}
+                    onRunAgain={() => setRestarting(true)}
+                    onAck={() => {
+                      ack.mutate(undefined, {
+                        // The ack clears server state without emitting a
+                        // loop.status event, so drop the live SSE snapshot too —
+                        // otherwise the banner would linger until reopened.
+                        onSuccess: () => clearLive(),
+                        onError: (err) =>
+                          toast.error(
+                            err instanceof Error
+                              ? err.message
+                              : "Could not acknowledge",
+                          ),
+                      });
+                    }}
+                    acking={ack.isPending}
+                  />
+                )}
+              </>
+            )}
+
+            {/* Full work transcripts for every role (plan / build / critic) */}
+            {info && (
+              <GoalActivity taskId={task.id} info={info} running={running} />
+            )}
+          </div>
+
+          {/* Telemetry rail: live task graph + iteration history. */}
+          {hasRail && (
+            <aside className="w-full shrink-0 space-y-4 lg:w-80 xl:w-96">
+              {showTasks && info?.tasks && (
+                <TaskGraphProgress tasks={info.tasks} />
+              )}
+              {showTimeline && <AttemptTimeline attempts={attempts} />}
+            </aside>
+          )}
+        </div>
       </div>
     </div>
   );

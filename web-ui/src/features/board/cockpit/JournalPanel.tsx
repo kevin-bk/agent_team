@@ -339,7 +339,7 @@ export function JournalPanel({
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto scrollbar-thin">
-        <div className="mx-auto max-w-3xl px-4 py-4">
+        <div className="mx-auto max-w-5xl px-4 py-4 lg:px-6">
           {canEdit && (
             <div className="mb-5">
               <NoteComposer taskId={task.id} />
