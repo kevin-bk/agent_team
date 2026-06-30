@@ -757,7 +757,7 @@ function ActivityPopup({
     <>
       {/* Scrim */}
       <div
-        className="fixed inset-0 z-50 bg-[#091e42]/50 animate-in fade-in-0"
+        className="fixed inset-0 z-50 bg-[#091e42]/50 animate-in fade-in-0 dark:bg-black/70"
         onClick={onClose}
       />
       {/* Panel */}

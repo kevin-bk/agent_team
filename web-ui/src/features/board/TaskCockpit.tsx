@@ -348,108 +348,113 @@ export function TaskCockpit({
 
   return (
     <div className="font-ui flex h-full flex-col bg-background">
-      {/* Header — Jira issue view: small breadcrumb row, then a big title. */}
-      <header className="border-b border-border bg-card px-5 pb-3 pt-2.5">
-        <div className="flex items-center gap-2">
-          <Button variant="ghost" size="icon" onClick={onBack} aria-label="Back">
-            <ArrowLeft className="h-4 w-4" />
-          </Button>
-          <TaskTypeControl task={task} canEdit={canEdit} />
-          <span className="shrink-0 text-[13px] font-medium uppercase text-muted-foreground">
-            {task.human_key}
-          </span>
-          {task.jira_key &&
-            (task.jira_url ? (
-              <a
-                href={task.jira_url}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-1 text-[13px] font-medium uppercase text-muted-foreground transition-colors hover:text-primary"
-              >
-                / {task.jira_key}
-                <ExternalLink className="h-3 w-3" />
-              </a>
-            ) : (
-              <span className="text-[13px] font-medium uppercase text-muted-foreground">
-                / {task.jira_key}
-              </span>
-            ))}
-          {task.loop_state && (
-            <button
-              type="button"
-              onClick={() => selectThread(LOOP)}
-              title="Open the goal"
+      {/* Header — compact single row: key + title inline, actions trailing. */}
+      <header className="flex items-center gap-2 border-b border-border bg-card px-3 py-2">
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={onBack}
+          aria-label="Back"
+          className="h-8 w-8 shrink-0"
+        >
+          <ArrowLeft className="h-4 w-4" />
+        </Button>
+        <TaskTypeControl task={task} canEdit={canEdit} />
+        <span className="shrink-0 text-[12px] font-medium uppercase text-muted-foreground">
+          {task.human_key}
+        </span>
+        {task.jira_key &&
+          (task.jira_url ? (
+            <a
+              href={task.jira_url}
+              target="_blank"
+              rel="noreferrer"
+              className="hidden shrink-0 items-center gap-1 text-[12px] font-medium uppercase text-muted-foreground transition-colors hover:text-primary sm:inline-flex"
             >
-              <LoopStatusChip state={task.loop_state} />
-            </button>
-          )}
-          <div className="ml-auto flex shrink-0 items-center gap-2">
-            <span
-              className="hidden max-w-[14rem] items-center gap-1 truncate font-mono text-[11px] text-muted-foreground lg:inline-flex"
-              title={task.workspace_path}
-            >
-              <FolderGit2 className="h-3 w-3 shrink-0" />
-              <span className="truncate">{task.workspace_path}</span>
+              / {task.jira_key}
+              <ExternalLink className="h-3 w-3" />
+            </a>
+          ) : (
+            <span className="hidden shrink-0 text-[12px] font-medium uppercase text-muted-foreground sm:inline">
+              / {task.jira_key}
             </span>
-            {canEdit && board.data?.jira_enabled && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={onSyncClick}
-                disabled={syncJira.isPending}
-                title={
-                  task.jira_key
-                    ? `Pull ${task.jira_key} from Jira`
-                    : "Link a Jira key, then sync"
-                }
-              >
-                <RefreshCw
-                  className={cn(
-                    "h-3.5 w-3.5",
-                    syncJira.isPending && "animate-spin",
-                  )}
-                />{" "}
-                Sync
-              </Button>
-            )}
-            {canEdit && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setScheduleOpen(true)}
-                title="Schedule recurring runs for this task"
-              >
-                <CalendarClock className="h-3.5 w-3.5" /> Schedule
-              </Button>
-            )}
-            {canEdit && (
-              <Button variant="ghost" size="sm" onClick={onEdit}>
-                <Pencil className="h-3.5 w-3.5" /> Edit
-              </Button>
-            )}
-            {(thread === OVERVIEW || !!activeAgent) && (
-              <Button
-                variant="ghost"
-                size="icon"
-                aria-label={artifactsOpen ? "Hide details" : "Show details"}
-                title={artifactsOpen ? "Hide details" : "Show details"}
-                onClick={() => setArtifactsOpen((v) => !v)}
-              >
-                {artifactsOpen ? (
-                  <PanelRightClose className="h-4 w-4" />
-                ) : (
-                  <PanelRightOpen className="h-4 w-4" />
-                )}
-              </Button>
-            )}
-          </div>
-        </div>
+          ))}
+        {/* Title shares the row now (was a second big line), truncating to fit. */}
         <h1
-          className="mt-1 truncate pl-10 text-[20px] font-semibold leading-snug text-foreground"
+          className="min-w-0 flex-1 truncate text-[15px] font-semibold leading-tight text-foreground"
           title={task.title}
         >
           {task.title}
         </h1>
+        {task.loop_state && (
+          <button
+            type="button"
+            onClick={() => selectThread(LOOP)}
+            title="Open the goal"
+            className="shrink-0"
+          >
+            <LoopStatusChip state={task.loop_state} />
+          </button>
+        )}
+        {canEdit && board.data?.jira_enabled && (
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={onSyncClick}
+            disabled={syncJira.isPending}
+            className="h-8 w-8 shrink-0"
+            aria-label={task.jira_key ? `Pull ${task.jira_key} from Jira` : "Sync Jira"}
+            title={
+              task.jira_key
+                ? `Pull ${task.jira_key} from Jira`
+                : "Link a Jira key, then sync"
+            }
+          >
+            <RefreshCw
+              className={cn("h-4 w-4", syncJira.isPending && "animate-spin")}
+            />
+          </Button>
+        )}
+        {canEdit && (
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => setScheduleOpen(true)}
+            className="h-8 w-8 shrink-0"
+            aria-label="Schedule recurring runs"
+            title="Schedule recurring runs for this task"
+          >
+            <CalendarClock className="h-4 w-4" />
+          </Button>
+        )}
+        {canEdit && (
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={onEdit}
+            className="h-8 w-8 shrink-0"
+            aria-label="Edit task"
+            title="Edit task"
+          >
+            <Pencil className="h-4 w-4" />
+          </Button>
+        )}
+        {(thread === OVERVIEW || !!activeAgent) && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 shrink-0"
+            aria-label={artifactsOpen ? "Hide details" : "Show details"}
+            title={artifactsOpen ? "Hide details" : "Show details"}
+            onClick={() => setArtifactsOpen((v) => !v)}
+          >
+            {artifactsOpen ? (
+              <PanelRightClose className="h-4 w-4" />
+            ) : (
+              <PanelRightOpen className="h-4 w-4" />
+            )}
+          </Button>
+        )}
       </header>
 
       <div className="flex min-h-0 flex-1">

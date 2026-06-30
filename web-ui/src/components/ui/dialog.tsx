@@ -15,8 +15,8 @@ export const DialogContent = forwardRef<
   }
 >(({ className, children, hideClose, ...props }, ref) => (
   <DialogPrimitive.Portal>
-    {/* Jira modal scrim: medium dark, no blur. */}
-    <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-[#091e42]/50 data-[state=open]:animate-in data-[state=open]:fade-in-0" />
+    {/* Modal scrim: Jira navy in light mode, neutral black in dark (avoids a blue tint). */}
+    <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-[#091e42]/50 data-[state=open]:animate-in data-[state=open]:fade-in-0 dark:bg-black/70" />
     <DialogPrimitive.Content
       ref={ref}
       className={cn(
