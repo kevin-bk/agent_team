@@ -37,6 +37,7 @@ import {
   WorkspaceGlyph,
   X,
 } from "@/components/icons";
+import { agentBrand } from "@/components/brandIcons";
 import { toast } from "sonner";
 import { useQueryClient } from "@tanstack/react-query";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
@@ -533,31 +534,23 @@ export function TaskCockpit({
                 No agents on this board. Assign some in Board settings.
               </div>
             ) : (
-              mentionable.map((a) => {
-                const c = statusColor(a.id);
-                return (
-                  <ThreadItem
-                    key={a.id}
-                    icon={
-                      <span
-                        className={cn(
-                          "relative flex h-6 w-6 items-center justify-center rounded-md",
-                          c.soft,
-                        )}
-                      >
-                        <AgentGlyph className="h-3.5 w-3.5" strokeWidth={2.25} />
-                        {runningAgents.has(a.id) && (
-                          <span className="absolute -right-0.5 -top-0.5 h-2 w-2 animate-pulse rounded-full bg-emerald-500 ring-2 ring-white dark:ring-surface-1" />
-                        )}
-                      </span>
-                    }
-                    label={a.display_name}
-                    sub={runningAgents.has(a.id) ? "running…" : a.model ?? "agent"}
-                    active={thread === a.id}
-                    onClick={() => selectThread(a.id)}
-                  />
-                );
-              })
+              mentionable.map((a) => (
+                <ThreadItem
+                  key={a.id}
+                  icon={
+                    <AgentAvatar
+                      id={a.id}
+                      model={a.model}
+                      kind="llm"
+                      running={runningAgents.has(a.id)}
+                    />
+                  }
+                  label={a.display_name}
+                  sub={runningAgents.has(a.id) ? "running…" : a.model ?? "agent"}
+                  active={thread === a.id}
+                  onClick={() => selectThread(a.id)}
+                />
+              ))
             )}
 
             {cliAgents.length > 0 && (
@@ -569,12 +562,11 @@ export function TaskCockpit({
                   <ThreadItem
                     key={a.id}
                     icon={
-                      <span className="relative flex h-6 w-6 items-center justify-center rounded-md bg-slate-200 text-slate-700 dark:bg-slate-500/20 dark:text-slate-200">
-                        <CliAgentGlyph className="h-3.5 w-3.5" strokeWidth={2.25} />
-                        {runningAgents.has(a.id) && (
-                          <span className="absolute -right-0.5 -top-0.5 h-2 w-2 animate-pulse rounded-full bg-emerald-500 ring-2 ring-white dark:ring-surface-1" />
-                        )}
-                      </span>
+                      <AgentAvatar
+                        id={a.id}
+                        kind="cli"
+                        running={runningAgents.has(a.id)}
+                      />
                     }
                     label={a.display_name}
                     sub={
@@ -651,20 +643,11 @@ export function TaskCockpit({
           ) : activeAgent ? (
             <>
               <div className="flex items-center gap-2 border-b border-border px-4 py-2">
-                <span
-                  className={cn(
-                    "flex h-6 w-6 items-center justify-center rounded",
-                    isDirectCli
-                      ? "bg-surface-3 text-foreground"
-                      : statusColor(activeAgent.id).soft,
-                  )}
-                >
-                  {isDirectCli ? (
-                    <CliAgentGlyph className="h-3.5 w-3.5" strokeWidth={2.25} />
-                  ) : (
-                    <AgentGlyph className="h-3.5 w-3.5" strokeWidth={2.25} />
-                  )}
-                </span>
+                <AgentAvatar
+                  id={activeAgent.id}
+                  model={activeAgent.model}
+                  kind={isDirectCli ? "cli" : "llm"}
+                />
                 <span className="text-sm font-semibold text-foreground">
                   {activeAgent.display_name}
                 </span>
@@ -847,6 +830,57 @@ export function TaskCockpit({
         />
       )}
     </div>
+  );
+}
+
+/**
+ * Square agent badge. Recognised CLI engines (Claude / Cursor / Codex) and
+ * known model families render their official brand logo; everything else falls
+ * back to a generic glyph. LLM agents keep their status-coloured background;
+ * branded CLI agents use a brand-tinted background.
+ */
+function AgentAvatar({
+  id,
+  model,
+  kind,
+  running = false,
+  size = "sm",
+}: {
+  id: string;
+  model?: string | null;
+  kind: "llm" | "cli";
+  running?: boolean;
+  size?: "sm" | "lg";
+}) {
+  const brand = agentBrand({ id, model });
+  const box = size === "lg" ? "h-12 w-12" : "h-6 w-6";
+  const glyph = size === "lg" ? "h-6 w-6" : "h-3.5 w-3.5";
+  // A recognised brand always wears its official colours; unbranded LLM agents
+  // keep their status tint, unbranded CLIs a neutral slate.
+  const bg =
+    brand?.badge ??
+    (kind === "cli"
+      ? "bg-slate-200 text-slate-700 dark:bg-slate-500/20 dark:text-slate-200"
+      : statusColor(id).soft);
+  return (
+    <span
+      className={cn(
+        "relative flex shrink-0 items-center justify-center rounded-md",
+        box,
+        bg,
+      )}
+    >
+      {brand ? (
+        <brand.Logo className={glyph} />
+      ) : kind === "cli" ? (
+        <CliAgentGlyph className={glyph} strokeWidth={2.25} />
+      ) : (
+        <AgentGlyph className={glyph} strokeWidth={2.25} />
+      )}
+      {running && (
+        <span className="absolute -right-0.5 -top-0.5 h-2 w-2 animate-pulse rounded-full bg-emerald-500 ring-2 ring-white dark:ring-surface-1" />
+      )}
+    </span>
   );
 }
 
@@ -2233,9 +2267,23 @@ function Conversation({
             </div>
           ) : blocks.length === 0 && !running ? (
             <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-sm text-muted-foreground">
-              <span className="flex h-12 w-12 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                <AgentGlyph className="h-6 w-6" strokeWidth={2} />
-              </span>
+              {(() => {
+                const brand = agentBrand({ id: agentId });
+                return brand ? (
+                  <span
+                    className={cn(
+                      "flex h-12 w-12 items-center justify-center rounded-lg",
+                      brand.badge,
+                    )}
+                  >
+                    <brand.Logo className="h-6 w-6" />
+                  </span>
+                ) : (
+                  <span className="flex h-12 w-12 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                    <AgentGlyph className="h-6 w-6" strokeWidth={2} />
+                  </span>
+                );
+              })()}
               Message {`@${agentName}`} to get started.
               {canEdit && starterPrompt.trim() && (
                 <div className="mt-2 flex flex-col items-center gap-2">

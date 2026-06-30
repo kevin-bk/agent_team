@@ -1,4 +1,5 @@
 import { Bot, Sparkles, TerminalSquare } from "@/components/icons";
+import { agentBrand } from "@/components/brandIcons";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import {
@@ -204,9 +205,23 @@ export function BoardAgentsDialog({
                       onChange={() => toggleCli(t.id)}
                       className="h-3.5 w-3.5 accent-primary"
                     />
-                    <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-surface-3 text-foreground">
-                      <TerminalSquare className="h-3.5 w-3.5" />
-                    </span>
+                    {(() => {
+                      const brand = agentBrand({ id: t.id });
+                      return (
+                        <span
+                          className={cn(
+                            "flex h-6 w-6 shrink-0 items-center justify-center rounded-md",
+                            brand?.badge ?? "bg-surface-3 text-foreground",
+                          )}
+                        >
+                          {brand ? (
+                            <brand.Logo className="h-3.5 w-3.5" />
+                          ) : (
+                            <TerminalSquare className="h-3.5 w-3.5" />
+                          )}
+                        </span>
+                      );
+                    })()}
                     <span className="min-w-0 flex-1">
                       <span
                         className={cn(
