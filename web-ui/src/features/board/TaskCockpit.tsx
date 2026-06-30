@@ -730,16 +730,22 @@ export function TaskCockpit({
             Details/Artifacts rail is hidden while the Code thread is open. */}
         {artifactsOpen && thread !== CODE && (
           <aside className="flex w-96 shrink-0 flex-col border-l border-border">
-            <TaskDetailsPanel
-              task={task}
-              canEdit={canEdit}
-              onClose={() => setArtifactsOpen(false)}
-            />
-            <TaskRepoCard
-              taskId={task.id}
-              canEdit={canEdit}
-              onOpenPath={setFilePath}
-            />
+            {/* Task details (status / people) + the repo card belong to the
+                Overview tab; every other thread shows just the Artifacts rail. */}
+            {thread === OVERVIEW && (
+              <>
+                <TaskDetailsPanel
+                  task={task}
+                  canEdit={canEdit}
+                  onClose={() => setArtifactsOpen(false)}
+                />
+                <TaskRepoCard
+                  taskId={task.id}
+                  canEdit={canEdit}
+                  onOpenPath={setFilePath}
+                />
+              </>
+            )}
             <div className="flex items-center gap-2 border-y border-border px-4 py-2.5">
               <FolderGit2 className="h-3.5 w-3.5 text-muted-foreground" />
               <span className="text-[13px] font-semibold text-foreground">
