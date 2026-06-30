@@ -13,18 +13,29 @@ import { formatDuration } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { ToolBlock } from "./types";
 
-const WRITE_TOOLS = new Set(["write_file", "write"]);
-const EDIT_TOOLS = new Set(["edit", "edit_file"]);
+// Tool names vary by engine (snake_case for our agents, Capitalised for CLIs
+// like Claude Code), so match case-insensitively across the common variants.
+const WRITE_TOOLS = new Set(["write_file", "write", "create_file", "create"]);
+const EDIT_TOOLS = new Set([
+  "edit",
+  "edit_file",
+  "str_replace",
+  "str_replace_editor",
+  "multiedit",
+]);
 
 export function ToolCard({
   block,
   onOpenFile,
+  defaultOpen = false,
 }: {
   block: ToolBlock;
   onOpenFile?: (path: string) => void;
+  /** Start expanded (used by the Goal timeline to show writes/diffs up-front). */
+  defaultOpen?: boolean;
 }) {
   const { client } = useApi();
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(defaultOpen);
   // Lazily fetched full output (only when the user asks for it), so large tool
   // results never travel over the live stream or load up-front.
   const [fullOutput, setFullOutput] = useState<string | null>(null);
@@ -32,8 +43,9 @@ export function ToolCard({
   const [fullError, setFullError] = useState(false);
   const arg = summarizeInput(block.input);
   const filePath = pickPath(block.input);
-  const isWrite = WRITE_TOOLS.has(block.name);
-  const isEdit = EDIT_TOOLS.has(block.name);
+  const toolName = block.name.toLowerCase();
+  const isWrite = WRITE_TOOLS.has(toolName);
+  const isEdit = EDIT_TOOLS.has(toolName);
 
   const shownOutput = fullOutput ?? block.outputPreview ?? block.progress;
   const canExpand = !!block.truncated && !!block.runId && fullOutput === null;
@@ -162,6 +174,9 @@ export function ToolCard({
 function WritePreview({ input }: { input: Record<string, unknown> }) {
   const path = pickPath(input);
   const content = typeof input.content === "string" ? input.content : "";
+  // Some engines persist only the tool's output, not its args — skip the empty
+  // editor box in that case and let the result text speak for itself.
+  if (!content) return null;
   return (
     <div className="mb-2">
       {path && (
@@ -178,6 +193,7 @@ function EditPreview({ input }: { input: Record<string, unknown> }) {
   const path = pickPath(input);
   const oldStr = typeof input.old_string === "string" ? input.old_string : "";
   const newStr = typeof input.new_string === "string" ? input.new_string : "";
+  if (!oldStr && !newStr) return null;
   return (
     <div className="mb-2">
       {path && (

@@ -11,6 +11,7 @@ import type {
   CreateCronBody,
   CreateTaskBody,
   JournalNoteBody,
+  LoopResumeBody,
   PlanningAnswerBody,
   PlanningRunBody,
   PlanningStartBody,
@@ -765,6 +766,20 @@ export function useCancelTaskLoop(taskId: string) {
   return useMutation({
     mutationFn: () => client.cancelTaskLoop(taskId),
     onSuccess: () => qc.invalidateQueries({ queryKey: qk.taskLoop(taskId) }),
+  });
+}
+
+export function useResumeTaskLoop(boardId: string, taskId: string) {
+  const { client } = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: LoopResumeBody = {}) =>
+      client.resumeTaskLoop(taskId, body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: qk.taskLoop(taskId) });
+      void qc.invalidateQueries({ queryKey: qk.taskPlanning(taskId) });
+      void qc.invalidateQueries({ queryKey: qk.boardTasks(boardId) });
+    },
   });
 }
 

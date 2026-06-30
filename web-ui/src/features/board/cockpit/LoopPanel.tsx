@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
+  Activity,
   AlertTriangle,
-  Bot,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -15,12 +15,14 @@ import {
   ListChecks,
   Loader2,
   Maximize,
-  Minimize,
+  Play,
   RotateCcw,
+  X,
 } from "@/components/icons";
 import {
   useAckTaskLoop,
   useCancelTaskLoop,
+  useResumeTaskLoop,
   useTaskLoop,
   useTaskPlanning,
 } from "@/api/hooks";
@@ -34,18 +36,35 @@ import type {
   TaskDTO,
 } from "@/api/types";
 import { Button } from "@/components/ui/button";
-import { SelectMenu } from "@/components/ui/select-menu";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { useBoardEventListener } from "../BoardEventsContext";
 import { GoalStepper, type GoalStage } from "./GoalStepper";
-import { GoalTranscript } from "./GoalTranscript";
+import {
+  LoopTimeline,
+  useGoalActivity,
+  type RoleKind,
+} from "./LoopTimeline";
 import { PlanStage, QuestionStage, ReviewStage } from "./PlanningPanel";
+import {
+  AgentLogo,
+  AgentRoster,
+  useAgentIndex,
+  type LoopRole,
+  type ResolvedAgent,
+} from "./agentRoles";
 import {
   LOOP_OUTCOME_LABEL,
   LOOP_STATE_META,
   LOOP_VERDICT_META,
 } from "./loopStatus";
+
+/** Maps a loop run role to its human label (the cockpit's vocabulary). */
+const ROLE_LABELS: Record<string, string> = {
+  planner: "Planner",
+  generator: "Builder",
+  evaluator: "Critic",
+};
 
 /** Live loop progress pushed over the board SSE feed (between API refetches). */
 interface LiveStatus {
@@ -125,7 +144,9 @@ export function LoopPanel({
   const [live, clearLive] = useLoopLiveStatus(task.id);
   const cancel = useCancelTaskLoop(task.id);
   const ack = useAckTaskLoop(task.board_id, task.id);
+  const resume = useResumeTaskLoop(task.board_id, task.id);
   const [restarting, setRestarting] = useState(false);
+  const [activityOpen, setActivityOpen] = useState(false);
 
   const info = loop.data;
   const pinfo = planning.data;
@@ -151,6 +172,36 @@ export function LoopPanel({
   const awaitingAnswers = state === "waiting_answers";
   const stage = stageFor(state, restarting, !!pinfo?.approved);
 
+  // Which AI staffs each loop role, so the cockpit can name the planner /
+  // builder / critic and highlight whoever is working right now. Hooks must run
+  // before the early loading return, so they live up here.
+  const resolveAgent = useAgentIndex(agents, cliAgents);
+  const roles: LoopRole[] = useMemo(
+    () => [
+      {
+        key: "planner",
+        label: "Planner",
+        agent: resolveAgent(info?.planner_agent_id),
+      },
+      {
+        key: "generator",
+        label: "Builder",
+        agent: resolveAgent(info?.generator_agent_id),
+      },
+      {
+        key: "evaluator",
+        label: "Critic",
+        agent: resolveAgent(info?.evaluator_agent_id),
+      },
+    ],
+    [
+      resolveAgent,
+      info?.planner_agent_id,
+      info?.generator_agent_id,
+      info?.evaluator_agent_id,
+    ],
+  );
+
   if (loop.isLoading && planning.isLoading) {
     return (
       <div className="flex flex-1 items-center justify-center gap-2 text-sm text-muted-foreground">
@@ -162,19 +213,30 @@ export function LoopPanel({
   const showTasks =
     !!info?.tasks && info.tasks.some((t) => t.status !== "pending");
   const showTimeline = attempts.length > 0;
-  // The right-hand "telemetry" rail (task graph + iteration history) only earns
-  // its space once there's progress to show; until then the flow stays a single
-  // centred column.
-  const hasRail = showTasks || showTimeline;
+  // The right-hand rail holds the (verbose) work transcript. It only earns its
+  // column once a role has actually produced a conversation to show; until then
+  // the flow stays a single centred column.
+  const showActivity =
+    !!info &&
+    (!!info.planner_conversation_id ||
+      !!info.generator_conversation_id ||
+      info.attempts.some(
+        (a) =>
+          a.critic_conversation_id ||
+          a.evaluations.some((e) => e.conversation_id),
+      ));
+
+  const activeTask = info?.tasks?.find((t) => t.status === "in_progress");
+
+  const hasRoster = roles.some((r) => r.agent);
+  const activeAgent = resolveAgent(info?.active_agent_id);
+  const activeRoleLabel = info?.active_role
+    ? (ROLE_LABELS[info.active_role] ?? null)
+    : null;
 
   return (
     <div className="min-h-0 flex-1 overflow-auto scrollbar-thin">
-      <div
-        className={cn(
-          "mx-auto px-4 py-4 lg:px-6",
-          hasRail ? "max-w-6xl" : "max-w-3xl",
-        )}
-      >
+      <div className="mx-auto w-full max-w-5xl px-4 py-4 lg:px-6">
         <GoalStepper current={stage} />
 
         {/* Slim status strip (state + iteration + tokens + Stop), merged into
@@ -199,75 +261,202 @@ export function LoopPanel({
           </div>
         )}
 
-        <div className="mt-4 flex flex-col gap-5 lg:flex-row lg:items-start">
-          {/* Primary flow: wizard stage + live work transcript. */}
-          <div className="min-w-0 flex-1 space-y-4">
-            {awaitingAnswers && pinfo && (
-              <QuestionStage task={task} info={pinfo} canEdit={canEdit} />
-            )}
+        <div className="mt-4 space-y-4">
+          {awaitingAnswers && pinfo && (
+            <QuestionStage task={task} info={pinfo} canEdit={canEdit} />
+          )}
 
-            {!awaitingAnswers && stage === "plan" && (
-              <PlanStage
-                task={task}
-                agents={agents}
-                cliAgents={cliAgents}
-                canEdit={canEdit}
-                drafting={drafting}
-                lastError={pinfo?.last_error}
-              />
-            )}
+          {!awaitingAnswers && stage === "plan" && (
+            <PlanStage
+              task={task}
+              agents={agents}
+              cliAgents={cliAgents}
+              canEdit={canEdit}
+              drafting={drafting}
+              lastError={pinfo?.last_error}
+              openImmediately={restarting}
+              onCancel={() => setRestarting(false)}
+            />
+          )}
 
-            {!awaitingAnswers && stage === "review" && pinfo && (
-              <ReviewStage
-                task={task}
-                agents={agents}
-                cliAgents={cliAgents}
-                canEdit={canEdit}
-                info={pinfo}
-              />
-            )}
+          {!awaitingAnswers && stage === "review" && pinfo && (
+            <ReviewStage
+              task={task}
+              agents={agents}
+              cliAgents={cliAgents}
+              canEdit={canEdit}
+              info={pinfo}
+            />
+          )}
 
-            {!awaitingAnswers && stage === "result" && state && canEdit && (
-              <ReviewActions
-                state={state}
-                missing={latestEval?.missing ?? ""}
-                onRunAgain={() => setRestarting(true)}
-                onAck={() => {
-                  ack.mutate(undefined, {
-                    // The ack clears server state without emitting a loop.status
-                    // event, so drop the live SSE snapshot too — otherwise the
-                    // banner would linger until reopened.
-                    onSuccess: () => clearLive(),
-                    onError: (err) =>
-                      toast.error(
-                        err instanceof Error
-                          ? err.message
-                          : "Could not acknowledge",
-                      ),
-                  });
-                }}
-                acking={ack.isPending}
-              />
-            )}
+          {!awaitingAnswers && stage === "result" && state && canEdit && (
+            <ReviewActions
+              state={state}
+              missing={latestEval?.missing ?? ""}
+              canResume={!!info?.can_resume}
+              agents={agents}
+              cliAgents={cliAgents}
+              builderAlias={info?.generator_agent_id}
+              criticAlias={info?.evaluator_agent_id}
+              resuming={resume.isPending}
+              onResume={(body) =>
+                resume.mutate(body, {
+                  onSuccess: (r) =>
+                    r.ok
+                      ? toast.success("Resuming from where it stopped")
+                      : toast.message("Could not resume"),
+                  onError: (err) =>
+                    toast.error(
+                      err instanceof Error ? err.message : "Could not resume",
+                    ),
+                })
+              }
+              onRunAgain={() => setRestarting(true)}
+              onAck={() => {
+                ack.mutate(undefined, {
+                  // The ack clears server state without emitting a loop.status
+                  // event, so drop the live SSE snapshot too — otherwise the
+                  // banner would linger until reopened.
+                  onSuccess: () => clearLive(),
+                  onError: (err) =>
+                    toast.error(
+                      err instanceof Error
+                        ? err.message
+                        : "Could not acknowledge",
+                    ),
+                });
+              }}
+              acking={ack.isPending}
+            />
+          )}
 
-            {/* Full work transcripts for every role (plan / build / critic) */}
-            {info && (
-              <GoalActivity taskId={task.id} info={info} running={running} />
-            )}
-          </div>
+          {/* The verbose work transcript lives behind a single button so the page
+              stays focused on progress; one line hints at what the agent is up
+              to so a human knows it's alive. */}
+          {hasRoster && (
+            <AgentRoster roles={roles} activeRole={running ? info?.active_role : null} />
+          )}
 
-          {/* Telemetry rail: live task graph + iteration history. Sticks while
-              the transcript scrolls so progress stays in view. */}
-          {hasRail && (
-            <aside className="w-full shrink-0 space-y-4 lg:sticky lg:top-2 lg:max-h-[calc(100vh-7rem)] lg:w-80 lg:self-start lg:overflow-auto lg:pr-1 scrollbar-thin xl:w-96">
+          {showActivity && (
+            <LiveActivityCard
+              running={running}
+              currentTask={activeTask?.title ?? null}
+              activeAgent={running ? activeAgent : null}
+              activeRoleLabel={running ? activeRoleLabel : null}
+              onOpen={() => setActivityOpen(true)}
+            />
+          )}
+
+          {/* Live task graph + iteration history, side by side on wide screens. */}
+          {(showTasks || showTimeline) && (
+            <div className="grid gap-4 lg:grid-cols-2">
               {showTasks && info?.tasks && (
                 <TaskGraphProgress tasks={info.tasks} />
               )}
               {showTimeline && <AttemptTimeline attempts={attempts} />}
-            </aside>
+            </div>
           )}
         </div>
       </div>
+
+      {showActivity && info && (
+        <ActivityPopup
+          open={activityOpen}
+          onClose={() => setActivityOpen(false)}
+          taskId={task.id}
+          info={info}
+          running={running}
+          roleAgents={{
+            plan: roles[0].agent,
+            build: roles[1].agent,
+            critic: roles[2].agent,
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * A compact, always-visible card that hints at what the agent is doing right now
+ * and opens the full transcript on demand. For a mostly-autonomous loop this is
+ * enough day-to-day; the deep history is one click away.
+ */
+function LiveActivityCard({
+  running,
+  currentTask,
+  activeAgent,
+  activeRoleLabel,
+  onOpen,
+}: {
+  running: boolean;
+  currentTask: string | null;
+  activeAgent?: ResolvedAgent | null;
+  activeRoleLabel?: string | null;
+  onOpen: () => void;
+}) {
+  // Headline names who's working: "Codex · Builder is working…" when known.
+  const headline = running
+    ? activeAgent
+      ? `${activeAgent.name}${activeRoleLabel ? ` · ${activeRoleLabel}` : ""} is working…`
+      : "Agent is working…"
+    : "Work history";
+  return (
+    <div
+      className={cn(
+        "flex items-center gap-3.5 rounded-lg border px-4 py-3.5",
+        running
+          ? "border-emerald-300/60 bg-emerald-50 dark:border-emerald-500/25 dark:bg-emerald-500/10"
+          : "border-border bg-card",
+      )}
+    >
+      {running && activeAgent ? (
+        <span className="relative shrink-0">
+          <AgentLogo
+            alias={activeAgent.alias}
+            model={activeAgent.model}
+            className="h-8 w-8"
+            glyphClassName="h-4 w-4"
+          />
+          <span className="absolute -right-0.5 -top-0.5 flex h-2.5 w-2.5">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+            <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-500 ring-2 ring-emerald-50 dark:ring-emerald-500/10" />
+          </span>
+        </span>
+      ) : (
+        <span className="relative flex h-3 w-3 shrink-0">
+          <span className="relative inline-flex h-3 w-3 rounded-full bg-muted-foreground/40" />
+        </span>
+      )}
+      <div className="min-w-0 flex-1">
+        <div
+          className={cn(
+            "text-[13px] font-semibold",
+            running
+              ? "text-emerald-700 dark:text-emerald-300"
+              : "text-foreground",
+          )}
+        >
+          {headline}
+        </div>
+        <div className="truncate text-[12.5px] text-muted-foreground">
+          {running
+            ? (currentTask ?? "Running the next step…")
+            : "Review the full plan, build and critic transcript."}
+        </div>
+      </div>
+      <Button variant="outline" size="sm" className="shrink-0" onClick={onOpen}>
+        View full activity
+      </Button>
+      <button
+        type="button"
+        onClick={onOpen}
+        title="Open full activity"
+        aria-label="Open full activity"
+        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border bg-card text-muted-foreground transition-colors hover:bg-surface-3 hover:text-foreground"
+      >
+        <Maximize className="h-4 w-4" />
+      </button>
     </div>
   );
 }
@@ -347,12 +536,26 @@ function ReviewActions({
   onRunAgain,
   onAck,
   acking,
+  canResume,
+  agents,
+  cliAgents,
+  builderAlias,
+  criticAlias,
+  onResume,
+  resuming,
 }: {
   state: LoopState;
   missing: string;
   onRunAgain: () => void;
   onAck: () => void;
   acking: boolean;
+  canResume: boolean;
+  agents: AgentDTO[];
+  cliAgents: AgentDTO[];
+  builderAlias?: string | null;
+  criticAlias?: string | null;
+  onResume: (body: { agent_id?: string; evaluator_id?: string }) => void;
+  resuming: boolean;
 }) {
   const needsHuman = state === "waiting_for_human";
   return (
@@ -383,12 +586,22 @@ function ReviewActions({
           {needsHuman && !missing && (
             <p className="mt-1 text-[12.5px] text-muted-foreground">
               The goal stopped at a guardrail (iteration or resource cap) or
-              asked for review. Inspect the latest iteration below, then plan a
-              new goal or close.
+              asked for review. Resume it from where it stopped, plan a new goal,
+              or close.
             </p>
           )}
         </div>
       </div>
+      {canResume && (
+        <ResumeControl
+          agents={agents}
+          cliAgents={cliAgents}
+          builderAlias={builderAlias}
+          criticAlias={criticAlias}
+          onResume={onResume}
+          resuming={resuming}
+        />
+      )}
       <div className="mt-3 flex items-center gap-2">
         <Button variant="outline" size="sm" onClick={onRunAgain}>
           <RotateCcw className="h-4 w-4" /> Plan a new goal
@@ -401,166 +614,204 @@ function ReviewActions({
   );
 }
 
-interface ActivitySource {
-  id: string;
-  label: string;
-  conversationId: string;
-}
-
 /**
- * The work transcripts for every loop role, in one place. A source picker
- * switches between the planning phase, the agent's continuous build transcript
- * and each iteration's critic verification — so nothing the agents did is
- * hidden, and whichever role is running streams live.
+ * Resume the stopped loop from where it left off (skips finished tasks). The
+ * builder/critic default to whoever ran last; "Change agents" reveals pickers so
+ * a human can swap off a rate-limited engine for this resume.
  */
-function GoalActivity({
-  taskId,
-  info,
-  running,
+function ResumeControl({
+  agents,
+  cliAgents,
+  builderAlias,
+  criticAlias,
+  onResume,
+  resuming,
 }: {
-  taskId: string;
-  info: LoopInfoDTO;
-  running: boolean;
+  agents: AgentDTO[];
+  cliAgents: AgentDTO[];
+  builderAlias?: string | null;
+  criticAlias?: string | null;
+  onResume: (body: { agent_id?: string; evaluator_id?: string }) => void;
+  resuming: boolean;
 }) {
-  const [open, setOpen] = useState(true);
+  const [showOpts, setShowOpts] = useState(false);
+  const options = useMemo(() => [...agents, ...cliAgents], [agents, cliAgents]);
+  const [builder, setBuilder] = useState(builderAlias ?? "");
+  const [critic, setCritic] = useState(criticAlias ?? "");
 
-  const sources = useMemo<ActivitySource[]>(() => {
-    const out: ActivitySource[] = [];
-    if (info.planner_conversation_id) {
-      out.push({
-        id: "plan",
-        label: "Plan",
-        conversationId: info.planner_conversation_id,
-      });
-    }
-    if (info.generator_conversation_id) {
-      out.push({
-        id: "build",
-        label: "Build · agent",
-        conversationId: info.generator_conversation_id,
-      });
-    }
-    for (const a of info.attempts) {
-      // The critic runs in its own fresh conversation per iteration; prefer the
-      // attempt's critic run, falling back to the verdict's conversation.
-      const conv =
-        a.critic_conversation_id ??
-        a.evaluations.find((e) => e.conversation_id)?.conversation_id;
-      if (conv) {
-        out.push({
-          id: `critic-${a.id}`,
-          label: `Critic · #${a.attempt_no}`,
-          conversationId: conv,
-        });
-      }
-    }
-    return out;
-  }, [info]);
+  const submit = () => {
+    onResume({
+      agent_id: builder || undefined,
+      evaluator_id: critic || undefined,
+    });
+  };
 
-  // Default to whatever role is streaming now, else the build transcript.
-  const liveSourceId = useMemo(() => {
-    if (!running || !info.active_conversation_id) return null;
-    return (
-      sources.find((s) => s.conversationId === info.active_conversation_id)?.id ??
-      null
-    );
-  }, [running, info.active_conversation_id, sources]);
-
-  const [selected, setSelected] = useState<string | null>(null);
-  // Follow the live role as it advances (plan → build → critic), unless the
-  // user has manually picked a source to inspect.
-  const [pinned, setPinned] = useState(false);
-  useEffect(() => {
-    if (!pinned && liveSourceId) setSelected(liveSourceId);
-  }, [liveSourceId, pinned]);
-
-  const [fullscreen, setFullscreen] = useState(false);
-  useEffect(() => {
-    if (!fullscreen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setFullscreen(false);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [fullscreen]);
-
-  if (sources.length === 0) return null;
-  const current =
-    sources.find((s) => s.id === selected) ??
-    sources.find((s) => s.id === "build") ??
-    sources[0];
-  const isLive =
-    running && info.active_conversation_id === current.conversationId;
-
-  // In full screen the open state is forced so the transcript always shows.
-  const bodyOpen = open || fullscreen;
   return (
-    <div
-      className={cn(
-        "flex flex-col rounded-lg border border-border bg-card",
-        fullscreen && "fixed inset-0 z-50 rounded-none",
-      )}
-    >
-      <div className="flex items-center gap-2 px-3 py-2">
+    <div className="mt-3 rounded-md border border-emerald-300/50 bg-emerald-50/60 p-2.5 dark:border-emerald-500/25 dark:bg-emerald-500/10">
+      <div className="flex flex-wrap items-center gap-2">
+        <Button size="sm" onClick={submit} disabled={resuming}>
+          {resuming ? (
+            <Spinner className="h-4 w-4" />
+          ) : (
+            <Play className="h-4 w-4" />
+          )}
+          Resume from here
+        </Button>
         <button
           type="button"
-          onClick={() => !fullscreen && setOpen((v) => !v)}
-          className="flex items-center gap-1.5 text-[13px] font-semibold text-foreground"
+          onClick={() => setShowOpts((v) => !v)}
+          className="text-[12px] font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
         >
-          {bodyOpen ? (
-            <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
-          ) : (
-            <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
-          )}
-          <Bot className="h-3.5 w-3.5 text-muted-foreground" /> Activity
+          {showOpts ? "Hide agents" : "Change agents"}
         </button>
-        {isLive && <Loader2 className="h-3 w-3 animate-spin text-sky-500" />}
-        {bodyOpen && sources.length > 1 && (
-          <div className="ml-auto w-44">
-            <SelectMenu
-              value={current.id}
-              onChange={(v) => {
-                setSelected(v);
-                setPinned(true);
-              }}
-              options={sources.map((s) => ({ value: s.id, label: s.label }))}
-            />
-          </div>
-        )}
-        <button
-          type="button"
-          onClick={() => setFullscreen((v) => !v)}
-          title={fullscreen ? "Exit full screen (Esc)" : "Full screen"}
-          aria-label={fullscreen ? "Exit full screen" : "Full screen"}
-          className={cn(
-            "rounded p-1 text-muted-foreground transition-colors hover:bg-surface-3 hover:text-foreground",
-            sources.length > 1 ? "" : "ml-auto",
-          )}
-        >
-          {fullscreen ? (
-            <Minimize className="h-3.5 w-3.5" />
-          ) : (
-            <Maximize className="h-3.5 w-3.5" />
-          )}
-        </button>
+        <span className="text-[11.5px] text-muted-foreground">
+          Continues from the next unfinished task — finished work is kept.
+        </span>
       </div>
-      {bodyOpen && (
-        <div
-          className={cn(
-            "overflow-auto border-t border-border scrollbar-thin",
-            fullscreen ? "min-h-0 flex-1" : "max-h-[60vh]",
-          )}
-        >
-          <GoalTranscript
-            key={current.conversationId}
-            taskId={taskId}
-            conversationId={current.conversationId}
-            activeRunId={isLive ? (info.active_run_id ?? null) : null}
-            running={isLive}
-          />
+      {showOpts && (
+        <div className="mt-2.5 grid gap-2 sm:grid-cols-2">
+          <label className="flex flex-col gap-1 text-[11.5px] font-medium text-muted-foreground">
+            Builder
+            <select
+              value={builder}
+              onChange={(e) => setBuilder(e.target.value)}
+              className="rounded-md border border-border bg-background px-2 py-1.5 text-[12.5px] text-foreground"
+            >
+              {options.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.display_name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1 text-[11.5px] font-medium text-muted-foreground">
+            Critic
+            <select
+              value={critic}
+              onChange={(e) => setCritic(e.target.value)}
+              className="rounded-md border border-border bg-background px-2 py-1.5 text-[12.5px] text-foreground"
+            >
+              {options.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.display_name}
+                </option>
+              ))}
+            </select>
+          </label>
         </div>
       )}
     </div>
+  );
+}
+
+const ROLE_FILTERS: { key: RoleKind | "all"; label: string }[] = [
+  { key: "all", label: "All" },
+  { key: "plan", label: "Planner" },
+  { key: "build", label: "Builder" },
+  { key: "critic", label: "Critic" },
+];
+
+/**
+ * A full-screen popup with the goal's merged work transcript — planning,
+ * building and every critic iteration woven into one chronological timeline.
+ * Lives behind a button so the day-to-day Goal view stays focused on progress;
+ * the whole history is one click away.
+ */
+function ActivityPopup({
+  open,
+  onClose,
+  taskId,
+  info,
+  running,
+  roleAgents,
+}: {
+  open: boolean;
+  onClose: () => void;
+  taskId: string;
+  info: LoopInfoDTO;
+  running: boolean;
+  roleAgents?: Partial<Record<RoleKind, ResolvedAgent | null>>;
+}) {
+  const { items, sources, streaming } = useGoalActivity(taskId, info, running);
+  const [filter, setFilter] = useState<RoleKind | "all">("all");
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
+  // Only offer filters for the roles that actually produced work.
+  const kinds = useMemo(() => new Set(sources.map((s) => s.kind)), [sources]);
+  const shown = useMemo(
+    () => (filter === "all" ? items : items.filter((i) => i.role.kind === filter)),
+    [items, filter],
+  );
+
+  if (!open) return null;
+
+  return (
+    <>
+      {/* Scrim */}
+      <div
+        className="fixed inset-0 z-50 bg-[#091e42]/50 animate-in fade-in-0"
+        onClick={onClose}
+      />
+      {/* Panel */}
+      <div className="fixed inset-3 z-50 flex flex-col overflow-hidden rounded-xl border border-border bg-background shadow-overlay sm:inset-6 lg:inset-10">
+        <div className="flex items-center gap-2 border-b border-border px-4 py-2.5">
+          <Activity className="h-4 w-4 text-muted-foreground" />
+          <span className="text-[13px] font-semibold text-foreground">
+            Activity — full history
+          </span>
+          {streaming && (
+            <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-600 dark:text-emerald-300">
+              <Loader2 className="h-3 w-3 animate-spin" /> live
+            </span>
+          )}
+          <div className="ml-auto flex items-center gap-1 rounded-md border border-border bg-surface-1 p-0.5">
+            {ROLE_FILTERS.filter(
+              (f) => f.key === "all" || kinds.has(f.key as RoleKind),
+            ).map((f) => (
+              <button
+                key={f.key}
+                type="button"
+                onClick={() => setFilter(f.key)}
+                className={cn(
+                  "rounded px-2 py-0.5 text-[11.5px] font-medium transition-colors",
+                  filter === f.key
+                    ? "bg-card text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            title="Close (Esc)"
+            aria-label="Close activity"
+            className="rounded p-1 text-muted-foreground transition-colors hover:bg-surface-3 hover:text-foreground"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="min-h-0 flex-1 overflow-auto scrollbar-thin">
+          <div className="mx-auto max-w-4xl px-2 py-2 sm:px-4">
+            <LoopTimeline
+              items={shown}
+              streaming={streaming}
+              roleAgents={roleAgents}
+            />
+          </div>
+        </div>
+      </div>
+    </>
   );
 }
 
@@ -588,14 +839,17 @@ function TaskGraphProgress({ tasks }: { tasks: LoopTaskDTO[] }) {
   const pct = tasks.length ? Math.round((done / tasks.length) * 100) : 0;
   return (
     <div className="rounded-lg border border-border bg-card">
-      <div className="px-3 pb-2.5 pt-2.5">
-        <div className="flex items-center gap-1.5 text-[13px] font-semibold text-foreground">
-          <ListChecks className="h-3.5 w-3.5 text-muted-foreground" /> Tasks
+      <div className="px-3 pb-2.5 pt-3">
+        <div className="flex items-center gap-2 text-[13px] font-semibold text-foreground">
+          <span className="flex h-6 w-6 items-center justify-center rounded-md bg-emerald-500/15 text-emerald-600 dark:text-emerald-300">
+            <ListChecks className="h-3.5 w-3.5" />
+          </span>
+          Tasks
           <span className="ml-auto font-normal tabular-nums text-muted-foreground">
             {done}/{tasks.length} done
           </span>
         </div>
-        <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-surface-3">
+        <div className="mt-2.5 h-1.5 overflow-hidden rounded-full bg-surface-3">
           <div
             className="h-full rounded-full bg-emerald-500 transition-all"
             style={{ width: `${pct}%` }}
@@ -653,8 +907,11 @@ function AttemptTimeline({ attempts }: { attempts: LoopAttemptDTO[] }) {
   const ordered = [...attempts].reverse();
   return (
     <div className="rounded-lg border border-border bg-card">
-      <div className="flex items-center gap-1.5 px-3 py-2.5 text-[13px] font-semibold text-foreground">
-        <Gauge className="h-3.5 w-3.5 text-muted-foreground" /> Iterations
+      <div className="flex items-center gap-2 px-3 py-3 text-[13px] font-semibold text-foreground">
+        <span className="flex h-6 w-6 items-center justify-center rounded-md bg-violet-500/15 text-violet-600 dark:text-violet-300">
+          <Gauge className="h-3.5 w-3.5" />
+        </span>
+        Iterations
         <span className="ml-auto font-normal tabular-nums text-muted-foreground">
           {attempts.length}
         </span>

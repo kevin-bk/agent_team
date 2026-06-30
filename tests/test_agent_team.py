@@ -1373,6 +1373,55 @@ def test_loop_controller_decision_table():
     assert isinstance(c.on_attempt_finished(None), Continue)
 
 
+def test_loop_controller_stall_guard():
+    from agent_team.features.board.runtime.loop.controller import (
+        OUTCOME_STALLED,
+        Continue,
+        Done,
+        LoopController,
+    )
+    from agent_team.features.board.runtime.loop.verdict import LoopVerdict, Verdict
+
+    fail0 = Verdict(LoopVerdict.FAIL, score=0.0)
+
+    # Three consecutive zero-score attempts trip the stall guard well before the
+    # (generous) attempt cap, routing to a human instead of burning every try.
+    c = LoopController("obj", max_attempts=99, max_zero_streak=3)
+    assert isinstance(c.on_attempt_finished(fail0), Continue)
+    assert isinstance(c.on_attempt_finished(fail0), Continue)
+    step = c.on_attempt_finished(fail0)
+    assert isinstance(step, Done) and step.outcome == OUTCOME_STALLED
+
+    # An errored generator turn (no output to grade) also counts as zero progress.
+    c = LoopController("obj", max_attempts=99, max_zero_streak=2)
+    assert isinstance(c.on_attempt_finished(None, errored=True), Continue)
+    step = c.on_attempt_finished(None, errored=True)
+    assert isinstance(step, Done) and step.outcome == OUTCOME_STALLED
+
+    # A positive score resets the streak, so steady progress is never mistaken
+    # for a wall even across many fails.
+    c = LoopController("obj", max_attempts=99, max_zero_streak=3)
+    c.on_attempt_finished(fail0)
+    c.on_attempt_finished(fail0)
+    assert isinstance(
+        c.on_attempt_finished(Verdict(LoopVerdict.FAIL, score=0.4)), Continue
+    )
+    assert isinstance(c.on_attempt_finished(fail0), Continue)  # streak restarts
+    assert isinstance(c.on_attempt_finished(fail0), Continue)
+
+    # A missing verdict (evaluator broke) is fail-open and does NOT count toward
+    # the stall streak.
+    c = LoopController("obj", max_attempts=99, max_zero_streak=2)
+    assert isinstance(c.on_attempt_finished(None), Continue)
+    assert isinstance(c.on_attempt_finished(None), Continue)
+    assert isinstance(c.on_attempt_finished(None), Continue)
+
+    # max_zero_streak=0 disables the guard entirely.
+    c = LoopController("obj", max_attempts=5, max_zero_streak=0)
+    for _ in range(4):
+        assert isinstance(c.on_attempt_finished(fail0), Continue)
+
+
 def test_loop_controller_references_plan_when_present():
     from agent_team.features.board.runtime.loop.controller import LoopController
     from agent_team.features.board.runtime.loop.verdict import LoopVerdict, Verdict
@@ -2112,6 +2161,58 @@ async def test_run_loop_stops_on_token_budget(db, monkeypatch):
     assert statuses[-1].state == LoopState.WAITING_FOR_HUMAN
     assert statuses[-1].outcome == "budget"
     assert statuses[0].state == LoopState.RUNNING
+
+
+async def test_run_loop_stops_when_generator_keeps_erroring(db, monkeypatch):
+    """A generator that errors every turn (e.g. provider limit) must not loop
+    forever grading empty output — the stall guard stops it after N tries and
+    the evaluator is never even called."""
+    from sqlalchemy.orm import sessionmaker
+
+    from agent_team.features.board.runtime.loop import driver
+    from agent_team.features.board.runtime.loop.driver import GeneratorTurn, run_loop
+    from agent_team.features.board.runtime.loop.status import (
+        LoopState,
+        outcome_to_state,
+    )
+
+    factory = sessionmaker(bind=db.get_bind(), autoflush=False, future=True)
+    monkeypatch.setattr(driver, "SessionLocal", factory)
+
+    board = boards_repo.create_board(db, name="B", description=None, columns=None, owner_id=None)
+    db.flush()
+    task = tasks_repo.create_task(
+        db, board_id=board.id, title="T", description=None, status="todo",
+        assignee_id=None, labels=None, priority=None, created_by=None,
+    )
+    db.commit()
+
+    async def erroring_generator(attempt_id, prompt):
+        return GeneratorTurn(run_id=None, final_text="", cancelled=False, errored=True)
+
+    graded = {"calls": 0}
+
+    class CountingEvaluator:
+        async def evaluate(
+            self, *, objective, generator_summary, workspace_path, attempt_id=None
+        ):
+            graded["calls"] += 1
+            raise AssertionError("evaluator must not run for an errored turn")
+
+    outcome = await run_loop(
+        task_id=task.id,
+        objective="obj",
+        workspace_path="/tmp/ws",
+        run_generator=erroring_generator,
+        evaluator=CountingEvaluator(),
+        max_attempts=99,
+        max_zero_streak=3,
+    )
+
+    assert outcome.outcome == "stalled"
+    assert outcome.attempts == 3
+    assert graded["calls"] == 0
+    assert outcome_to_state("stalled") == LoopState.WAITING_FOR_HUMAN
 
 
 # ---------------------------------------------------------------------------

@@ -53,6 +53,7 @@ from agent_team.features.board.schemas import (
     LoopAttemptDTO,
     LoopEvaluationDTO,
     LoopInfoDTO,
+    LoopResumeCreate,
     LoopTaskDTO,
     MentionCreate,
     MentionResponse,
@@ -1363,12 +1364,24 @@ async def get_task_loop(task_id: str, request: Request, db: Session = Depends(ge
         )
     # The generator reuses one conversation across all iterations, so any
     # iteration's generator run points at the same continuous transcript; take
-    # the most recent one available.
-    generator_conversation_id = next(
+    # the most recent one available. Carry its agent alias too, so the cockpit
+    # can name the builder.
+    generator_run = next(
         (
-            run.conversation_id
+            run
             for a in reversed(attempts)
             if (run := gen_run_by_attempt.get(a.id)) is not None
+        ),
+        None,
+    )
+    generator_conversation_id = (
+        generator_run.conversation_id if generator_run is not None else None
+    )
+    critic_run = next(
+        (
+            run
+            for a in reversed(attempts)
+            if (run := crit_run_by_attempt.get(a.id)) is not None
         ),
         None,
     )
@@ -1398,9 +1411,21 @@ async def get_task_loop(task_id: str, request: Request, db: Session = Depends(ge
             planner_run.conversation_id if planner_run is not None else None
         ),
         planner_run_id=planner_run.id if planner_run is not None else None,
+        planner_agent_id=planner_run.agent_alias if planner_run is not None else None,
+        generator_agent_id=(
+            generator_run.agent_alias if generator_run is not None else None
+        ),
+        evaluator_agent_id=critic_run.agent_alias if critic_run is not None else None,
         active_run_id=active_run.id if active_run is not None else None,
         active_conversation_id=(
             active_run.conversation_id if active_run is not None else None
+        ),
+        active_role=active_run.role if active_run is not None else None,
+        active_agent_id=active_run.agent_alias if active_run is not None else None,
+        can_resume=(
+            bool(task.planning_meta().get("run_params"))
+            and (task.loop_state or "") in _RESUMABLE_STATES
+            and not is_loop_running(task_id)
         ),
         attempts=[
             LoopAttemptDTO(
@@ -1459,6 +1484,108 @@ async def ack_task_loop(task_id: str, request: Request, db: Session = Depends(ge
         human_actions.ack_loop(db, ctx.task, ctx.user)
     except human_actions.ActionError as e:
         return bad_request(str(e))
+    return {"ok": True, "task_id": task_id}
+
+
+#: Loop states a stopped run can be resumed from, with a human-readable reason
+#: woven into the resume preamble so the agent knows why it's picking back up.
+_RESUMABLE_STATES: dict[str, str] = {
+    "waiting_for_human": "the run stopped for human review (e.g. stalled at 0%, "
+    "hit the attempt cap, or exceeded its budget)",
+    "failed": "the run failed",
+    "cancelled": "the run was cancelled",
+}
+
+
+@router.post("/tasks/{task_id}/loop/resume")
+async def resume_task_loop(
+    task_id: str,
+    payload: LoopResumeCreate,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Resume a stopped loop from where it left off — not a fresh restart.
+
+    Reuses the run parameters remembered at approve-and-run time and continues
+    the same execution: completed tasks in ``TASKS.json`` are skipped, so the
+    loop picks up the first unfinished one. ``agent_id`` / ``evaluator_id`` may
+    override the builder / critic for this resume (e.g. to swap off a rate-limited
+    engine). The resumed generator is handed a short preamble that re-grounds it
+    in the approved artifacts rather than the whole original objective.
+    """
+    ctx, err = authz.guard_task(db, request, task_id, min_role="editor")
+    if err:
+        return err
+    task = ctx.task
+
+    from agent_team.features.board.runtime.loop.service import is_loop_running
+
+    if is_loop_running(task_id):
+        return bad_request("A loop is already running for this task.")
+
+    meta = task.planning_meta()
+    rp = meta.get("run_params")
+    if not rp:
+        return bad_request(
+            "No previous run to resume — approve and run the plan first."
+        )
+    reason = _RESUMABLE_STATES.get(task.loop_state or "")
+    if reason is None:
+        return bad_request(
+            "This task has no stopped run to resume "
+            f"(state: {task.loop_state or 'none'})."
+        )
+
+    # Optional agent swap (e.g. off a rate-limited engine). Persist the override
+    # into run_params so the cockpit and any later resume use the new agents.
+    agent_alias = (payload.agent_id or "").strip() or rp["agent_id"]
+    evaluator_alias = (payload.evaluator_id or "").strip() or rp["evaluator_id"]
+    swapped = agent_alias != rp["agent_id"] or evaluator_alias != rp["evaluator_id"]
+    rp["agent_id"] = agent_alias
+    rp["evaluator_id"] = evaluator_alias
+    meta["run_params"] = rp
+    task.planning_meta_json = json.dumps(meta, ensure_ascii=False)
+
+    from agent_team.features.board.runtime import task_journal
+
+    task_journal.record_with(
+        db,
+        task_id=task_id,
+        phase="execution",
+        type="state_change",
+        title="Execution resumed by human",
+        actor_id=ctx.user.id,
+        actor_type="human",
+        metadata={
+            "agent_id": agent_alias,
+            "evaluator_id": evaluator_alias,
+            "resumed_from": task.loop_state,
+            "agents_swapped": swapped,
+        },
+    )
+    db.commit()
+
+    from agent_team.features.board.runtime.dispatch import capture_main_loop
+    from agent_team.features.board.runtime.loop import planning_prompts
+    from agent_team.features.board.runtime.loop.budget import LoopBudget
+    from agent_team.features.board.runtime.loop.service import start_autonomous_loop
+
+    capture_main_loop()
+    start_autonomous_loop(
+        task_id=task_id,
+        agent_alias=agent_alias,
+        evaluator_alias=evaluator_alias,
+        objective=task.objective or "",
+        max_attempts=int(rp.get("max_attempts", 10)),
+        budget=LoopBudget(
+            max_tokens=rp.get("max_tokens"),
+            max_cost_usd=rp.get("max_cost_usd"),
+            max_wall_seconds=rp.get("max_wall_seconds"),
+        ),
+        strict=True,
+        task_graph=bool(rp.get("task_graph", True)),
+        resume_note=planning_prompts.build_resume_preamble(reason),
+    )
     return {"ok": True, "task_id": task_id}
 
 

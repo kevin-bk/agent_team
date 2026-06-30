@@ -25,6 +25,7 @@ import {
   type JournalFilters,
   type JournalNoteBody,
   type LoopInfoDTO,
+  type LoopResumeBody,
   type PlanningAnswerBody,
   type PlanningInfoDTO,
   type PlanningRunBody,
@@ -427,6 +428,12 @@ export class ApiClient {
     return this.request<{ ok: boolean; task_id: string }>(
       `/api/tasks/${taskId}/loop/cancel`,
       { method: "POST" },
+    );
+  }
+  resumeTaskLoop(taskId: string, body: LoopResumeBody = {}) {
+    return this.request<{ ok: boolean; task_id: string }>(
+      `/api/tasks/${taskId}/loop/resume`,
+      { method: "POST", body: JSON.stringify(body) },
     );
   }
   ackTaskLoop(taskId: string) {

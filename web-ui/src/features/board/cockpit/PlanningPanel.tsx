@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
   AlertTriangle,
@@ -26,6 +26,14 @@ import type {
   TaskDTO,
 } from "@/api/types";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { SelectMenu } from "@/components/ui/select-menu";
 import { Spinner } from "@/components/ui/spinner";
@@ -76,6 +84,8 @@ export function PlanStage({
   canEdit,
   drafting,
   lastError,
+  openImmediately = false,
+  onCancel,
 }: {
   task: TaskDTO;
   agents: AgentDTO[];
@@ -83,7 +93,18 @@ export function PlanStage({
   canEdit: boolean;
   drafting: boolean;
   lastError?: string | null;
+  /** Open the setup dialog as soon as this stage mounts (e.g. "Plan a new goal"). */
+  openImmediately?: boolean;
+  /** Called when the user dismisses the setup without starting (e.g. cancel a restart). */
+  onCancel?: () => void;
 }) {
+  const [open, setOpen] = useState(false);
+  // Arriving here via "Plan a new goal" should drop the human straight into the
+  // dialog rather than forcing an extra click on the empty state.
+  useEffect(() => {
+    if (openImmediately) setOpen(true);
+  }, [openImmediately]);
+
   if (drafting) {
     return (
       <div className="rounded-lg border border-border bg-card p-3.5">
@@ -106,15 +127,47 @@ export function PlanStage({
       </p>
     );
   }
-  return <PlanSetupForm task={task} agents={agents} cliAgents={cliAgents} lastError={lastError} />;
+
+  return (
+    <>
+      <div className="flex flex-col items-center justify-center rounded-lg border border-dashed border-border bg-card/40 px-6 py-12 text-center">
+        <span className="mb-3 flex h-11 w-11 items-center justify-center rounded-xl bg-indigo-500/15 text-indigo-500 dark:text-indigo-300">
+          <ListChecks className="h-5 w-5" />
+        </span>
+        <p className="text-[14px] font-semibold text-foreground">No goal yet</p>
+        <p className="mt-1 max-w-sm text-[12.5px] text-muted-foreground">
+          Start one to let a planner agent research the task and draft a SPEC,
+          PLAN and task list — you approve it before any code is written.
+        </p>
+        <Button className="mt-4" onClick={() => setOpen(true)}>
+          <ListChecks className="h-4 w-4" /> Start a new goal
+        </Button>
+      </div>
+      <PlanSetupDialog
+        open={open}
+        onOpenChange={(v) => {
+          setOpen(v);
+          if (!v) onCancel?.();
+        }}
+        task={task}
+        agents={agents}
+        cliAgents={cliAgents}
+        lastError={lastError}
+      />
+    </>
+  );
 }
 
-function PlanSetupForm({
+function PlanSetupDialog({
+  open,
+  onOpenChange,
   task,
   agents,
   cliAgents,
   lastError,
 }: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
   task: TaskDTO;
   agents: AgentDTO[];
   cliAgents: AgentDTO[];
@@ -129,78 +182,92 @@ function PlanSetupForm({
   const start = useStartTaskPlanning(task.board_id, task.id);
 
   return (
-    <div className="rounded-lg border border-border bg-card p-3.5">
-      <div className="mb-1 flex items-center gap-1.5">
-        <ListChecks className="h-4 w-4 text-indigo-500" />
-        <span className="text-[13px] font-semibold text-foreground">
-          Draft a plan
-        </span>
-      </div>
-      <p className="mb-3 text-[12px] text-muted-foreground">
-        A planner agent researches the task and writes a SPEC, PLAN and task list.
-        You review and approve it before the build starts.
-      </p>
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-xl">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 text-[18px]">
+            <ListChecks className="h-5 w-5 text-indigo-500" /> Draft a plan
+          </DialogTitle>
+          <DialogDescription>
+            A planner agent researches the task and writes a SPEC, PLAN and task
+            list. You review and approve it before the build starts.
+          </DialogDescription>
+        </DialogHeader>
 
-      <Field label="Objective">
-        <textarea
-          value={objective}
-          onChange={(e) => setObjective(e.target.value)}
-          rows={3}
-          placeholder="What does 'done' mean? The planner turns this into a precise spec the build is graded against."
-          className="block w-full resize-y rounded border border-input bg-card px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-[#4C9AFF] focus:outline-none"
-        />
-      </Field>
+        <div className="space-y-3">
+          <Field label="Objective">
+            <textarea
+              value={objective}
+              onChange={(e) => setObjective(e.target.value)}
+              rows={4}
+              autoFocus
+              placeholder="What does 'done' mean? The planner turns this into a precise spec the build is graded against."
+              className="block w-full resize-y rounded border border-input bg-card px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-[#4C9AFF] focus:outline-none"
+            />
+          </Field>
 
-      <div className="mt-3 grid grid-cols-2 gap-3">
-        <Field label="Planner agent">
-          <SelectMenu
-            value={planner}
-            onChange={setPlanner}
-            options={options.map(agentOpt)}
-            placeholder="Pick a planner"
-          />
-        </Field>
-        <Field label="Reviewer" hint="optional">
-          <SelectMenu
-            value={reviewer}
-            onChange={setReviewer}
-            options={[
-              { value: "", label: "No reviewer" },
-              ...options.map(agentOpt),
-            ]}
-            placeholder="No reviewer"
-          />
-        </Field>
-      </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Planner agent">
+              <SelectMenu
+                value={planner}
+                onChange={setPlanner}
+                options={options.map(agentOpt)}
+                placeholder="Pick a planner"
+              />
+            </Field>
+            <Field label="Reviewer" hint="optional">
+              <SelectMenu
+                value={reviewer}
+                onChange={setReviewer}
+                options={[
+                  { value: "", label: "No reviewer" },
+                  ...options.map(agentOpt),
+                ]}
+                placeholder="No reviewer"
+              />
+            </Field>
+          </div>
 
-      {lastError && <ErrorNote>{lastError}</ErrorNote>}
+          {lastError && <ErrorNote>{lastError}</ErrorNote>}
+        </div>
 
-      <div className="mt-3">
-        <Button
-          size="sm"
-          disabled={!planner || !objective.trim() || start.isPending}
-          onClick={() =>
-            start.mutate(
-              { planner_id: planner, reviewer_id: reviewer || null, objective },
-              {
-                onSuccess: () => toast.success("Planning started"),
-                onError: (err) =>
-                  toast.error(
-                    err instanceof Error ? err.message : "Could not start",
-                  ),
-              },
-            )
-          }
-        >
-          {start.isPending ? (
-            <Spinner className="h-4 w-4" />
-          ) : (
-            <ListChecks className="h-4 w-4" />
-          )}
-          Draft plan
-        </Button>
-      </div>
-    </div>
+        <DialogFooter>
+          <Button variant="ghost" size="sm" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button
+            size="sm"
+            disabled={!planner || !objective.trim() || start.isPending}
+            onClick={() =>
+              start.mutate(
+                {
+                  planner_id: planner,
+                  reviewer_id: reviewer || null,
+                  objective,
+                },
+                {
+                  onSuccess: () => {
+                    toast.success("Planning started");
+                    onOpenChange(false);
+                  },
+                  onError: (err) =>
+                    toast.error(
+                      err instanceof Error ? err.message : "Could not start",
+                    ),
+                },
+              )
+            }
+          >
+            {start.isPending ? (
+              <Spinner className="h-4 w-4" />
+            ) : (
+              <ListChecks className="h-4 w-4" />
+            )}
+            Draft plan
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -303,10 +370,12 @@ export function ReviewStage({
   );
 
   return (
-    <div className="rounded-lg border border-border bg-card p-3.5">
-      <div className="mb-2 flex flex-wrap items-center gap-1.5">
-        <ListChecks className="h-4 w-4 text-indigo-500" />
-        <span className="text-[13px] font-semibold text-foreground">
+    <div className="rounded-lg border border-border bg-card p-4">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <span className="flex h-7 w-7 items-center justify-center rounded-md bg-indigo-500/15 text-indigo-600 dark:text-indigo-300">
+          <ListChecks className="h-4 w-4" />
+        </span>
+        <span className="text-[14px] font-semibold text-foreground">
           Review the plan
         </span>
         {info.review_verdict && (

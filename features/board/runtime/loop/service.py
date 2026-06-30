@@ -26,10 +26,15 @@ from agent_team.features.board.repositories import runs as runs_repo
 from agent_team.features.board.repositories.tasks import get_task
 from agent_team.features.board.runtime import registry, task_journal
 from agent_team.features.board.runtime.backend import get_run_backend
-from agent_team.features.board.runtime.events import RUN_CANCELLED, RUN_DONE
+from agent_team.features.board.runtime.events import (
+    RUN_CANCELLED,
+    RUN_DONE,
+    RUN_ERROR,
+)
 from agent_team.features.board.runtime.loop import planning_artifacts as artifacts
 from agent_team.features.board.runtime.loop import planning_prompts
 from agent_team.features.board.runtime.loop.budget import LoopBudget
+from agent_team.features.board.runtime.loop.controller import DEFAULT_MAX_ZERO_STREAK
 from agent_team.features.board.runtime.loop.driver import (
     GeneratorTurn,
     LoopOutcome,
@@ -197,6 +202,7 @@ class BackendGenerator:
             run_id=run_id,
             final_text=result.final_answer,
             cancelled=result.status == RUN_CANCELLED,
+            errored=result.status == RUN_ERROR,
             tokens=result.tokens,
             cost_usd=result.cost_usd,
         )
@@ -462,6 +468,7 @@ async def run_autonomous_loop(
     strict: bool = False,
     task_graph: bool = False,
     resume_note: str | None = None,
+    max_zero_streak: int = DEFAULT_MAX_ZERO_STREAK,
 ) -> LoopOutcome:
     """Drive a task to a verified result using real generator + evaluator runs.
 
@@ -515,6 +522,7 @@ async def run_autonomous_loop(
             replan_requested=replan,
             questions_pending=questions,
             extra_preamble=resume_note,
+            max_zero_streak=max_zero_streak,
         )
 
     # On resume after a question pause, fold the human's answers into the
@@ -543,6 +551,7 @@ async def run_autonomous_loop(
         preamble=generator_preamble,
         replan_requested=replan,
         questions_pending=questions,
+        max_zero_streak=max_zero_streak,
     )
 
 
@@ -557,6 +566,7 @@ def start_autonomous_loop(
     strict: bool = False,
     task_graph: bool = False,
     resume_note: str | None = None,
+    max_zero_streak: int = DEFAULT_MAX_ZERO_STREAK,
 ) -> asyncio.Task:
     """Launch the loop as a background task on the running event loop.
 
@@ -582,6 +592,7 @@ def start_autonomous_loop(
                 strict=strict,
                 task_graph=task_graph,
                 resume_note=resume_note,
+                max_zero_streak=max_zero_streak,
             )
             logger.info(
                 "autonomous loop finished task=%s outcome=%s attempts=%s",

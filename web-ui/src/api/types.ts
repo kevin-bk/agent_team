@@ -463,6 +463,16 @@ export interface PlanningRunBody {
   max_wall_seconds?: number | null;
 }
 
+/**
+ * Body to resume a stopped loop from where it left off. Both agents are
+ * optional — omit to keep the originally-approved builder/critic, or set one to
+ * swap it for this resume (e.g. off a rate-limited engine).
+ */
+export interface LoopResumeBody {
+  agent_id?: string | null;
+  evaluator_id?: string | null;
+}
+
 /** One entry in a task's semantic journal (sổ cái). */
 export interface JournalEntryDTO {
   id: string;
@@ -896,9 +906,19 @@ export interface LoopInfoDTO {
   /** The planning phase's transcript conversation + run (null if no plan phase). */
   planner_conversation_id?: string | null;
   planner_run_id?: string | null;
+  /** Agent aliases staffing each loop role (planner / builder / critic), taken
+   * from that role's most recent run; null until the role has run once. */
+  planner_agent_id?: string | null;
+  generator_agent_id?: string | null;
+  evaluator_agent_id?: string | null;
   /** The loop run streaming right now (any role) + its conversation. */
   active_run_id?: string | null;
   active_conversation_id?: string | null;
+  /** The role + agent alias of the run streaming right now (for the live card). */
+  active_role?: string | null;
+  active_agent_id?: string | null;
+  /** Whether a stopped run can be resumed from where it left off. */
+  can_resume?: boolean;
   attempts: LoopAttemptDTO[];
   /** Live task-graph progress from TASKS.json (empty unless executing task-by-task). */
   tasks?: LoopTaskDTO[];

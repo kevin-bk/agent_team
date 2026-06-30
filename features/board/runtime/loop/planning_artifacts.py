@@ -197,6 +197,40 @@ TASK_STATUSES: frozenset[str] = frozenset(
 #: not wedge the graph.
 _DEP_SATISFIED: frozenset[str] = frozenset({"complete", "skipped"})
 
+#: Synonyms LLM planners commonly emit, mapped to the canonical lifecycle value.
+#: Keys are compared after lower-casing and collapsing spaces/hyphens to ``_``.
+_STATUS_ALIASES: dict[str, str] = {
+    "completed": "complete",
+    "done": "complete",
+    "finished": "complete",
+    "inprogress": "in_progress",
+    "running": "in_progress",
+    "active": "in_progress",
+    "started": "in_progress",
+    "wip": "in_progress",
+    "todo": "pending",
+    "to_do": "pending",
+    "not_started": "pending",
+    "unstarted": "pending",
+    "skip": "skipped",
+}
+
+
+def normalize_task_status(raw: object) -> str | None:
+    """Map a task status to its canonical value, tolerating LLM synonyms.
+
+    Planners often write near-misses like ``"completed"`` or ``"in-progress"``;
+    fold those onto the canonical set so a small wording difference doesn't fail
+    validation or, worse, silently reset a finished task back to ``pending``.
+    Returns the canonical status, or ``None`` when it isn't recognised at all.
+    """
+    if not isinstance(raw, str):
+        return None
+    key = raw.strip().lower().replace("-", "_").replace(" ", "_")
+    if key in TASK_STATUSES:
+        return key
+    return _STATUS_ALIASES.get(key)
+
 
 def read_tasks(workspace_path: str) -> dict | None:
     """Parse ``TASKS.json`` as a dict, or ``None`` when missing/blank/invalid."""
@@ -224,12 +258,11 @@ def task_list(workspace_path: str) -> list[dict]:
         tid = t.get("id")
         if not isinstance(tid, str) or not tid.strip():
             continue
-        status = t.get("status", "pending")
         rows.append(
             {
                 "id": tid,
                 "title": str(t.get("title") or tid),
-                "status": status if status in TASK_STATUSES else "pending",
+                "status": normalize_task_status(t.get("status")) or "pending",
                 "depends_on": [str(d) for d in (t.get("depends_on") or [])],
                 "objective": str(t.get("objective") or ""),
                 "files": [str(f) for f in (t.get("files") or [])],
@@ -262,8 +295,10 @@ def set_task_status(workspace_path: str, task_id: str, status: str) -> bool:
     the single source of truth for graph progress, so the cockpit and a resumed
     run both see the same state.
     """
-    if status not in TASK_STATUSES:
+    canonical = normalize_task_status(status)
+    if canonical is None:
         raise ArtifactError(f"invalid task status: {status!r}")
+    status = canonical
     data = read_tasks(workspace_path)
     if data is None:
         return False
@@ -298,7 +333,6 @@ def validate_tasks(data: object) -> list[str]:
         return errors + ["TASKS.json: 'tasks' must be a list"]
 
     ids: set[str] = set()
-    valid_status = TASK_STATUSES
     deps: dict[str, list[str]] = {}
     for i, task in enumerate(tasks):
         where = f"TASKS.json: task[{i}]"
@@ -312,9 +346,9 @@ def validate_tasks(data: object) -> list[str]:
         if tid in ids:
             errors.append(f"{where} duplicate id {tid!r}")
         ids.add(tid)
-        status = task.get("status", "pending")
-        if status not in valid_status:
-            errors.append(f"{where} unknown status {status!r}")
+        raw_status = task.get("status", "pending")
+        if normalize_task_status(raw_status) is None:
+            errors.append(f"{where} unknown status {raw_status!r}")
         depends = task.get("depends_on") or []
         if not isinstance(depends, list):
             errors.append(f"{where} 'depends_on' must be a list")

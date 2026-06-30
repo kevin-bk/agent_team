@@ -18,52 +18,65 @@ const STEPS: { id: GoalStage; label: string; hint: string }[] = [
 export function GoalStepper({ current }: { current: GoalStage }) {
   const currentIdx = STEPS.findIndex((s) => s.id === current);
   return (
-    <ol className="flex items-center gap-1">
+    <ol className="flex items-center">
       {STEPS.map((step, i) => {
         const done = i < currentIdx;
         const active = i === currentIdx;
+        // The sub-label tracks live state so the rail doubles as a status line.
+        const status = done ? "Completed" : active ? "In progress" : "Pending";
         return (
-          <li key={step.id} className="flex flex-1 items-center gap-1">
-            <div className="flex min-w-0 items-center gap-2">
+          <li key={step.id} className="flex flex-1 items-center gap-2 last:flex-none">
+            <div className="flex min-w-0 items-center gap-2.5">
               <span
                 className={cn(
-                  "flex h-6 w-6 shrink-0 items-center justify-center rounded-full border text-[11px] font-semibold tabular-nums transition-colors",
+                  "flex h-8 w-8 shrink-0 items-center justify-center rounded-full border text-[12px] font-semibold tabular-nums transition-colors",
                   done &&
-                    "border-emerald-500 bg-emerald-500 text-white dark:border-emerald-500",
+                    "border-emerald-500 bg-emerald-500 text-white",
                   active &&
-                    "border-primary bg-primary text-primary-foreground shadow-sm",
+                    "border-primary bg-primary text-primary-foreground shadow-[0_0_0_4px] shadow-primary/15",
                   !done &&
                     !active &&
                     "border-border bg-surface-1 text-muted-foreground",
                 )}
               >
-                {done ? <Check className="h-3.5 w-3.5" /> : i + 1}
+                {done ? <Check className="h-4 w-4" /> : i + 1}
               </span>
               <div className="min-w-0 leading-tight">
                 <p
                   className={cn(
-                    "truncate text-[12.5px] font-semibold",
+                    "truncate text-[13px] font-semibold",
                     active
                       ? "text-foreground"
                       : done
-                        ? "text-foreground/70"
+                        ? "text-foreground/80"
                         : "text-muted-foreground",
                   )}
                 >
                   {step.label}
                 </p>
-                <p className="truncate text-[10.5px] text-muted-foreground">
-                  {step.hint}
+                <p
+                  className={cn(
+                    "truncate text-[11px]",
+                    active
+                      ? "text-primary dark:text-primary"
+                      : done
+                        ? "text-emerald-600 dark:text-emerald-400"
+                        : "text-muted-foreground/70",
+                  )}
+                >
+                  {status}
                 </p>
               </div>
             </div>
             {i < STEPS.length - 1 && (
-              <span
-                className={cn(
-                  "h-px flex-1 transition-colors",
-                  i < currentIdx ? "bg-emerald-500/60" : "bg-border",
-                )}
-              />
+              <span className="h-0.5 flex-1 overflow-hidden rounded-full bg-border">
+                <span
+                  className={cn(
+                    "block h-full rounded-full transition-all",
+                    done ? "w-full bg-emerald-500" : active ? "w-1/2 bg-primary" : "w-0",
+                  )}
+                />
+              </span>
             )}
           </li>
         );

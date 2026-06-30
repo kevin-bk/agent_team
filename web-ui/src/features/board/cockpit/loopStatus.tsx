@@ -99,6 +99,7 @@ export const LOOP_VERDICT_META: Record<LoopVerdict, VerdictMeta> = {
 export const LOOP_OUTCOME_LABEL: Record<string, string> = {
   complete: "Goal met",
   capped: "Hit iteration cap",
+  stalled: "Stalled (no progress)",
   budget: "Hit resource budget",
   needs_human: "Escalated to human",
   plan_change: "Plan change requested",

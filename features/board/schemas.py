@@ -264,10 +264,24 @@ class LoopInfoDTO(BaseModel):
     #: The planning phase's run + transcript conversation (null if no plan phase).
     planner_conversation_id: str | None = None
     planner_run_id: str | None = None
+    #: Agent aliases staffing each loop role, so the cockpit can show *which* AI
+    #: is the planner / builder / critic (e.g. "Codex builds, Claude reviews").
+    #: Each is taken from that role's most recent run; null until it has run once.
+    planner_agent_id: str | None = None
+    generator_agent_id: str | None = None
+    evaluator_agent_id: str | None = None
     #: The loop run streaming right now (any role) + its conversation, so the
     #: cockpit attaches the live stream to whichever role is currently working.
     active_run_id: str | None = None
     active_conversation_id: str | None = None
+    #: The role + agent alias of the run streaming right now, so the live card can
+    #: say e.g. "Codex · Builder is working". Null when nothing is running.
+    active_role: str | None = None
+    active_agent_id: str | None = None
+    #: Whether a stopped run can be resumed from where it left off (it has
+    #: remembered run params and is parked in a resumable state). Drives the
+    #: cockpit's "Resume" action.
+    can_resume: bool = False
     attempts: list[LoopAttemptDTO] = Field(default_factory=list)
     #: Live task-graph progress from ``TASKS.json`` (empty when not executing
     #: task-by-task). The on-disk file is the source of truth; this mirrors it.
@@ -300,6 +314,19 @@ class PlanningRunCreate(BaseModel):
     max_tokens: int | None = Field(default=None, ge=0)
     max_cost_usd: float | None = Field(default=None, ge=0)
     max_wall_seconds: int | None = Field(default=None, ge=0)
+
+
+class LoopResumeCreate(BaseModel):
+    """Resume a stopped loop from where it left off (not a fresh restart).
+
+    Reuses the run parameters remembered at approve-and-run time. ``agent_id`` /
+    ``evaluator_id`` optionally override the builder / critic for this resume —
+    handy to swap off a rate-limited engine (e.g. Claude → Codex). Omitted
+    fields keep the originally-approved agents.
+    """
+
+    agent_id: str | None = Field(default=None, max_length=255)
+    evaluator_id: str | None = Field(default=None, max_length=255)
 
 
 class PlanningArtifactEdit(BaseModel):

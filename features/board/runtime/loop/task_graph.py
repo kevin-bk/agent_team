@@ -25,6 +25,7 @@ from agent_team.features.board.runtime import task_journal
 from agent_team.features.board.runtime.loop import planning_artifacts as artifacts
 from agent_team.features.board.runtime.loop import planning_prompts
 from agent_team.features.board.runtime.loop.budget import LoopBudget, LoopLedger
+from agent_team.features.board.runtime.loop.controller import DEFAULT_MAX_ZERO_STREAK
 from agent_team.features.board.runtime.loop.driver import (
     LoopOutcome,
     OnStatusFn,
@@ -73,6 +74,7 @@ async def run_task_graph(
     replan_requested: Callable[[], bool] | None = None,
     questions_pending: Callable[[], bool] | None = None,
     extra_preamble: str | None = None,
+    max_zero_streak: int = DEFAULT_MAX_ZERO_STREAK,
 ) -> LoopOutcome:
     """Execute ``TASKS.json`` task-by-task; return the terminal outcome.
 
@@ -200,6 +202,7 @@ async def run_task_graph(
             questions_pending=questions_pending,
             ledger=ledger,  # share the budget across every task
             journal_terminal=False,  # the graph journals task-level lines instead
+            max_zero_streak=max_zero_streak,
         )
 
         if outcome.outcome == "complete":

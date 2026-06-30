@@ -66,7 +66,7 @@ class LoopStatus:
 
 
 #: Terminal outcomes that need a human to look before anything else happens.
-_HUMAN_OUTCOMES = frozenset({"capped", "budget", "needs_human"})
+_HUMAN_OUTCOMES = frozenset({"capped", "budget", "needs_human", "stalled"})
 
 
 def outcome_to_state(outcome: str) -> LoopState:

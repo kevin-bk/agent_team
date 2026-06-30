@@ -220,6 +220,31 @@ PLAN_REVISED_NOTE = (
 )
 
 
+def build_resume_preamble(reason: str | None = None) -> str:
+    """A short note that re-grounds a resumed loop in the durable artifacts.
+
+    A resumed loop must continue from where it stopped, not restart. Rather than
+    resending the whole original objective (wasteful, and it invites redoing
+    finished work), we point the agent at the on-disk source of truth — the
+    approved contract/plan and the live task list with its per-task status — and
+    tell it to pick up the first unfinished task. This is what makes a resume
+    work even when the loop is handed to a *different* agent than the one that
+    started it (e.g. swapping off a rate-limited engine): the files carry the
+    context the new agent's fresh conversation does not have.
+    """
+    why = f" The previous run stopped because: {reason.strip()}." if reason else ""
+    return (
+        "RESUMING a previously-started run — continue from where it stopped, do "
+        f"NOT start over.{why}\n\n"
+        f"Re-read the approved contract `{A.SPEC_PATH}` and plan `{A.PLAN_PATH}` "
+        f"for what must be done, and inspect `{A.TASKS_PATH}` for progress: every "
+        "task already marked `complete` is DONE — do not redo it. Inspect the "
+        "real current state of the workspace (do not rely on memory), then "
+        "continue with the first unfinished task and drive the objective to a "
+        "verified completion."
+    )
+
+
 #: Standing instruction prepended to every per-task generator turn in task-graph
 #: execution. Scopes the agent to the single current task and keeps the same
 #: change-request escape hatch as whole-objective strict mode.

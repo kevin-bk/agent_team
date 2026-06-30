@@ -31,6 +31,15 @@ from agent_team.features.board.runtime.loop.verdict import (
 OUTCOME_COMPLETE = "complete"
 OUTCOME_CAPPED = "capped"
 OUTCOME_NEEDS_HUMAN = "needs_human"
+#: Stopped early because progress stalled — N attempts in a row scored 0 (or the
+#: generator run kept failing, e.g. a provider rate/credit limit). Routed to a
+#: human rather than burning the whole attempt cap against a wall.
+OUTCOME_STALLED = "stalled"
+
+#: Default number of consecutive zero-progress attempts that trips the stall
+#: guard. Chosen so a transient blip (one bad turn) is tolerated, but a genuine
+#: wall (e.g. the generator producing nothing every turn) stops fast.
+DEFAULT_MAX_ZERO_STREAK = 3
 
 
 @dataclass(frozen=True)
@@ -60,10 +69,17 @@ class LoopController:
         max_attempts: int = 10,
         plan_path: str | None = None,
         preamble: str | None = None,
+        max_zero_streak: int = DEFAULT_MAX_ZERO_STREAK,
     ) -> None:
         self._objective = (objective or "").strip()
         self._max_attempts = max(1, max_attempts)
         self._attempts = 0
+        #: Stop after this many consecutive zero-progress attempts (0 disables).
+        #: A "zero-progress" attempt is one the generator failed to run at all
+        #: (e.g. provider limit) or whose verdict scored 0; any positive score
+        #: resets the streak. This is the backstop for the "stuck at 0%" wall.
+        self._max_zero_streak = max(0, max_zero_streak)
+        self._zero_streak = 0
         #: Workspace-relative path of a plan written by the planning phase. When
         #: set, prompts point the generator at the file (handoff by reference)
         #: instead of relying on the inline objective alone.
@@ -100,13 +116,33 @@ class LoopController:
             "you changed and how you verified it."
         )
 
-    def on_attempt_finished(self, verdict: Verdict | None) -> LoopStep:
-        """Record one finished attempt and decide the next step."""
+    def on_attempt_finished(
+        self, verdict: Verdict | None, *, errored: bool = False
+    ) -> LoopStep:
+        """Record one finished attempt and decide the next step.
+
+        ``errored`` flags an attempt whose generator run did not complete (e.g. a
+        provider rate/credit limit): there is no work to grade, so it counts as
+        zero progress toward the stall guard.
+        """
         self._attempts += 1
         if verdict is not None and verdict.verdict == LoopVerdict.PASS:
+            self._zero_streak = 0
             return Done(OUTCOME_COMPLETE)
         if verdict is not None and verdict.verdict == LoopVerdict.NEEDS_HUMAN:
             return Done(OUTCOME_NEEDS_HUMAN)
+
+        # Track the zero-progress streak. A failed generator run, or a graded
+        # attempt that scored 0, is "no progress"; any positive score resets it.
+        # A missing verdict (the evaluator could not grade) leaves the streak
+        # untouched — that is the existing fail-open path, not evidence of a wall.
+        if errored or (verdict is not None and verdict.score <= 0):
+            self._zero_streak += 1
+        elif verdict is not None and verdict.score > 0:
+            self._zero_streak = 0
+
+        if self._max_zero_streak and self._zero_streak >= self._max_zero_streak:
+            return Done(OUTCOME_STALLED)
         if self._attempts >= self._max_attempts:
             return Done(OUTCOME_CAPPED)
         return Continue(self._followup(verdict))

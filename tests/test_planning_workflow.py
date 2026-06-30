@@ -94,8 +94,31 @@ def test_validate_tasks_flags_problems():
     )
     assert any("unknown status" in e for e in bad_status)
 
+    # Common LLM synonyms ("completed" / "in-progress") are tolerated, not flagged.
+    alias_status = A.validate_tasks(
+        {
+            "version": 1,
+            "tasks": [
+                {"id": "T1", "status": "completed"},
+                {"id": "T2", "status": "in-progress", "depends_on": ["T1"]},
+            ],
+        }
+    )
+    assert not any("unknown status" in e for e in alias_status)
+
     bad_version = A.validate_tasks({"version": 2, "tasks": []})
     assert any("version" in e for e in bad_version)
+
+
+def test_task_status_synonyms_normalize():
+    assert A.normalize_task_status("completed") == "complete"
+    assert A.normalize_task_status("Done") == "complete"
+    assert A.normalize_task_status("in-progress") == "in_progress"
+    assert A.normalize_task_status("InProgress") == "in_progress"
+    assert A.normalize_task_status("todo") == "pending"
+    assert A.normalize_task_status("complete") == "complete"
+    assert A.normalize_task_status("weird") is None
+    assert A.normalize_task_status(None) is None
 
 
 # ── change-request archiving ─────────────────────────────────────────────────

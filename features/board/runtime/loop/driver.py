@@ -18,7 +18,12 @@ from dataclasses import dataclass
 from agent_team.features.board.repositories import attempts as attempts_repo
 from agent_team.features.board.runtime import task_journal
 from agent_team.features.board.runtime.loop.budget import LoopBudget, LoopLedger
-from agent_team.features.board.runtime.loop.controller import Done, LoopController
+from agent_team.features.board.runtime.loop.controller import (
+    DEFAULT_MAX_ZERO_STREAK,
+    OUTCOME_STALLED,
+    Done,
+    LoopController,
+)
 from agent_team.features.board.runtime.loop.evaluator import Evaluator
 from agent_team.features.board.runtime.loop.planner import Planner
 from agent_team.features.board.runtime.loop.status import (
@@ -51,6 +56,11 @@ OUTCOME_NEEDS_ANSWERS = "needs_answers"
 _TERMINAL_JOURNAL: dict[str, tuple[str, str, str]] = {
     "complete": ("state_change", "info", "Loop complete — objective verified"),
     "capped": ("state_change", "warning", "Loop stopped — attempt cap reached (needs human)"),
+    OUTCOME_STALLED: (
+        "state_change",
+        "warning",
+        "Loop stopped — no progress (stuck at 0%, needs human)",
+    ),
     OUTCOME_BUDGET: ("risk", "warning", "Loop stopped — resource budget exceeded"),
     OUTCOME_CANCELLED: ("state_change", "warning", "Loop cancelled"),
 }
@@ -58,7 +68,7 @@ _TERMINAL_JOURNAL: dict[str, tuple[str, str, str]] = {
 #: Terminal outcomes that signal *process friction* — the loop could not reach a
 #: verified completion within its limits. These surface on the board Friction
 #: page so a human can fix the underlying blocker (missing tests, env, scope).
-_FRICTION_OUTCOMES = frozenset({"capped", OUTCOME_BUDGET})
+_FRICTION_OUTCOMES = frozenset({"capped", OUTCOME_STALLED, OUTCOME_BUDGET})
 
 
 @dataclass
@@ -68,6 +78,9 @@ class GeneratorTurn:
     run_id: str | None
     final_text: str
     cancelled: bool
+    #: The generator run ended in an error (e.g. a provider rate/credit limit) so
+    #: there is no work to grade. Counts as zero progress for the stall guard.
+    errored: bool = False
     #: Resource use of the turn, folded into the budget ledger.
     tokens: int = 0
     cost_usd: float = 0.0
@@ -146,6 +159,7 @@ async def run_loop(
     questions_pending: Callable[[], bool] | None = None,
     ledger: LoopLedger | None = None,
     journal_terminal: bool = True,
+    max_zero_streak: int = DEFAULT_MAX_ZERO_STREAK,
 ) -> LoopOutcome:
     """Drive a task to a verified result; returns the terminal outcome.
 
@@ -207,7 +221,11 @@ async def run_loop(
             plan_path = None
 
     controller = LoopController(
-        objective, max_attempts=max_attempts, plan_path=plan_path, preamble=preamble
+        objective,
+        max_attempts=max_attempts,
+        plan_path=plan_path,
+        preamble=preamble,
+        max_zero_streak=max_zero_streak,
     )
     prompt = controller.start()
 
@@ -234,11 +252,11 @@ async def run_loop(
                 metadata={"outcome": outcome, "attempts": controller.attempts},
             )
         if journal_terminal and outcome in _FRICTION_OUTCOMES:
-            reason = (
-                "attempt cap reached"
-                if outcome == "capped"
-                else "resource budget exceeded"
-            )
+            reason = {
+                "capped": "attempt cap reached",
+                OUTCOME_STALLED: "no progress for several attempts (stuck at 0%)",
+                OUTCOME_BUDGET: "resource budget exceeded",
+            }.get(outcome, "could not verify completion")
             body = (
                 f"The loop stopped without a verified pass ({reason}). A human "
                 "should check what blocked verification before re-running."
@@ -316,17 +334,40 @@ async def run_loop(
             )
             return await asyncio.to_thread(_finish, attempt_id, OUTCOME_NEEDS_ANSWERS)
 
+        # A generator run that errored (e.g. a provider rate/credit limit) left no
+        # work to grade — skip the evaluator entirely and count it as a zero-
+        # progress attempt, so the stall guard can stop the loop instead of
+        # grading empty output to 0% over and over.
         verdict: Verdict | None = None
-        try:
-            verdict = await evaluator.evaluate(
-                objective=objective,
-                generator_summary=turn.final_text,
-                workspace_path=workspace_path,
-                attempt_id=attempt_id,
+        if turn.errored:
+            await asyncio.to_thread(
+                task_journal.record,
+                task_id=task_id,
+                phase="execution",
+                type="friction",
+                title=f"Generator run failed (attempt {controller.attempts + 1})",
+                body=(
+                    "The generator run did not complete — often a provider "
+                    "rate/credit limit or an infrastructure error. No output to "
+                    "grade; counted as a zero-progress attempt."
+                ),
+                actor_type="system",
+                severity="warning",
+                refs=task_journal.refs(run_id=turn.run_id, attempt_id=attempt_id),
             )
-        except Exception:  # noqa: BLE001 — fail-open: a broken judge must not wedge
-            logger.warning("loop evaluation failed for task %s", task_id, exc_info=True)
-            verdict = None
+        else:
+            try:
+                verdict = await evaluator.evaluate(
+                    objective=objective,
+                    generator_summary=turn.final_text,
+                    workspace_path=workspace_path,
+                    attempt_id=attempt_id,
+                )
+            except Exception:  # noqa: BLE001 — fail-open: a broken judge must not wedge
+                logger.warning(
+                    "loop evaluation failed for task %s", task_id, exc_info=True
+                )
+                verdict = None
 
         if verdict is not None:
             last_verdict = verdict
@@ -351,7 +392,7 @@ async def run_loop(
                 metadata={"verdict": _v, "score": verdict.score},
             )
 
-        step = controller.on_attempt_finished(verdict)
+        step = controller.on_attempt_finished(verdict, errored=turn.errored)
         if isinstance(step, Done):
             return await asyncio.to_thread(_finish, attempt_id, step.outcome)
 
