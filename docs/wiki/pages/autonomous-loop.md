@@ -1,7 +1,8 @@
 # Autonomous loop
 
-Last updated: 2026-06-29 · [↩ index](../index.md) · Source:
+Last updated: 2026-06-30 · [↩ index](../index.md) · Source:
 [`../../plans/loop-engineering.md`](../../plans/loop-engineering.md),
+[`../../plans/loop-quality-and-self-improvement.md`](../../plans/loop-quality-and-self-improvement.md),
 `features/board/runtime/loop/`
 
 Turning a task into a **verified** result, not just one streamed answer.
@@ -38,7 +39,7 @@ Modules under `runtime/loop/`:
 | `controller.py` | **No-I/O** decision logic: first prompt, continue-vs-stop. Testable in isolation. |
 | `driver.py` | The I/O loop: run generator → evaluate → apply the controller's decision → publish status. |
 | `evaluator.py` | The independent verifier worker. |
-| `verdict.py` | The structured verdict shape (`pass`/`fail`/`needs_human` + score + missing + evidence). |
+| `verdict.py` | The structured verdict shape (`pass`/`fail`/`needs_human` + score + missing + evidence + the evaluator's own `eval_tokens`/`eval_cost_usd`). Also `has_verification_evidence` and `format_evidence_digest` (the compact evidence summary relayed into the next attempt). |
 | `budget.py` | `LoopBudget` (caps) + `LoopLedger` (running token/cost/runtime accounting). |
 | `status.py` | `LoopState` (persisted) + `LoopStatus` (live snapshot) + `outcome_to_state`. |
 | `service.py` | Entry points: `start_autonomous_loop`, the planner wrapper, etc. |
@@ -54,6 +55,14 @@ Modules under `runtime/loop/`:
   otherwise" — and to *act* (run the project's tests/lint/build), not just read
   the transcript. The **backend** applies `complete` only after the evaluator
   returns `pass`. The generator may at most claim `in_progress` / `ready_for_review`.
+- **A `pass` must be evidence-backed, or it is downgraded.** `service.py`
+  downgrades any `pass` that carries no verification evidence (no commands/checks
+  run) to `fail` via `_downgrade_unverified_pass` — a rubber-stamp without
+  evidence is not a verified completion (this is what makes D5 real). On a
+  `fail`, the controller relays a compact **evidence digest**
+  (`format_evidence_digest`) into the next attempt's prompt so the generator
+  fixes the exact gap instead of guessing. See
+  [`decisions.md`](../decisions.md) D13.
 - **Continuation is a normal user message** appended to the same thread — no
   system-prompt mutation, no toolset swap — so the prompt cache stays warm.
 - **Fail-open judging.** Evaluator/judge failures are treated as "continue"; the
@@ -106,6 +115,11 @@ point so the cockpit shows a progress chip; the UI invalidates on the SSE event.
 **attempt cap** (`max_attempts`) lives on the controller (it shapes the continue
 decision), separate from the resource budget. On any cap the loop **hard-stops →
 `waiting_for_human`**, never a silent `failed`.
+
+The ledger counts **both** sides of every attempt: the generator's spend **and**
+the evaluator's own `eval_tokens`/`eval_cost_usd` (`driver.py` and `task_graph.py`
+call `ledger.add(...)` for the verdict). Verification is not free, so a cheap
+generator with an expensive evaluator no longer silently overruns the budget.
 
 ## Entry points
 

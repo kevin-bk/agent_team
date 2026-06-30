@@ -1,8 +1,9 @@
 # Planning workflow
 
-Last updated: 2026-06-29 · [↩ index](../index.md) · Source:
+Last updated: 2026-06-30 · [↩ index](../index.md) · Source:
 [`../../plans/planning-workflow-upgrade.md`](../../plans/planning-workflow-upgrade.md),
 [`../../plans/planning-workflow-implementation-decisions.md`](../../plans/planning-workflow-implementation-decisions.md),
+[`../../plans/loop-quality-and-self-improvement.md`](../../plans/loop-quality-and-self-improvement.md),
 `features/board/runtime/loop/planning*.py`
 
 Turning a rough task into an **approved, durable contract** before autonomous
@@ -42,6 +43,36 @@ Helpers live in `runtime/loop/planning_artifacts.py` — they resolve paths
 **inside the workspace only** (reject path traversal), read/write, compute etags,
 and parse/validate JSON. Prompts live in one module
 `runtime/loop/planning_prompts.py`.
+
+### Parsed contracts vs read-as-text guidance
+
+Two of these artifacts behave very differently, and the difference drives where
+their *format* is owned:
+
+- **Backend-parsed contracts** (`TASKS.json`, `EVIDENCE.json`, `QUESTIONS.json`,
+  `PLAN_REVIEW.json`, the `JOURNAL_NOTES.jsonl` note schema, `PLAN_CHANGE_REQUEST`).
+  The backend reads these as structured data and gates on them, so their schemas
+  are **hardcoded in the backend** and versioned. They are the wire protocol
+  between the agents and the loop; letting them drift would silently break the
+  parser or independent verification.
+- **Read-as-text guidance** (`SPEC.md` / `PLAN.md`). The backend only checks they
+  exist (`REQUIRED_FOR_APPROVAL`) and shows them in the cockpit — it does **not**
+  parse their headings. Their *section structure* is therefore guidance, owned by
+  the planner prompt and the optional **`project-harness` skill** (see below),
+  not by the backend.
+
+### Risk lanes — the `project-harness` skill
+
+`build_planning_prompt` no longer hardcodes the SPEC/PLAN section list. Instead it
+**defers to the `project-harness` skill** when present: the planner classifies the
+task's risk into a `quick` / `normal` / `risk` lane and structures `SPEC.md` /
+`PLAN.md` to the matching depth. A built-in fallback essence (cover goal, scope,
+acceptance, verification … in SPEC; approach, alternatives, data/API, rollback …
+in PLAN) keeps boards **without** the skill working. The skill lives as a sibling
+plugin (`community_plugins/project-harness/`); it rides on top of this contract
+and never invents new files. Lane *enforcement* in the backend (e.g. requiring a
+confirming `QUESTIONS.json` for a hard-gate task) is intentionally deferred — see
+[`decisions.md`](../decisions.md) D14 and the [roadmap](../roadmap.md).
 
 ## The lifecycle (mapped onto `loop_state`)
 

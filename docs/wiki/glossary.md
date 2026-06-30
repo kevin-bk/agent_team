@@ -1,6 +1,6 @@
 # Glossary
 
-Last updated: 2026-06-29 · [↩ index](index.md)
+Last updated: 2026-06-30 · [↩ index](index.md)
 
 One-line definitions for the vocabulary used across this wiki.
 
@@ -49,6 +49,17 @@ One-line definitions for the vocabulary used across this wiki.
 - **Planning artifacts** — the files under `.agent-team/` that form the contract:
   `SPEC.md`, `PLAN.md`, `TASKS.json`, `PLAN_REVIEW.json`, `EVIDENCE.json`,
   `PLAN_CHANGE_REQUEST.md`, `QUESTIONS.json`.
+- **Verification evidence** — the commands/checks an evaluator actually ran,
+  recorded in `EVIDENCE.json`; a `pass` without it is downgraded to `fail`
+  (`has_verification_evidence` in `verdict.py`).
+- **Evidence digest** — the compact summary of a failed attempt's evidence
+  (`format_evidence_digest`) relayed into the next attempt's prompt so the
+  generator fixes the exact gap.
+- **`project-harness`** — a sibling skill that classifies a task's risk into a
+  `quick` / `normal` / `risk` lane and sets how deep `SPEC.md`/`PLAN.md` go; the
+  planner prompt defers SPEC/PLAN structure to it (with a built-in fallback).
+- **Risk lane** — the `quick`/`normal`/`risk` grade from `project-harness`; higher
+  lanes demand more planning depth, evidence, and human confirmation.
 - **Task Journal** — an append-only *semantic* timeline of decisions, assumptions,
   questions, approvals, verdicts. Distinct from raw run events.
 - **Agent note inbox** — `.agent-team/JOURNAL_NOTES.jsonl`; agents append

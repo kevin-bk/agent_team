@@ -1,6 +1,6 @@
 # Key decisions (why we built it this way)
 
-Last updated: 2026-06-29 · [↩ index](index.md)
+Last updated: 2026-06-30 · [↩ index](index.md)
 
 ADR-style log of the cross-cutting decisions that shape the plugin. Each entry is
 *decision → why → consequence*. Feature-local decisions live on the feature page;
@@ -106,3 +106,35 @@ rewrite. See [`pages/communication-gateway.md`](pages/communication-gateway.md).
 comm executor. **Why:** loop-resumption logic is intricate; re-implementing it for
 chat would drift. **Consequence:** chat and cockpit always behave identically;
 `approve_plan` from chat parks at `plan_approved` (never auto-runs).
+
+## D13 — Verification must be evidence-backed and budgeted
+
+**Decision:** the evaluator's own token/cost is added to the loop ledger, and a
+`pass` verdict that carries **no verification evidence** (no commands/checks run)
+is downgraded to `fail`; the evidence is relayed into the next attempt's prompt.
+**Why:** (1) evaluator spend was invisible, so budgets undercounted real cost; (2)
+an evaluator can rubber-stamp `pass` without actually running anything — D5's
+"verified completion" is only real if evidence is *required*, not optional.
+**Consequence:** `verdict.eval_tokens`/`eval_cost_usd` + `ledger.add(...)` in
+`driver.py`/`task_graph.py`; `has_verification_evidence` +
+`_downgrade_unverified_pass` in `service.py`; `format_evidence_digest` relayed by
+`controller.py`. See [`pages/autonomous-loop.md`](pages/autonomous-loop.md) and the
+plan [`../plans/loop-quality-and-self-improvement.md`](../plans/loop-quality-and-self-improvement.md).
+
+## D14 — Backend owns parsed contracts; process methodology lives in a skill
+
+**Decision:** artifacts the backend **parses** (`TASKS.json`, `EVIDENCE.json`,
+`QUESTIONS.json`, `PLAN_REVIEW.json`, the journal note schema,
+`PLAN_CHANGE_REQUEST`) stay hardcoded and versioned in the backend; guidance the
+backend only **reads-as-text-and-shows** (the `SPEC.md`/`PLAN.md` section
+structure) is deferred to the optional **`project-harness` skill**, with a
+built-in fallback in the planner prompt. The deciding question is simply *"does the
+backend parse it?"* **Why:** a parsed schema that drifts in an external repo
+silently breaks the parser, and the evaluator/reviewer must verify **independently
+of any skill** — so contracts stay backend. Prose structure, by contrast, benefits
+from no-deploy iteration. **Consequence:** `build_planning_prompt` no longer
+hardcodes `_SPEC_STRUCTURE`/`_PLAN_STRUCTURE`; the `project-harness` skill owns risk
+lanes + lane-graded depth (created as a sibling plugin, board enablement pending);
+backend lane *enforcement* is deferred. See
+[`pages/planning-workflow.md`](pages/planning-workflow.md) and the
+[roadmap](roadmap.md).

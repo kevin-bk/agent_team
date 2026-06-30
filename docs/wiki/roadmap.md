@@ -1,6 +1,6 @@
 # Roadmap
 
-Last updated: 2026-06-29 · [↩ index](index.md)
+Last updated: 2026-06-30 · [↩ index](index.md)
 
 What's shipped, what's next, and the phasing per subsystem. Keep this current —
 it's the first place an agent should look to avoid re-proposing finished work.
@@ -12,6 +12,8 @@ it's the first place an agent should look to avoid re-proposing finished work.
 | Boards / tasks / workspaces / conversations | ✅ shipped |
 | Run runtime + `AgentWorker` (LLM + ACP CLI) | ✅ shipped |
 | Autonomous loop (controller + evaluator + budgets + state machine) | ✅ shipped (some cockpit polish ongoing) |
+| Loop quality (evaluator spend in-budget + evidence-enforced `pass` + evidence digest relay) | ✅ shipped |
+| `project-harness` skill (risk lanes: `quick`/`normal`/`risk`) | 🚧 created as a sibling plugin; board enablement + backend lane enforcement pending |
 | Task-graph execution (`TASKS.json` scheduled in dependency order, opt-in) | ✅ shipped |
 | Strict planning (contract + approval gate + UI + question/plan-change workflow) | ✅ shipped |
 | Task journal (slices 1–3 + read-back) | ✅ shipped |
@@ -58,6 +60,20 @@ Cockpit progress chip from the `loop.status` bus event, the `WaitingForHuman`
 review panel, and optionally auto-moving the task's board column on terminal
 states. Confirm-risky CLI permission mode becomes feasible with the loop layer
 present. See [`../plans/loop-engineering.md`](../plans/loop-engineering.md) §6.
+
+### Loop quality & self-improvement
+**Shipped:** the evaluator's spend is counted in the loop budget, a `pass` without
+verification evidence is downgraded to `fail`, and the evidence digest is relayed
+into the next attempt (see [`decisions.md`](decisions.md) D13). A `project-harness`
+skill (risk lanes that grade SPEC/PLAN depth + evidence + human-confirmation) was
+created as a sibling plugin, and the planner prompt now defers SPEC/PLAN structure
+to it (D14).
+**Pending:** enabling the skill on a board (push to git → register in `skill_packs`
+→ enable); **backend lane enforcement** (e.g. refuse to approve a hard-gate task
+without a confirming `QUESTIONS.json`, or make the evaluator/reviewer lane-aware);
+and **friction → improvement** (let agents log recurring friction and roll it up
+into proposed improvement cards). Reference:
+[`../plans/loop-quality-and-self-improvement.md`](../plans/loop-quality-and-self-improvement.md).
 
 ### Task journal — later
 Optional `journal_note` LangChain tool for LLM agents, an MCP tool for CLI agents,
