@@ -14,6 +14,8 @@ import {
   Hash,
   ListChecks,
   Loader2,
+  Maximize,
+  Minimize,
   RotateCcw,
 } from "@/components/icons";
 import {
@@ -175,6 +177,28 @@ export function LoopPanel({
       >
         <GoalStepper current={stage} />
 
+        {/* Slim status strip (state + iteration + tokens + Stop), merged into
+            the header so it isn't a second boxed banner inside the flow. */}
+        {!awaitingAnswers && state && (stage === "run" || stage === "result") && (
+          <div className="mt-3">
+            <StatusBanner
+              state={state}
+              live={live}
+              info={info}
+              canStop={running && canEdit}
+              stopping={cancel.isPending}
+              onStop={() =>
+                cancel.mutate(undefined, {
+                  onSuccess: (r) =>
+                    r.ok
+                      ? toast.success("Stopping after the current iteration")
+                      : toast.message("No running goal to stop"),
+                })
+              }
+            />
+          </div>
+        )}
+
         <div className="mt-4 flex flex-col gap-5 lg:flex-row lg:items-start">
           {/* Primary flow: wizard stage + live work transcript. */}
           <div className="min-w-0 flex-1 space-y-4">
@@ -203,64 +227,27 @@ export function LoopPanel({
               />
             )}
 
-            {!awaitingAnswers && stage === "run" && state && (
-              <>
-                <StatusBanner state={state} live={live} info={info} />
-                {running && canEdit && (
-                  <div className="flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2">
-                    <Loader2 className="h-4 w-4 animate-spin text-sky-500" />
-                    <span className="text-[13px] text-muted-foreground">
-                      Working on the goal autonomously…
-                    </span>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="ml-auto"
-                      onClick={() =>
-                        cancel.mutate(undefined, {
-                          onSuccess: (r) =>
-                            r.ok
-                              ? toast.success(
-                                  "Stopping after the current iteration",
-                                )
-                              : toast.message("No running goal to stop"),
-                        })
-                      }
-                      disabled={cancel.isPending}
-                    >
-                      <CircleSlash className="h-4 w-4" /> Stop
-                    </Button>
-                  </div>
-                )}
-              </>
-            )}
-
-            {!awaitingAnswers && stage === "result" && state && (
-              <>
-                <StatusBanner state={state} live={live} info={info} />
-                {canEdit && (
-                  <ReviewActions
-                    state={state}
-                    missing={latestEval?.missing ?? ""}
-                    onRunAgain={() => setRestarting(true)}
-                    onAck={() => {
-                      ack.mutate(undefined, {
-                        // The ack clears server state without emitting a
-                        // loop.status event, so drop the live SSE snapshot too —
-                        // otherwise the banner would linger until reopened.
-                        onSuccess: () => clearLive(),
-                        onError: (err) =>
-                          toast.error(
-                            err instanceof Error
-                              ? err.message
-                              : "Could not acknowledge",
-                          ),
-                      });
-                    }}
-                    acking={ack.isPending}
-                  />
-                )}
-              </>
+            {!awaitingAnswers && stage === "result" && state && canEdit && (
+              <ReviewActions
+                state={state}
+                missing={latestEval?.missing ?? ""}
+                onRunAgain={() => setRestarting(true)}
+                onAck={() => {
+                  ack.mutate(undefined, {
+                    // The ack clears server state without emitting a loop.status
+                    // event, so drop the live SSE snapshot too — otherwise the
+                    // banner would linger until reopened.
+                    onSuccess: () => clearLive(),
+                    onError: (err) =>
+                      toast.error(
+                        err instanceof Error
+                          ? err.message
+                          : "Could not acknowledge",
+                      ),
+                  });
+                }}
+                acking={ack.isPending}
+              />
             )}
 
             {/* Full work transcripts for every role (plan / build / critic) */}
@@ -269,9 +256,10 @@ export function LoopPanel({
             )}
           </div>
 
-          {/* Telemetry rail: live task graph + iteration history. */}
+          {/* Telemetry rail: live task graph + iteration history. Sticks while
+              the transcript scrolls so progress stays in view. */}
           {hasRail && (
-            <aside className="w-full shrink-0 space-y-4 lg:w-80 xl:w-96">
+            <aside className="w-full shrink-0 space-y-4 lg:sticky lg:top-2 lg:max-h-[calc(100vh-7rem)] lg:w-80 lg:self-start lg:overflow-auto lg:pr-1 scrollbar-thin xl:w-96">
               {showTasks && info?.tasks && (
                 <TaskGraphProgress tasks={info.tasks} />
               )}
@@ -288,10 +276,16 @@ function StatusBanner({
   state,
   live,
   info,
+  canStop = false,
+  onStop,
+  stopping = false,
 }: {
   state: LoopState;
   live: LiveStatus | null;
   info: { attempts: LoopAttemptDTO[]; objective?: string | null } | undefined;
+  canStop?: boolean;
+  onStop?: () => void;
+  stopping?: boolean;
 }) {
   const meta = LOOP_STATE_META[state];
   const Icon = meta.icon;
@@ -301,20 +295,23 @@ function StatusBanner({
   return (
     <div
       className={cn(
-        "flex items-center gap-3 rounded-lg border border-border px-3.5 py-2.5",
+        "flex items-center gap-2.5 rounded-lg border border-border px-3 py-2",
         meta.tone,
       )}
     >
-      <Icon className={cn("h-5 w-5 shrink-0", meta.active && "animate-spin")} />
-      <div className="min-w-0 flex-1">
-        <p className="text-[13px] font-semibold">Goal · {meta.label}</p>
-        {info?.objective && (
-          <p className="mt-0.5 truncate text-[12px] opacity-80" title={info.objective}>
-            {info.objective}
-          </p>
-        )}
-      </div>
-      <div className="flex shrink-0 items-center gap-3 text-[12px] font-medium tabular-nums">
+      <Icon className={cn("h-4 w-4 shrink-0", meta.active && "animate-spin")} />
+      <span className="shrink-0 text-[12.5px] font-semibold">
+        Goal · {meta.label}
+      </span>
+      {info?.objective && (
+        <span
+          className="hidden min-w-0 flex-1 truncate text-[12px] opacity-70 sm:inline"
+          title={info.objective}
+        >
+          {info.objective}
+        </span>
+      )}
+      <div className="ml-auto flex shrink-0 items-center gap-3 text-[12px] font-medium tabular-nums">
         {attempt > 0 && (
           <span className="inline-flex items-center gap-1" title="Iterations">
             <Hash className="h-3.5 w-3.5" />
@@ -327,6 +324,17 @@ function StatusBanner({
             <Coins className="h-3.5 w-3.5" />
             {tokens.toLocaleString()}
           </span>
+        )}
+        {canStop && onStop && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 px-2"
+            onClick={onStop}
+            disabled={stopping}
+          >
+            <CircleSlash className="h-3.5 w-3.5" /> Stop
+          </Button>
         )}
       </div>
     </div>
@@ -466,6 +474,16 @@ function GoalActivity({
     if (!pinned && liveSourceId) setSelected(liveSourceId);
   }, [liveSourceId, pinned]);
 
+  const [fullscreen, setFullscreen] = useState(false);
+  useEffect(() => {
+    if (!fullscreen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setFullscreen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [fullscreen]);
+
   if (sources.length === 0) return null;
   const current =
     sources.find((s) => s.id === selected) ??
@@ -474,15 +492,22 @@ function GoalActivity({
   const isLive =
     running && info.active_conversation_id === current.conversationId;
 
+  // In full screen the open state is forced so the transcript always shows.
+  const bodyOpen = open || fullscreen;
   return (
-    <div className="rounded-lg border border-border bg-card">
+    <div
+      className={cn(
+        "flex flex-col rounded-lg border border-border bg-card",
+        fullscreen && "fixed inset-0 z-50 rounded-none",
+      )}
+    >
       <div className="flex items-center gap-2 px-3 py-2">
         <button
           type="button"
-          onClick={() => setOpen((v) => !v)}
+          onClick={() => !fullscreen && setOpen((v) => !v)}
           className="flex items-center gap-1.5 text-[13px] font-semibold text-foreground"
         >
-          {open ? (
+          {bodyOpen ? (
             <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
           ) : (
             <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
@@ -490,7 +515,7 @@ function GoalActivity({
           <Bot className="h-3.5 w-3.5 text-muted-foreground" /> Activity
         </button>
         {isLive && <Loader2 className="h-3 w-3 animate-spin text-sky-500" />}
-        {open && sources.length > 1 && (
+        {bodyOpen && sources.length > 1 && (
           <div className="ml-auto w-44">
             <SelectMenu
               value={current.id}
@@ -502,9 +527,30 @@ function GoalActivity({
             />
           </div>
         )}
+        <button
+          type="button"
+          onClick={() => setFullscreen((v) => !v)}
+          title={fullscreen ? "Exit full screen (Esc)" : "Full screen"}
+          aria-label={fullscreen ? "Exit full screen" : "Full screen"}
+          className={cn(
+            "rounded p-1 text-muted-foreground transition-colors hover:bg-surface-3 hover:text-foreground",
+            sources.length > 1 ? "" : "ml-auto",
+          )}
+        >
+          {fullscreen ? (
+            <Minimize className="h-3.5 w-3.5" />
+          ) : (
+            <Maximize className="h-3.5 w-3.5" />
+          )}
+        </button>
       </div>
-      {open && (
-        <div className="max-h-[60vh] overflow-auto border-t border-border scrollbar-thin">
+      {bodyOpen && (
+        <div
+          className={cn(
+            "overflow-auto border-t border-border scrollbar-thin",
+            fullscreen ? "min-h-0 flex-1" : "max-h-[60vh]",
+          )}
+        >
           <GoalTranscript
             key={current.conversationId}
             taskId={taskId}
@@ -539,15 +585,24 @@ function TaskGraphProgress({ tasks }: { tasks: LoopTaskDTO[] }) {
   const done = tasks.filter(
     (t) => t.status === "complete" || t.status === "skipped",
   ).length;
+  const pct = tasks.length ? Math.round((done / tasks.length) * 100) : 0;
   return (
-    <div>
-      <div className="mb-2 flex items-center gap-1.5 text-[13px] font-semibold text-foreground">
-        <ListChecks className="h-3.5 w-3.5 text-muted-foreground" /> Tasks
-        <span className="ml-1 font-normal tabular-nums text-muted-foreground">
-          {done}/{tasks.length} done
-        </span>
+    <div className="rounded-lg border border-border bg-card">
+      <div className="px-3 pb-2.5 pt-2.5">
+        <div className="flex items-center gap-1.5 text-[13px] font-semibold text-foreground">
+          <ListChecks className="h-3.5 w-3.5 text-muted-foreground" /> Tasks
+          <span className="ml-auto font-normal tabular-nums text-muted-foreground">
+            {done}/{tasks.length} done
+          </span>
+        </div>
+        <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-surface-3">
+          <div
+            className="h-full rounded-full bg-emerald-500 transition-all"
+            style={{ width: `${pct}%` }}
+          />
+        </div>
       </div>
-      <ul className="space-y-1">
+      <ul className="border-t border-border">
         {tasks.map((t) => {
           const meta = TASK_STATUS_META[t.status] ?? TASK_STATUS_META.pending;
           const Icon = meta.icon;
@@ -555,14 +610,17 @@ function TaskGraphProgress({ tasks }: { tasks: LoopTaskDTO[] }) {
             <li
               key={t.id}
               className={cn(
-                "flex items-center gap-2 rounded-md border px-2.5 py-1.5",
-                t.status === "in_progress"
-                  ? "border-sky-300 bg-sky-50 dark:border-sky-500/30 dark:bg-sky-500/10"
-                  : "border-border bg-card",
+                "flex items-center gap-2 border-b border-border/60 px-3 py-1.5 last:border-b-0",
+                t.status === "in_progress" &&
+                  "bg-sky-50 dark:bg-sky-500/10",
               )}
             >
               <Icon
-                className={cn("h-4 w-4 shrink-0", meta.cls, meta.spin && "animate-spin")}
+                className={cn(
+                  "h-4 w-4 shrink-0",
+                  meta.cls,
+                  meta.spin && "animate-spin",
+                )}
               />
               <span className="font-mono text-[11px] text-muted-foreground">
                 {t.id}
@@ -592,52 +650,75 @@ function TaskGraphProgress({ tasks }: { tasks: LoopTaskDTO[] }) {
 }
 
 function AttemptTimeline({ attempts }: { attempts: LoopAttemptDTO[] }) {
+  const ordered = [...attempts].reverse();
   return (
-    <div>
-      <div className="mb-2 flex items-center gap-1.5 text-[13px] font-semibold text-foreground">
+    <div className="rounded-lg border border-border bg-card">
+      <div className="flex items-center gap-1.5 px-3 py-2.5 text-[13px] font-semibold text-foreground">
         <Gauge className="h-3.5 w-3.5 text-muted-foreground" /> Iterations
+        <span className="ml-auto font-normal tabular-nums text-muted-foreground">
+          {attempts.length}
+        </span>
       </div>
-      <ul className="space-y-2">
-        {[...attempts].reverse().map((a) => {
-          const verdict = a.evaluations[a.evaluations.length - 1];
-          const vMeta = verdict ? LOOP_VERDICT_META[verdict.verdict] : null;
-          return (
-            <li
-              key={a.id}
-              className="rounded-lg border border-border bg-card px-3 py-2"
-            >
-              <div className="flex items-center gap-2">
-                <span className="font-mono text-[12px] font-semibold text-foreground">
-                  #{a.attempt_no}
-                </span>
-                {a.status === "running" && (
-                  <span className="inline-flex items-center gap-1 text-[11px] text-sky-600 dark:text-sky-300">
-                    <Loader2 className="h-3 w-3 animate-spin" /> running
-                  </span>
-                )}
-                {vMeta && (
-                  <span
-                    className={cn(
-                      "rounded-sm px-1.5 py-0.5 text-[10.5px] font-semibold uppercase tracking-[0.03em]",
-                      vMeta.tone,
-                    )}
-                  >
-                    {vMeta.label}
-                  </span>
-                )}
-                {verdict && <ScoreStars score={verdict.score} />}
-                {a.outcome && (
-                  <span className="ml-auto text-[11px] font-medium text-muted-foreground">
-                    {LOOP_OUTCOME_LABEL[a.outcome] ?? a.outcome}
-                  </span>
-                )}
-              </div>
-              {verdict && <VerdictDetail verdict={verdict} />}
-            </li>
-          );
-        })}
+      <ul className="border-t border-border">
+        {ordered.map((a, i) => (
+          // Only the most recent iteration starts expanded; older ones collapse.
+          <AttemptRow key={a.id} attempt={a} defaultOpen={i === 0} />
+        ))}
       </ul>
     </div>
+  );
+}
+
+function AttemptRow({
+  attempt: a,
+  defaultOpen,
+}: {
+  attempt: LoopAttemptDTO;
+  defaultOpen: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const verdict = a.evaluations[a.evaluations.length - 1];
+  const vMeta = verdict ? LOOP_VERDICT_META[verdict.verdict] : null;
+  const Chevron = open ? ChevronDown : ChevronRight;
+  return (
+    <li className="border-b border-border/60 last:border-b-0">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-surface-1/60"
+      >
+        <Chevron className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        <span className="font-mono text-[12px] font-semibold text-foreground">
+          #{a.attempt_no}
+        </span>
+        {a.status === "running" && (
+          <span className="inline-flex items-center gap-1 text-[11px] text-sky-600 dark:text-sky-300">
+            <Loader2 className="h-3 w-3 animate-spin" /> running
+          </span>
+        )}
+        {vMeta && (
+          <span
+            className={cn(
+              "rounded-sm px-1.5 py-0.5 text-[10.5px] font-semibold uppercase tracking-[0.03em]",
+              vMeta.tone,
+            )}
+          >
+            {vMeta.label}
+          </span>
+        )}
+        {verdict && <ScoreStars score={verdict.score} />}
+        {a.outcome && (
+          <span className="ml-auto text-[11px] font-medium text-muted-foreground">
+            {LOOP_OUTCOME_LABEL[a.outcome] ?? a.outcome}
+          </span>
+        )}
+      </button>
+      {open && verdict && (
+        <div className="px-3 pb-2.5 pl-8">
+          <VerdictDetail verdict={verdict} />
+        </div>
+      )}
+    </li>
   );
 }
 
