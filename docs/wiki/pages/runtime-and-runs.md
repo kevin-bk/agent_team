@@ -1,6 +1,6 @@
 # Runtime & runs
 
-Last updated: 2026-06-29 · [↩ index](../index.md) · Source:
+Last updated: 2026-06-30 · [↩ index](../index.md) · Source:
 [`../../plans/loop-engineering.md`](../../plans/loop-engineering.md),
 `features/board/runtime/`
 
@@ -77,6 +77,29 @@ to change** as new workers and the loop are added.
   `cli:<engine>::<thread_id>` and resumes via `session/load` on a cache miss
   (cold start / restart / dead subprocess). Local helpers live in `runtime/acp/`
   and `runtime/direct_acp.py`.
+
+## Board MCP → CLI agents
+
+A board can give each direct-CLI agent its **own** MCP servers, so the ACP
+subprocess connects to them itself and exposes their tools inside its turn (LLM
+graph agents get MCP a different way — this path is for `cli:*` agents).
+
+- **Storage.** `AgentTeamBoard.agent_mcp_json` — a JSON map
+  `{"cli:<engine>": {"mcpServers": {…}}}`, one config per CLI alias (migration
+  `022_board_agent_mcp.sql`; accessors `agent_mcp()` / `agent_mcp_for(alias)`).
+  Edited from `web-ui/.../board/BoardAgentsDialog.tsx`.
+- **Assembly.** For a `cli:*` run, `local_backend.py` looks up
+  `board.agent_mcp_for(run.agent_alias)`; if it has `mcpServers`, it sets
+  `mcp_config` in the run context and registers the config's secret values for
+  output masking (`_collect_mcp_secrets`).
+- **Down to ACP.** `mcp_config` flows into `runtime/acp/run.py`, then
+  `runtime/acp/mcp.py::mcp_config_to_acp_servers()` converts the standard
+  `{"mcpServers": {…}}` shape into ACP server objects (`McpServerStdio` for
+  `command`, `HttpMcpServer`/`SseMcpServer` for `url`) and passes them to
+  `new_session()` / `load_session()`. Remote (http/sse) servers are forwarded
+  only when the live session **advertised** that transport; otherwise the server
+  is dropped with a warning rather than failing the turn. A string `auth` becomes
+  a bearer `Authorization` header.
 
 ## Cancel & orphan recovery
 

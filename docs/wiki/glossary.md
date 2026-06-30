@@ -26,6 +26,12 @@ One-line definitions for the vocabulary used across this wiki.
 - **MCP** — Model Context Protocol; the standard for plugging external
   tools/connectors into an agent (e.g. a board's MCP servers, or a future journal
   tool for CLI agents).
+- **Per-agent MCP / `agent_mcp_json`** — a board column mapping each CLI alias
+  (`cli:<engine>`) to its own `{"mcpServers": {…}}` config. For a `cli:*` run the
+  backend assembles it (`local_backend.py`) and `runtime/acp/mcp.py` converts it
+  into ACP server objects passed to the ACP session, so the CLI subprocess owns
+  the MCP connection. See [`pages/runtime-and-runs.md`](pages/runtime-and-runs.md)
+  "Board MCP → CLI agents".
 - **Board bus** — the in-process pub/sub (`features/board/board_events.py`,
   `get_board_bus()`) that fans board/task/run/loop events out to the SSE streams
   the cockpit tails (e.g. `loop.status`, `run.started`).
@@ -64,6 +70,14 @@ One-line definitions for the vocabulary used across this wiki.
   questions, approvals, verdicts. Distinct from raw run events.
 - **Agent note inbox** — `.agent-team/JOURNAL_NOTES.jsonl`; agents append
   suggested notes, the backend validates + ingests them.
+- **Friction** — a journal entry (`type: friction`) recording that work was
+  *harder than it should have been* (missing tests/docs, ambiguous scope, a
+  repeated manual step, an unverifiable task). A process/environment defect, not a
+  product bug. Agents log it; the loop also auto-emits one on a `capped`/`budget`
+  terminal.
+- **Friction page** — the board-level **Friction** tab (`GET /boards/{id}/frictions`
+  → `FrictionPanel.tsx`): a read-only list of friction across all tasks for a
+  human to review. No auto-grouping or card creation.
 - **Repo (board)** — a registered git repository; canonical clone is pulled on a
   schedule, each task gets a cheap `--local` working copy on branch
   `agent/<task-key>`.

@@ -7,6 +7,7 @@ import {
   type AutopilotDTO,
   type AutopilotSummaryDTO,
   type BoardDTO,
+  type BoardFrictionDTO,
   type BoardMemberDTO,
   type CliTargetDTO,
   type SkillPackDTO,
@@ -486,6 +487,12 @@ export class ApiClient {
       body: JSON.stringify(body),
     });
   }
+  listBoardFrictions(boardId: string, limit?: number) {
+    const qs = limit != null ? `?limit=${limit}` : "";
+    return this.request<BoardFrictionDTO[]>(
+      `/api/boards/${boardId}/frictions${qs}`,
+    );
+  }
   editTaskPlanningArtifact(
     taskId: string,
     name: string,
@@ -750,6 +757,12 @@ export class ApiClient {
   }
   listTaskRepos(taskId: string) {
     return this.request<TaskRepoDir[]>(`/api/tasks/${taskId}/repos`);
+  }
+  resetTaskRepos(taskId: string) {
+    return this.request<{ prepared: TaskRepoDir[] }>(
+      `/api/tasks/${taskId}/repos/reset`,
+      { method: "POST" },
+    );
   }
   prepareTaskRepos(taskId: string) {
     return this.request<{ prepared: TaskRepoDir[] }>(

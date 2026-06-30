@@ -1821,6 +1821,82 @@ async def test_run_loop_caps_when_never_passing(db, monkeypatch):
     # Fail-open: a broken judge never wedges the loop; the budget caps it.
     assert outcome.outcome == "capped"
     assert outcome.attempts == 3
+    # Capping without a verified pass is process friction — auto-logged so it
+    # surfaces on the board's Friction page.
+    from agent_team.features.board.repositories import journal as journal_repo
+
+    rows = journal_repo.list_board_friction(db, board.id)
+    assert len(rows) == 1
+    entry, ftask = rows[0]
+    assert entry.type == "friction"
+    assert ftask.id == task.id
+    assert "capped" in entry.title
+
+
+def test_friction_is_a_first_class_journal_type(db):
+    """A ``friction`` note is stored as-is; only unknown types fall back to note."""
+    from agent_team.features.board.repositories import journal as journal_repo
+
+    board = boards_repo.create_board(
+        db, name="B", description=None, columns=None, owner_id=None
+    )
+    db.flush()
+    task = tasks_repo.create_task(
+        db, board_id=board.id, title="T", description=None, status="todo",
+        assignee_id=None, labels=None, priority=None, created_by=None,
+    )
+    db.flush()
+
+    friction = journal_repo.append_entry(
+        db, task_id=task.id, type="friction", title="missing fixtures"
+    )
+    bogus = journal_repo.append_entry(
+        db, task_id=task.id, type="not_a_real_type", title="x"
+    )
+    db.commit()
+
+    assert friction.type == "friction"
+    assert bogus.type == "note"
+
+
+def test_list_board_friction_filters_type_and_board(db):
+    """Only ``friction`` entries of *this* board come back, joined to their task."""
+    from agent_team.features.board.repositories import journal as journal_repo
+
+    board = boards_repo.create_board(
+        db, name="B", description=None, columns=None, owner_id=None
+    )
+    other = boards_repo.create_board(
+        db, name="Other", description=None, columns=None, owner_id=None
+    )
+    db.flush()
+    t1 = tasks_repo.create_task(
+        db, board_id=board.id, title="Task one", status="todo",
+        description=None, assignee_id=None, labels=None, priority=None, created_by=None,
+    )
+    t_other = tasks_repo.create_task(
+        db, board_id=other.id, title="Elsewhere", status="todo",
+        description=None, assignee_id=None, labels=None, priority=None, created_by=None,
+    )
+    db.flush()
+
+    journal_repo.append_entry(db, task_id=t1.id, type="friction", title="no fixtures")
+    journal_repo.append_entry(db, task_id=t1.id, type="decision", title="chose X")
+    journal_repo.append_entry(
+        db, task_id=t_other.id, type="friction", title="other board friction"
+    )
+    db.commit()
+
+    rows = journal_repo.list_board_friction(db, board.id)
+    assert len(rows) == 1
+    entry, task = rows[0]
+    assert entry.title == "no fixtures"
+    assert task.id == t1.id
+
+    payload = journal_repo.serialize_board_friction(entry, task)
+    assert payload["task_key"] == task.human_key
+    assert payload["task_title"] == "Task one"
+    assert payload["title"] == "no fixtures"
 
 
 def test_loop_budget_ledger_caps():
@@ -3534,6 +3610,52 @@ def test_repo_sync_clone_and_task_copy(db, tmp_path, monkeypatch):
 
     assert cleanup_task_repos(db, task) == 1
     assert not copy.exists()
+
+
+def test_reset_task_repos_pulls_canonical_and_reclones(db, tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENT_TEAM_WORKSPACE_ROOT", str(tmp_path / "ws"))
+    src = _make_source_repo(tmp_path / "src")
+
+    from pathlib import Path
+
+    from agent_team.features.repos import git_service
+    from agent_team.features.repos import repositories as repos_repo
+    from agent_team.features.repos.schemas import RepoCreate
+    from agent_team.features.repos.task_copy import (
+        prepare_task_repos,
+        reset_task_repos_by_id,
+    )
+
+    repo = repos_repo.create_repo(
+        db, owner_id="owner1", payload=RepoCreate(name="Svc", git_url=str(src))
+    )
+    assert git_service.sync_repo_by_id(repo.id).ok
+    board = boards_repo.create_board(
+        db, name="B", description=None, columns=None, owner_id="owner1"
+    )
+    db.commit()
+    repos_repo.assign_repo(db, board_id=board.id, repo_id=repo.id)
+    task = tasks_repo.create_task(
+        db, board_id=board.id, title="T", description=None, status="todo",
+        assignee_id=None, labels=None, priority=None, created_by=None,
+    )
+    db.commit()
+
+    prepare_task_repos(db, task)
+    copy = Path(task.workspace_path) / repo.slug
+    assert (copy / ".git").exists()
+    assert not (copy / "NEW.md").exists()
+
+    # A new commit lands on the source (default branch) after the copy was made.
+    (src / "NEW.md").write_text("added upstream\n")
+    _git("add", ".", cwd=src)
+    _git("commit", "-q", "-m", "upstream change", cwd=src)
+
+    # Re-prepare pulls the canonical clone, then re-clones the copy from scratch,
+    # so the working copy now carries the upstream commit.
+    prepared = reset_task_repos_by_id(task.id)
+    assert prepared and prepared[0]["slug"] == repo.slug
+    assert (copy / "NEW.md").exists()
 
 
 def test_build_task_context_includes_repos_only_on_first_turn(db):

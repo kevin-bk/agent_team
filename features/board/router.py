@@ -864,6 +864,24 @@ async def prepare_task_repos_endpoint(
     return {"prepared": prepared}
 
 
+@router.post("/tasks/{task_id}/repos/reset")
+async def reset_task_repos_endpoint(
+    task_id: str, request: Request, db: Session = Depends(get_db)
+):
+    """Re-prepare a task's repo copies: pull canonical, then re-clone from scratch.
+
+    Destructive — discards un-pushed work in the old copy. Used to refresh a
+    long-lived task whose copy has drifted behind the default branch.
+    """
+    _, err = authz.guard_task(db, request, task_id, min_role="editor")
+    if err:
+        return err
+    from agent_team.features.repos.task_copy import reset_task_repos_by_id
+
+    prepared = await asyncio.to_thread(reset_task_repos_by_id, task_id)
+    return {"prepared": prepared}
+
+
 # ---------------------------------------------------------------------------
 # Agents (mentionable)
 # ---------------------------------------------------------------------------
@@ -1842,6 +1860,29 @@ async def answer_task_planning(
     except human_actions.ActionError as e:
         return bad_request(str(e))
     return {"ok": True, "task_id": task_id, "resumed": resumed}
+
+
+@router.get("/boards/{board_id}/frictions")
+async def list_board_frictions(
+    board_id: str,
+    request: Request,
+    limit: int = 200,
+    db: Session = Depends(get_db),
+):
+    """Friction signals across the whole board, newest first.
+
+    Friction = a "this was harder than it should have been" note (missing tests,
+    stale docs, ambiguous scope, a repeated manual step). Agents log them as they
+    work and the loop auto-emits one when a task is capped/budget-blocked. This is
+    a read-only tracking list; a human reviews and acts on it.
+    """
+    _, err = authz.guard_board(db, request, board_id, min_role="viewer")
+    if err:
+        return err
+    from agent_team.features.board.repositories import journal as journal_repo
+
+    rows = journal_repo.list_board_friction(db, board_id, limit=limit)
+    return [journal_repo.serialize_board_friction(e, t) for e, t in rows]
 
 
 @router.get("/tasks/{task_id}/journal")

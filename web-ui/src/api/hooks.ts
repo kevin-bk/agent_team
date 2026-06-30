@@ -42,6 +42,7 @@ export const qk = {
   boards: ["boards"] as const,
   board: (id: string) => ["board", id] as const,
   boardTasks: (id: string) => ["board-tasks", id] as const,
+  boardFrictions: (id: string) => ["board-frictions", id] as const,
   boardMembers: (id: string) => ["board-members", id] as const,
   agents: ["agents"] as const,
   cliTargets: ["cli-targets"] as const,
@@ -207,6 +208,16 @@ export function useBoardTasks(boardId: string | undefined) {
     queryFn: () => client.listBoardTasks(boardId as string),
     enabled: !!boardId,
     // Light multi-user freshness until board-SSE lands (plan 16 §9).
+    refetchOnWindowFocus: true,
+  });
+}
+
+export function useBoardFrictions(boardId: string | undefined) {
+  const { client } = useApi();
+  return useQuery({
+    queryKey: qk.boardFrictions(boardId ?? "_"),
+    queryFn: () => client.listBoardFrictions(boardId as string),
+    enabled: !!boardId,
     refetchOnWindowFocus: true,
   });
 }
@@ -971,6 +982,15 @@ export function usePrepareTaskRepos(taskId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: () => client.prepareTaskRepos(taskId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.taskRepos(taskId) }),
+  });
+}
+
+export function useResetTaskRepos(taskId: string) {
+  const { client } = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => client.resetTaskRepos(taskId),
     onSuccess: () => qc.invalidateQueries({ queryKey: qk.taskRepos(taskId) }),
   });
 }

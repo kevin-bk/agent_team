@@ -297,6 +297,42 @@ def prepare_task_repos_by_id(task_id: str) -> list[dict]:
         db.close()
 
 
+def reset_task_repos_by_id(task_id: str, *, pull_canonical: bool = True) -> list[dict]:
+    """Re-create a task's repo working copies from scratch (opens its own session).
+
+    Pulls each board repo's **canonical** clone first (so the fresh copy picks up
+    the latest default-branch commits), removes the existing per-task copies, then
+    re-clones them via :func:`prepare_task_repos`. **Destructive**: any work in the
+    old copy that was not pushed (the `agent/<task-key>` branch, uncommitted
+    changes) is discarded. Canonical pulls are best-effort — a failed pull just
+    means the re-clone uses the canonical as-is.
+    """
+    from core.database.base import SessionLocal
+
+    db = SessionLocal()
+    try:
+        task = db.query(AgentTeamTask).filter(AgentTeamTask.id == task_id).first()
+        if task is None:
+            return []
+        if pull_canonical:
+            from agent_team.features.repos import git_service
+
+            for repo, _branch, _allow, _is_wiki in repos_for_board(db, task.board_id):
+                try:
+                    git_service.sync_repo_by_id(repo.id)
+                except Exception:  # noqa: BLE001 — pull is best-effort
+                    logger.warning(
+                        "task %s: canonical pull of %s before reset failed",
+                        task.human_key,
+                        repo.slug,
+                        exc_info=True,
+                    )
+        cleanup_task_repos(db, task)
+        return prepare_task_repos(db, task)
+    finally:
+        db.close()
+
+
 def list_task_repo_dirs(db: Session, task: AgentTeamTask) -> list[dict]:
     """Return ``{slug, path, present}`` for assigned repos (for the cockpit)."""
     out: list[dict] = []

@@ -1,6 +1,6 @@
 # Board code repositories
 
-Last updated: 2026-06-29 · [↩ index](../index.md) · Source:
+Last updated: 2026-06-30 · [↩ index](../index.md) · Source:
 [`../../plans/board-repositories.md`](../../plans/board-repositories.md),
 `features/repos/`
 
@@ -40,7 +40,7 @@ Task copy : <task workspace>/<repo_slug>/
 | `repositories.py` | data access (`list_for_owner`, `get`, `create`, `repos_for_board`, …). |
 | `git_service.py` | clone/pull/status with credential injection, all via `asyncio.to_thread`; temp SSH key cleaned in `finally`. |
 | `paths.py` | canonical + task-copy path helpers. |
-| `task_copy.py` | `prepare_task_repos(db, task)` → `git clone --local` + checkout branch; `cleanup_task_repos`. |
+| `task_copy.py` | `prepare_task_repos(db, task)` → `git clone --local` + checkout branch; `cleanup_task_repos`; `reset_task_repos_by_id` (pull canonical + re-clone). |
 | `scheduler.py` | `RepoPullTicker` (asyncio + `croniter` + `fcntl` lock). |
 | `git_cred_helper.py` | a bundled git credential helper that fetches the token live from the DB at push time. |
 | `router.py` | `/repos` CRUD (admin) + `/boards/{id}/repos` assign endpoints. |
@@ -65,6 +65,25 @@ Result: direct-CLI agents publish with a plain `git push`; LLM agents use plain
 [`agent-tools-and-autopilot.md`](agent-tools-and-autopilot.md)). Honest caveat:
 the helper runs inside the workspace, so it raises the bar but does not sandbox a
 determined agent.
+
+## Re-running a task: copy is kept, not refreshed
+
+`prepare_task_repos` runs before **every** run (`local_backend`) but is
+**idempotent**: if the task copy already exists it is *not* re-cloned — the agent
+keeps working on its `agent/<task-key>` branch (history preserved), and **new
+commits on the default branch are NOT pulled in**. The scheduler pulls only the
+**canonical** clone; an existing task copy never auto-syncs to it. So a long-lived
+task can drift behind the default branch (and accumulate merge conflicts at push
+time). The copy is only re-created fresh — thus picking up the latest default
+branch — when it is deleted (`cleanup_task_repos`, on task archive/delete) or via
+an explicit reset.
+
+**Reset (re-prepare):** `POST /tasks/{id}/repos/reset` →
+`reset_task_repos_by_id` **pulls each canonical clone, then removes the task
+copies and re-clones them** from the now-updated canonical. It is **destructive**
+— un-pushed work on the task branch is discarded. Surfaced as a **"Re-prepare"**
+button in the cockpit's *Code workspace* card (`TaskRepoCard.tsx`), behind a
+confirm dialog.
 
 ## Scheduler
 

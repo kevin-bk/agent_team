@@ -1,8 +1,8 @@
 # Task Journal
 
-Last updated: 2026-06-29 · [↩ index](../index.md) · Source:
+Last updated: 2026-06-30 · [↩ index](../index.md) · Source:
 [`../../plans/task-journal-plan.md`](../../plans/task-journal-plan.md) · Status:
-**implemented (slices 1–3 + recap injection)**
+**implemented (slices 1–3 + recap injection + friction page)**
 
 A durable, append-only **semantic timeline** of the decisions, assumptions,
 questions, approvals, plan changes, and verdicts across a task.
@@ -33,8 +33,8 @@ sources via references rather than replacing them.
 `refs_json`, `metadata_json`, `supersedes_id`, `created_at`.
 
 - **Types:** `decision`, `assumption`, `question`, `answer`, `approval`,
-  `plan_review`, `plan_change`, `verdict`, `state_change`, `risk`, `note`,
-  `artifact_update`, `task_progress`, `summary`, `correction`.
+  `plan_review`, `plan_change`, `verdict`, `state_change`, `risk`, `friction`,
+  `note`, `artifact_update`, `task_progress`, `summary`, `correction`.
 - **Phases:** `intake`, `planning`, `review`, `approval`, `execution`,
   `verification`, `change_request`, `result`, `system`.
 
@@ -64,6 +64,27 @@ artifact edit, approve, request-changes, approve-and-run, answer, generator
 plan-change/questions, evaluator verdict, task started/complete/blocked, final
 verify, terminal outcome).
 
+## Friction (self-improvement signal)
+
+A **`friction`** entry records that work was *harder than it should have been* —
+missing tests/fixtures, stale docs, ambiguous scope, a repeated manual step, or a
+task the loop could not verify. It is a defect in the **environment/process**
+(which slows the *next* task too), not a bug in the current task's product.
+
+- **Sources.** Agents log them via the note inbox (`{"type":"friction", …}`,
+  guided by the `project-harness` skill). The loop also **auto-emits** one when a
+  task ends without a verified pass: `driver._finish` on `capped`/`budget`
+  (carrying the last evaluator's evidence digest) and the task-graph blocked
+  branch.
+- **Board-level rollup.** `journal.list_board_friction(board_id)` joins each
+  entry to its task (the journal is otherwise per-task) so friction can be listed
+  across the whole board, newest first.
+- **API & UI.** `GET /boards/{id}/frictions` →
+  `web-ui/.../board/FrictionPanel.tsx`, a read-only **Friction** tab on the board.
+- **Deliberately simple.** No automatic grouping, prioritisation, or card
+  creation — a human reviews the list and turns the recurring ones into a fix (see
+  [`decisions.md`](../decisions.md) D15).
+
 ## Durable memory (read-back)
 
 Instead of inlining the whole journal in every prompt, the backend **mirrors the
@@ -77,9 +98,11 @@ file-capable agent can read it, the agent never queries the DB.
 
 - `GET /tasks/{id}/journal` (filter by type/phase/severity, paginate) ·
   `POST /tasks/{id}/journal` (human/editor manual note).
+- `GET /boards/{id}/frictions` — board-wide `friction` rollup for the Friction tab.
 - `web-ui/.../cockpit/JournalPanel.tsx` — a timeline (actor icon, severity rail,
   type/phase chips, ref chips) + filters + a manual-note composer; invalidated on
-  `loop.status` SSE events.
+  `loop.status` SSE events. `web-ui/.../board/FrictionPanel.tsx` — the board-level
+  Friction tab.
 
 ## Related
 

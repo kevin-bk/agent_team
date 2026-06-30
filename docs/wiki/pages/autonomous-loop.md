@@ -121,6 +121,11 @@ the evaluator's own `eval_tokens`/`eval_cost_usd` (`driver.py` and `task_graph.p
 call `ledger.add(...)` for the verdict). Verification is not free, so a cheap
 generator with an expensive evaluator no longer silently overruns the budget.
 
+When the loop hard-stops without a verified pass (`capped`/`budget`, or a
+task-graph block), `driver._finish` / the task-graph blocked branch also record a
+**`friction`** journal entry (carrying the last evidence digest) so the blocker
+surfaces on the board's Friction page → [`task-journal.md`](task-journal.md).
+
 ## Entry points
 
 There is **no** `POST /tasks/{id}/loop`. A task reaches the loop through the

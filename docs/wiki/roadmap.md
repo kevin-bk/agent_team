@@ -13,6 +13,7 @@ it's the first place an agent should look to avoid re-proposing finished work.
 | Run runtime + `AgentWorker` (LLM + ACP CLI) | ✅ shipped |
 | Autonomous loop (controller + evaluator + budgets + state machine) | ✅ shipped (some cockpit polish ongoing) |
 | Loop quality (evaluator spend in-budget + evidence-enforced `pass` + evidence digest relay) | ✅ shipped |
+| Friction self-improvement (journal `friction` type + auto-emit + board Friction page) | ✅ shipped (v1: surfaced for human review) |
 | `project-harness` skill (risk lanes: `quick`/`normal`/`risk`) | 🚧 created as a sibling plugin; board enablement + backend lane enforcement pending |
 | Task-graph execution (`TASKS.json` scheduled in dependency order, opt-in) | ✅ shipped |
 | Strict planning (contract + approval gate + UI + question/plan-change workflow) | ✅ shipped |
@@ -67,12 +68,16 @@ verification evidence is downgraded to `fail`, and the evidence digest is relaye
 into the next attempt (see [`decisions.md`](decisions.md) D13). A `project-harness`
 skill (risk lanes that grade SPEC/PLAN depth + evidence + human-confirmation) was
 created as a sibling plugin, and the planner prompt now defers SPEC/PLAN structure
-to it (D14).
+to it (D14). **Friction capture** also shipped (v1): a `friction` journal type,
+auto-emit on `capped`/`budget` terminals + task-graph blocks, a board-wide rollup
+(`list_board_friction`), and a read-only **Friction** tab — surfaced for human
+review, no auto-clustering or card creation (D15). See
+[`pages/task-journal.md`](pages/task-journal.md).
 **Pending:** enabling the skill on a board (push to git → register in `skill_packs`
 → enable); **backend lane enforcement** (e.g. refuse to approve a hard-gate task
 without a confirming `QUESTIONS.json`, or make the evaluator/reviewer lane-aware);
-and **friction → improvement** (let agents log recurring friction and roll it up
-into proposed improvement cards). Reference:
+and — only if the manual Friction list proves insufficient — optional friction
+**clustering / auto-proposed cards** (deferred per D15). Reference:
 [`../plans/loop-quality-and-self-improvement.md`](../plans/loop-quality-and-self-improvement.md).
 
 ### Task journal — later

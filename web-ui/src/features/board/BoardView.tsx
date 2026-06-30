@@ -1,4 +1,5 @@
 import {
+  AlertTriangle,
   ArrowLeft,
   Bot,
   Calendar,
@@ -61,6 +62,7 @@ import { BoardJiraDialog } from "./BoardJiraDialog";
 import { BoardJiraSyncDialog } from "./BoardJiraSyncDialog";
 import { BoardSettingsDialog } from "./BoardSettingsDialog";
 import { Column } from "./Column";
+import { FrictionPanel } from "./FrictionPanel";
 import { MembersDialog } from "./MembersDialog";
 import { TaskCockpit } from "./TaskCockpit";
 import { TaskDialog } from "./TaskDialog";
@@ -199,6 +201,8 @@ function BoardViewInner({
   const [importOpen, setImportOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [query, setQuery] = useState("");
+  // Which board view is showing: the kanban ("board") or the Friction page.
+  const [view, setView] = useState<"board" | "friction">("board");
   const { client } = useApi();
   const confirm = useConfirm();
 
@@ -476,44 +480,61 @@ function BoardViewInner({
 
         {/* View tab strip (current Jira: blue underline on the active tab). */}
         <div className="mt-2 flex items-center border-b border-border">
-          <PageTab icon={<Columns3 className="h-4 w-4" />} label="Board" active />
+          <PageTab
+            icon={<Columns3 className="h-4 w-4" />}
+            label="Board"
+            active={view === "board"}
+            onClick={() => setView("board")}
+          />
           <PageTab icon={<List className="h-4 w-4" />} label="List" />
           <PageTab icon={<Calendar className="h-4 w-4" />} label="Timeline" />
+          <PageTab
+            icon={<AlertTriangle className="h-4 w-4" />}
+            label="Friction"
+            active={view === "friction"}
+            onClick={() => setView("friction")}
+          />
         </div>
 
-        <FilterBar
-          query={query}
-          onQuery={setQuery}
-          memberOptions={memberOptions}
-          agentOptions={agentOptions}
-          labelOptions={labelOptions}
-          assigneeFilter={assigneeFilter}
-          agentFilter={agentFilter}
-          labelFilter={labelFilter}
-          onToggleAssignee={toggleIn(setAssigneeFilter)}
-          onToggleAgent={toggleIn(setAgentFilter)}
-          onToggleLabel={toggleIn(setLabelFilter)}
-          activeFilterCount={activeFilterCount}
-          onClearFilters={clearAllFilters}
-          onManageMembers={() => setMembersOpen(true)}
-        />
+        {view === "board" && (
+          <FilterBar
+            query={query}
+            onQuery={setQuery}
+            memberOptions={memberOptions}
+            agentOptions={agentOptions}
+            labelOptions={labelOptions}
+            assigneeFilter={assigneeFilter}
+            agentFilter={agentFilter}
+            labelFilter={labelFilter}
+            onToggleAssignee={toggleIn(setAssigneeFilter)}
+            onToggleAgent={toggleIn(setAgentFilter)}
+            onToggleLabel={toggleIn(setLabelFilter)}
+            activeFilterCount={activeFilterCount}
+            onClearFilters={clearAllFilters}
+            onManageMembers={() => setMembersOpen(true)}
+          />
+        )}
       </div>
 
-      <div className="group/board flex flex-1 gap-2 overflow-x-auto bg-background px-8 pb-6 pt-4">
-        {columns.map((column) => (
-          <Column
-            key={column.key}
-            column={column}
-            tasks={tasksInColumn(visibleTasks, column.key)}
-            canEdit={canEdit}
-            membersById={membersById}
-            compact={columns.length <= 8}
-            onTaskClick={(task) => onOpenTask(task.human_key)}
-            onEditTask={(task) => setDialog({ mode: "edit", task })}
-            onAddTask={(status) => setDialog({ mode: "create", status })}
-          />
-        ))}
-      </div>
+      {view === "friction" ? (
+        <FrictionPanel boardId={boardId} onOpenTask={onOpenTask} />
+      ) : (
+        <div className="group/board flex flex-1 gap-2 overflow-x-auto bg-background px-8 pb-6 pt-4">
+          {columns.map((column) => (
+            <Column
+              key={column.key}
+              column={column}
+              tasks={tasksInColumn(visibleTasks, column.key)}
+              canEdit={canEdit}
+              membersById={membersById}
+              compact={columns.length <= 8}
+              onTaskClick={(task) => onOpenTask(task.human_key)}
+              onEditTask={(task) => setDialog({ mode: "edit", task })}
+              onAddTask={(status) => setDialog({ mode: "create", status })}
+            />
+          ))}
+        </div>
+      )}
 
       <TaskDialog
         boardId={boardId}
@@ -820,15 +841,19 @@ function PageTab({
   icon,
   label,
   active,
+  onClick,
 }: {
   icon: ReactNode;
   label: string;
   active?: boolean;
+  onClick?: () => void;
 }) {
   return (
     <button
       type="button"
-      disabled={!active}
+      // Tabs without a handler (List/Timeline) are placeholders and stay inert.
+      disabled={!onClick && !active}
+      onClick={onClick}
       className={cn(
         "-mb-px inline-flex h-9 items-center gap-1.5 border-b-2 px-3 text-[14px] transition-colors duration-100",
         active

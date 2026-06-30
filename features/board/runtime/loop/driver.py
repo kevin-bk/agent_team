@@ -26,7 +26,10 @@ from agent_team.features.board.runtime.loop.status import (
     LoopStatus,
     outcome_to_state,
 )
-from agent_team.features.board.runtime.loop.verdict import Verdict
+from agent_team.features.board.runtime.loop.verdict import (
+    Verdict,
+    format_evidence_digest,
+)
 from core.database.base import SessionLocal
 
 logger = logging.getLogger(__name__)
@@ -51,6 +54,11 @@ _TERMINAL_JOURNAL: dict[str, tuple[str, str, str]] = {
     OUTCOME_BUDGET: ("risk", "warning", "Loop stopped — resource budget exceeded"),
     OUTCOME_CANCELLED: ("state_change", "warning", "Loop cancelled"),
 }
+
+#: Terminal outcomes that signal *process friction* — the loop could not reach a
+#: verified completion within its limits. These surface on the board Friction
+#: page so a human can fix the underlying blocker (missing tests, env, scope).
+_FRICTION_OUTCOMES = frozenset({"capped", OUTCOME_BUDGET})
 
 
 @dataclass
@@ -206,6 +214,10 @@ async def run_loop(
     def _emit(state: LoopState, outcome: str | None = None) -> None:
         _publish(state, attempt=controller.attempts, outcome=outcome)
 
+    #: The most recent verdict, kept so a terminal friction entry can carry the
+    #: evaluator's evidence digest (what the last attempt could/could not prove).
+    last_verdict: Verdict | None = None
+
     def _finish(attempt_id: str, outcome: str) -> LoopOutcome:
         _close_attempt(attempt_id, outcome)
         entry = _TERMINAL_JOURNAL.get(outcome) if journal_terminal else None
@@ -218,6 +230,35 @@ async def run_loop(
                 title=title,
                 actor_type="system",
                 severity=severity,
+                refs=task_journal.refs(attempt_id=attempt_id),
+                metadata={"outcome": outcome, "attempts": controller.attempts},
+            )
+        if journal_terminal and outcome in _FRICTION_OUTCOMES:
+            reason = (
+                "attempt cap reached"
+                if outcome == "capped"
+                else "resource budget exceeded"
+            )
+            body = (
+                f"The loop stopped without a verified pass ({reason}). A human "
+                "should check what blocked verification before re-running."
+            )
+            digest = ""
+            if last_verdict is not None:
+                try:
+                    digest = format_evidence_digest(last_verdict.evidence)
+                except Exception:  # noqa: BLE001 — digest is best-effort context
+                    digest = ""
+            if digest:
+                body += f"\n\nLast evaluator evidence:\n{digest}"
+            task_journal.record(
+                task_id=task_id,
+                phase="result",
+                type="friction",
+                title=f"Loop blocked without verified completion ({outcome})",
+                body=body,
+                actor_type="system",
+                severity="warning",
                 refs=task_journal.refs(attempt_id=attempt_id),
                 metadata={"outcome": outcome, "attempts": controller.attempts},
             )
@@ -288,6 +329,7 @@ async def run_loop(
             verdict = None
 
         if verdict is not None:
+            last_verdict = verdict
             # The evaluator turn is a real agent run (it executes tests/build);
             # fold its spend into the budget so the cap reflects total cost, not
             # just the generator's half.

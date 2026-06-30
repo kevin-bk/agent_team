@@ -120,6 +120,7 @@ JOURNAL_TYPES = frozenset(
         "verdict",
         "state_change",
         "risk",
+        "friction",
         "note",
         "artifact_update",
         "task_progress",

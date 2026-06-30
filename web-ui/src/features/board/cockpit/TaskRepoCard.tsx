@@ -1,7 +1,12 @@
 import { toast } from "sonner";
-import { Check, FolderGit2, Loader2 } from "@/components/icons";
-import { usePrepareTaskRepos, useTaskRepos } from "@/api/hooks";
+import { Check, FolderGit2, Loader2, RefreshCw } from "@/components/icons";
+import {
+  usePrepareTaskRepos,
+  useResetTaskRepos,
+  useTaskRepos,
+} from "@/api/hooks";
 import { Button } from "@/components/ui/button";
+import { useConfirm } from "@/components/ConfirmDialog";
 import { cn } from "@/lib/utils";
 
 /**
@@ -21,11 +26,15 @@ export function TaskRepoCard({
 }) {
   const repos = useTaskRepos(taskId);
   const prepare = usePrepareTaskRepos(taskId);
+  const reset = useResetTaskRepos(taskId);
+  const confirm = useConfirm();
 
   const list = repos.data ?? [];
   if (repos.isLoading || list.length === 0) return null;
 
   const missing = list.some((r) => !r.present);
+  const anyPresent = list.some((r) => r.present);
+  const busy = prepare.isPending || reset.isPending;
 
   const doPrepare = async () => {
     try {
@@ -36,22 +45,57 @@ export function TaskRepoCard({
     }
   };
 
+  const doReset = async () => {
+    const ok = await confirm({
+      title: "Re-prepare workspace?",
+      description:
+        "This pulls the latest canonical code and re-clones each repo from scratch. Any un-pushed work on the task branch will be lost.",
+      confirmLabel: "Re-prepare",
+    });
+    if (!ok) return;
+    try {
+      await reset.mutateAsync();
+      toast.success("Workspace re-prepared from latest");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to re-prepare");
+    }
+  };
+
   return (
     <div className="border-b border-border">
       <div className="flex items-center gap-2 px-4 py-2.5">
         <FolderGit2 className="h-3.5 w-3.5 text-muted-foreground" />
         <span className="text-[13px] font-semibold text-foreground">Code workspace</span>
-        {canEdit && missing && (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="ml-auto"
-            onClick={doPrepare}
-            disabled={prepare.isPending}
-          >
-            {prepare.isPending ? <Loader2 className="animate-spin" /> : null}
-            Prepare
-          </Button>
+        {canEdit && (missing || anyPresent) && (
+          <div className="ml-auto flex items-center gap-1">
+            {missing && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={doPrepare}
+                disabled={busy}
+              >
+                {prepare.isPending ? <Loader2 className="animate-spin" /> : null}
+                Prepare
+              </Button>
+            )}
+            {anyPresent && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={doReset}
+                disabled={busy}
+                title="Pull latest canonical code and re-clone from scratch (discards un-pushed work)"
+              >
+                {reset.isPending ? (
+                  <Loader2 className="animate-spin" />
+                ) : (
+                  <RefreshCw className="h-3.5 w-3.5" />
+                )}
+                Re-prepare
+              </Button>
+            )}
+          </div>
         )}
       </div>
       <div className="grid gap-1 px-3 pb-3">

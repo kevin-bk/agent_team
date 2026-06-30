@@ -138,3 +138,20 @@ lanes + lane-graded depth (created as a sibling plugin, board enablement pending
 backend lane *enforcement* is deferred. See
 [`pages/planning-workflow.md`](pages/planning-workflow.md) and the
 [roadmap](roadmap.md).
+
+## D15 — Friction is surfaced for humans, not auto-actioned
+
+**Decision:** self-improvement v1 is deliberately minimal — agents (and the loop,
+on `capped`/`budget` terminals) record `friction` journal entries, which are
+listed on a board-level **Friction** page for a human to review. The system does
+**not** fingerprint, cluster, prioritise, or auto-create improvement cards. **Why:**
+matching free-text friction across differently-worded notes is brittle, and a
+periodic job that mutates its own backlog is a large, risky surface for little
+proven value; "log honestly → human triages" captures most of the benefit at a
+fraction of the cost (YAGNI). **Consequence:** `friction` added to `JOURNAL_TYPES`
+(no migration — `type` is unconstrained VARCHAR); `journal.list_board_friction`
+joins entries to tasks for the board rollup; `GET /boards/{id}/frictions` +
+`FrictionPanel.tsx`; auto-emit in `driver._finish` and the task-graph blocked
+branch; the `project-harness` skill carries the "when to log friction" guidance.
+Clustering / auto-cards can be reconsidered later if the manual list proves
+insufficient. See [`pages/task-journal.md`](pages/task-journal.md).

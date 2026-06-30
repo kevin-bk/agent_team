@@ -239,6 +239,22 @@ async def run_task_graph(
             severity="warning",
             metadata={"task_key": nxt["id"], "outcome": outcome.outcome},
         )
+        # Surface it as friction so the board's Friction page tracks the blocker.
+        await asyncio.to_thread(
+            task_journal.record,
+            task_id=task_id,
+            phase="execution",
+            type="friction",
+            title=f"Task {nxt['id']} blocked without verified completion ({outcome.outcome})",
+            body=(
+                f"Sub-task {nxt['id']} ({nxt.get('title') or ''}) could not be "
+                f"verified ({outcome.outcome}). A human should check what blocked "
+                "it before re-running."
+            ),
+            actor_type="system",
+            severity="warning",
+            metadata={"task_key": nxt["id"], "outcome": outcome.outcome},
+        )
         return _terminal(LoopState.WAITING_FOR_HUMAN, OUTCOME_NEEDS_HUMAN)
 
     # Every task is complete. Optionally grade the whole SPEC once as a backstop

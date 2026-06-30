@@ -441,6 +441,21 @@ export interface JournalEntryDTO {
   created_at?: string | null;
 }
 
+/** One friction signal on the board Friction page (a journal entry + its task). */
+export interface BoardFrictionDTO {
+  id: string;
+  task_id: string;
+  task_key: string;
+  task_title: string;
+  title: string;
+  body?: string;
+  severity: "info" | "warning" | "blocking";
+  phase: string;
+  actor_type: "human" | "agent" | "system";
+  actor_id?: string | null;
+  created_at?: string | null;
+}
+
 /** Query filters for the journal timeline. */
 export interface JournalFilters {
   type?: string;

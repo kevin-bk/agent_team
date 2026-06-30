@@ -9,6 +9,7 @@ type/phase/severity filtering for the cockpit.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -21,8 +22,12 @@ from agent_team.features.board.models import (
     JOURNAL_SEVERITY_INFO,
     JOURNAL_TYPES,
     AgentTeamJournalEntry,
+    AgentTeamTask,
 )
 from agent_team.features.board.schemas import JournalEntryDTO
+
+#: The journal ``type`` used for friction signals (see the board Friction page).
+JOURNAL_TYPE_FRICTION = "friction"
 
 
 def _coerce(value: str, allowed: frozenset[str], default: str) -> str:
@@ -111,6 +116,56 @@ def list_entries(
         .all()
     )
     return rows
+
+
+def list_board_friction(
+    db: Session,
+    board_id: str,
+    *,
+    limit: int = 200,
+    since: datetime | None = None,
+) -> list[tuple[AgentTeamJournalEntry, AgentTeamTask]]:
+    """Return ``friction`` entries across all tasks of a board, newest first.
+
+    The journal is per-task; this joins each entry to its task so the board-level
+    Friction page can show *which* task hit each friction. Ordered by
+    ``created_at`` descending (then ``seq``) and clamped to ``limit`` (1..500).
+    """
+    query = (
+        db.query(AgentTeamJournalEntry, AgentTeamTask)
+        .join(AgentTeamTask, AgentTeamJournalEntry.task_id == AgentTeamTask.id)
+        .filter(AgentTeamTask.board_id == board_id)
+        .filter(AgentTeamJournalEntry.type == JOURNAL_TYPE_FRICTION)
+    )
+    if since is not None:
+        query = query.filter(AgentTeamJournalEntry.created_at >= since)
+    return (
+        query.order_by(
+            AgentTeamJournalEntry.created_at.desc(),
+            AgentTeamJournalEntry.seq.desc(),
+        )
+        .limit(max(1, min(limit, 500)))
+        .all()
+    )
+
+
+def serialize_board_friction(
+    entry: AgentTeamJournalEntry, task: AgentTeamTask
+) -> dict:
+    """Flatten a friction entry + its task into the board Friction wire shape."""
+    return {
+        "id": entry.id,
+        "task_id": task.id,
+        "task_key": task.human_key,
+        "task_title": task.title,
+        "title": entry.title,
+        "body": entry.body,
+        "severity": entry.severity,
+        "phase": entry.phase,
+        "actor_type": entry.actor_type,
+        "actor_id": entry.actor_id,
+        "created_at": entry.created_at.isoformat() if entry.created_at else None,
+    }
 
 
 def serialize_entry(entry: AgentTeamJournalEntry) -> JournalEntryDTO:
