@@ -636,7 +636,11 @@ export function TaskCockpit({
                   </div>
                 }
               >
-                <CodeWorkspace taskId={task.id} openRequest={codeOpenReq} />
+                <CodeWorkspace
+                  taskId={task.id}
+                  openRequest={codeOpenReq}
+                  canEdit={canEdit}
+                />
               </Suspense>
             </div>
           ) : activeAgent ? (

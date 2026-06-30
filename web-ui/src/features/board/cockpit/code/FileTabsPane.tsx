@@ -1,6 +1,6 @@
 import { FileImage, FileText, X } from "@/components/icons";
 import { cn } from "@/lib/utils";
-import { FileContentViewer } from "./FileContentViewer";
+import { FileContentViewer, type DraftStore } from "./FileContentViewer";
 
 const IMAGE_EXT = new Set([
   "png",
@@ -31,12 +31,16 @@ export function FileTabsPane({
   activePath,
   onActivate,
   onClose,
+  canEdit = false,
+  drafts,
 }: {
   taskId: string;
   openPaths: string[];
   activePath: string | null;
   onActivate: (path: string) => void;
   onClose: (path: string) => void;
+  canEdit?: boolean;
+  drafts?: DraftStore;
 }) {
   if (openPaths.length === 0) {
     return (
@@ -57,6 +61,7 @@ export function FileTabsPane({
         {openPaths.map((path) => {
           const name = path.split("/").pop() ?? path;
           const active = path === activePath;
+          const dirty = drafts?.has(path) ?? false;
           const Icon = isImagePath(path) ? FileImage : FileText;
           return (
             <div
@@ -76,6 +81,12 @@ export function FileTabsPane({
               >
                 <Icon className="h-3.5 w-3.5 shrink-0" />
                 <span className="truncate font-mono">{name}</span>
+                {dirty && (
+                  <span
+                    title="Unsaved changes"
+                    className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400"
+                  />
+                )}
               </button>
               <button
                 type="button"
@@ -94,7 +105,13 @@ export function FileTabsPane({
       <div className="flex min-h-0 flex-1 flex-col">
         {activePath ? (
           // `key` forces a fresh viewer per file so editor/preview state resets.
-          <FileContentViewer key={activePath} taskId={taskId} path={activePath} />
+          <FileContentViewer
+            key={activePath}
+            taskId={taskId}
+            path={activePath}
+            canEdit={canEdit}
+            drafts={drafts}
+          />
         ) : null}
       </div>
     </div>

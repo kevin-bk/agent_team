@@ -1,5 +1,5 @@
 import { FileDiff, FileText, RefreshCw, Search } from "@/components/icons";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { qk, useTaskChanges } from "@/api/hooks";
 import { DiffStatBadge } from "@/components/DiffView";
@@ -7,6 +7,7 @@ import { SelectMenu } from "@/components/ui/select-menu";
 import { cn } from "@/lib/utils";
 import { ChangesView } from "./ChangesView";
 import { FilesView } from "./FilesView";
+import type { DraftStore } from "./FileContentViewer";
 
 type View = "changes" | "files";
 
@@ -20,10 +21,13 @@ type View = "changes" | "files";
 export function CodeWorkspace({
   taskId,
   openRequest,
+  canEdit = false,
 }: {
   taskId: string;
   /** Bump `seq` to open `path` (workspace-relative) in a Files tab. */
   openRequest?: { path: string; seq: number };
+  /** Allow inline editing of files in the Files viewer. */
+  canEdit?: boolean;
 }) {
   const changes = useTaskChanges(taskId);
   const qc = useQueryClient();
@@ -34,6 +38,28 @@ export function CodeWorkspace({
   const [openPaths, setOpenPaths] = useState<string[]>([]);
   const [activePath, setActivePath] = useState<string | null>(null);
 
+  // Unsaved editor text per open path, lifted here so switching tabs (or the
+  // Changes/Files view) doesn't discard a draft. Kept in a ref + a version
+  // counter so the tab strip can show a "dirty" marker without re-rendering the
+  // editor on every keystroke.
+  const draftsRef = useRef<Map<string, string>>(new Map());
+  const [, bumpDrafts] = useState(0);
+  const drafts = useMemo<DraftStore>(
+    () => ({
+      get: (p) => draftsRef.current.get(p),
+      has: (p) => draftsRef.current.has(p),
+      set: (p, v) => {
+        if (draftsRef.current.get(p) === v) return;
+        draftsRef.current.set(p, v);
+        bumpDrafts((n) => n + 1);
+      },
+      clear: (p) => {
+        if (draftsRef.current.delete(p)) bumpDrafts((n) => n + 1);
+      },
+    }),
+    [],
+  );
+
   const openFile = useCallback((path: string) => {
     setOpenPaths((prev) => (prev.includes(path) ? prev : [...prev, path]));
     setActivePath(path);
@@ -42,6 +68,7 @@ export function CodeWorkspace({
 
   const closeFile = useCallback(
     (path: string) => {
+      draftsRef.current.delete(path);
       setOpenPaths((prev) => {
         const idx = prev.indexOf(path);
         if (idx === -1) return prev;
@@ -164,6 +191,8 @@ export function CodeWorkspace({
           onOpen={openFile}
           onActivate={setActivePath}
           onClose={closeFile}
+          canEdit={canEdit}
+          drafts={drafts}
         />
       )}
     </div>

@@ -1,9 +1,24 @@
 import { Editor } from "@monaco-editor/react";
 import type { editor as MonacoEditor } from "monaco-editor";
-import { Code2, Download, Eye, FileImage, RefreshCw } from "@/components/icons";
-import { useMemo, useState } from "react";
+import {
+  Code2,
+  Download,
+  Eye,
+  FileImage,
+  RefreshCw,
+  Save,
+  X,
+} from "@/components/icons";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { useApi } from "@/api/ApiProvider";
-import { useTaskFile, useTaskFileBlobUrl } from "@/api/hooks";
+import {
+  qk,
+  useTaskFile,
+  useTaskFileBlobUrl,
+  useWriteTaskFile,
+} from "@/api/hooks";
 import { Markdown } from "@/components/Markdown";
 import { Spinner } from "@/components/ui/spinner";
 import { formatBytes } from "@/lib/format";
@@ -30,6 +45,17 @@ function extOf(path: string): string {
   return dot >= 0 ? name.slice(dot + 1).toLowerCase() : "";
 }
 
+/**
+ * Per-path cache of unsaved editor text, owned by {@link CodeWorkspace}. Lifting
+ * drafts above the (keyed, per-tab) viewer lets edits survive tab/view switches.
+ */
+export interface DraftStore {
+  get(path: string): string | undefined;
+  has(path: string): boolean;
+  set(path: string, value: string): void;
+  clear(path: string): void;
+}
+
 const VIEWER_OPTIONS: MonacoEditor.IEditorConstructionOptions = {
   readOnly: true,
   renderValidationDecorations: "off",
@@ -53,9 +79,15 @@ const VIEWER_OPTIONS: MonacoEditor.IEditorConstructionOptions = {
 export function FileContentViewer({
   taskId,
   path,
+  canEdit = false,
+  drafts,
 }: {
   taskId: string;
   path: string;
+  /** Allow inline editing (Save writes the workspace file). */
+  canEdit?: boolean;
+  /** Shared draft cache so unsaved edits persist across tab switches. */
+  drafts?: DraftStore;
 }) {
   const name = path.split("/").pop() ?? path;
   const isImage = IMAGE_EXT.has(extOf(path));
@@ -63,24 +95,41 @@ export function FileContentViewer({
   if (isImage) {
     return <ImageBody taskId={taskId} path={path} name={name} />;
   }
-  return <TextBody taskId={taskId} path={path} name={name} />;
+  return (
+    <TextBody
+      taskId={taskId}
+      path={path}
+      name={name}
+      canEdit={canEdit}
+      drafts={drafts}
+    />
+  );
 }
 
 function Toolbar({
   name,
   size,
   truncated,
+  dirty,
   children,
 }: {
   name: string;
   size?: number;
   truncated?: boolean;
+  dirty?: boolean;
   children?: React.ReactNode;
 }) {
   return (
     <div className="flex shrink-0 items-center gap-2 border-b border-border bg-surface-2 px-3 py-1.5">
+      {dirty && (
+        <span
+          title="Unsaved changes"
+          className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400"
+        />
+      )}
       <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-foreground">
         {name}
+        {dirty ? " •" : ""}
       </span>
       {size != null && (
         <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
@@ -97,34 +146,107 @@ function TextBody({
   taskId,
   path,
   name,
+  canEdit,
+  drafts,
 }: {
   taskId: string;
   path: string;
   name: string;
+  canEdit: boolean;
+  drafts?: DraftStore;
 }) {
   const { client } = useApi();
+  const qc = useQueryClient();
   const { data, isLoading, isError, error, refetch, isFetching } = useTaskFile(
     taskId,
     path,
   );
+  const write = useWriteTaskFile(taskId);
   const dark = useIsDark();
   const theme = dark ? "agent-team-dark" : "agent-team-light";
   const language = useMemo(() => monacoLanguageFromPath(path), [path]);
   const markdown = isMarkdownPath(path);
-  const [preview, setPreview] = useState(markdown);
+  // Editable files open straight in edit/source mode; the reader can flip to
+  // preview. Read-only viewers keep the rendered preview as the default.
+  const [preview, setPreview] = useState(markdown && !canEdit);
+  const [dirty, setDirty] = useState(false);
+  // Live editor text + the saved baseline it's compared against, both in refs to
+  // avoid re-rendering the editor on every keystroke.
+  const draftRef = useRef<string>("");
+  const baselineRef = useRef<string>("");
+  const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
 
   const isBinary = isError && (error as { status?: number })?.status === 409;
+  // Truncated files only carry a prefix of the content — editing would clobber
+  // the rest, so they stay read-only. Markdown is edited in Source mode.
+  const editable = canEdit && !!data && !isBinary && !data.truncated;
+  const editorIsEditable = editable && !(markdown && preview);
+  // Initial editor text: a pending draft (carried across tab switches) wins over
+  // the on-disk content. Read once per mount (the editor is uncontrolled).
+  const initialText = data ? (drafts?.get(path) ?? data.content) : "";
+
+  useEffect(() => {
+    if (!data) return;
+    baselineRef.current = data.content;
+    const d = drafts?.get(path);
+    draftRef.current = d ?? data.content;
+    setDirty(d !== undefined && d !== data.content);
+  }, [data, drafts, path]);
+
+  const save = async () => {
+    try {
+      await write.mutateAsync({ path, content: draftRef.current });
+      baselineRef.current = draftRef.current;
+      drafts?.clear(path);
+      setDirty(false);
+      // The file changed on disk → its git diff is now stale.
+      void qc.invalidateQueries({ queryKey: qk.taskChanges(taskId) });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to save file");
+    }
+  };
+
+  const discard = () => {
+    draftRef.current = baselineRef.current;
+    editorRef.current?.setValue(baselineRef.current);
+    drafts?.clear(path);
+    setDirty(false);
+  };
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <Toolbar name={name} size={data?.size} truncated={data?.truncated}>
+      <Toolbar name={name} size={data?.size} truncated={data?.truncated} dirty={dirty}>
+        {dirty && (
+          <>
+            <button
+              type="button"
+              onClick={save}
+              disabled={write.isPending}
+              className="inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-[11px] font-medium text-primary-foreground transition-colors hover:opacity-90 disabled:opacity-50"
+            >
+              {write.isPending ? (
+                <Spinner className="h-3 w-3" />
+              ) : (
+                <Save className="h-3 w-3" />
+              )}
+              Save
+            </button>
+            <button
+              type="button"
+              onClick={discard}
+              className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-surface-3 hover:text-foreground"
+            >
+              <X className="h-3 w-3" /> Discard
+            </button>
+          </>
+        )}
         {data && !isBinary && markdown && (
           <div className="mr-1 inline-flex rounded-md border border-border bg-surface-1 p-0.5">
             <ToggleBtn active={preview} onClick={() => setPreview(true)}>
               <Eye className="h-3.5 w-3.5" /> Preview
             </ToggleBtn>
             <ToggleBtn active={!preview} onClick={() => setPreview(false)}>
-              <Code2 className="h-3.5 w-3.5" /> Source
+              <Code2 className="h-3.5 w-3.5" /> {editable ? "Edit" : "Source"}
             </ToggleBtn>
           </div>
         )}
@@ -164,9 +286,28 @@ function TextBody({
           markdown && preview ? (
             <div className="h-full overflow-auto scrollbar-thin">
               <div className="prose-chat mx-auto max-w-3xl px-5 py-4">
-                <Markdown>{data.content}</Markdown>
+                <Markdown>{drafts?.get(path) ?? data.content}</Markdown>
               </div>
             </div>
+          ) : editorIsEditable ? (
+            <Editor
+              className="h-full w-full"
+              language={language}
+              defaultValue={initialText}
+              theme={theme}
+              onMount={(ed) => {
+                editorRef.current = ed;
+              }}
+              onChange={(v) => {
+                const text = v ?? "";
+                draftRef.current = text;
+                const isDirty = text !== baselineRef.current;
+                setDirty(isDirty);
+                if (isDirty) drafts?.set(path, text);
+                else drafts?.clear(path);
+              }}
+              options={{ ...VIEWER_OPTIONS, readOnly: false }}
+            />
           ) : (
             <Editor
               className="h-full w-full"

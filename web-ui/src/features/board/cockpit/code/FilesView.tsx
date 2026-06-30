@@ -1,8 +1,9 @@
-import { FileText } from "@/components/icons";
+import { FileText, Maximize, Minimize } from "@/components/icons";
 import { useEffect, useMemo, useState } from "react";
 import type { GitChangeStatus, TaskChangesResponse } from "@/api/types";
 import { cn } from "@/lib/utils";
 import { STATUS_META } from "./changeMeta";
+import type { DraftStore } from "./FileContentViewer";
 import { FileTabsPane } from "./FileTabsPane";
 import { sortFilesByPriority } from "./filePriority";
 import { WorkspaceTree, type TreeMode } from "./WorkspaceTree";
@@ -23,6 +24,8 @@ export function FilesView({
   onOpen,
   onActivate,
   onClose,
+  canEdit = false,
+  drafts,
 }: {
   taskId: string;
   changes: TaskChangesResponse | undefined;
@@ -35,6 +38,8 @@ export function FilesView({
   onOpen: (path: string) => void;
   onActivate: (path: string) => void;
   onClose: (path: string) => void;
+  canEdit?: boolean;
+  drafts?: DraftStore;
 }) {
   const { changedPaths, statusByPath } = useMemo(() => {
     const status = new Map<string, GitChangeStatus>();
@@ -70,8 +75,26 @@ export function FilesView({
     return sortFilesByPriority(filtered).slice(0, 8);
   }, [changedPaths, search]);
 
+  // Full screen lifts the whole browser (tree + tabs) out of the cramped cockpit
+  // layout into a viewport overlay; Esc (or the toolbar button) exits.
+  const [fullscreen, setFullscreen] = useState(false);
+  useEffect(() => {
+    if (!fullscreen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setFullscreen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [fullscreen]);
+
   return (
-    <div className="flex min-h-0 flex-1 overflow-hidden">
+    <div
+      className={cn(
+        fullscreen
+          ? "fixed inset-0 z-50 flex bg-background"
+          : "flex min-h-0 flex-1 overflow-hidden",
+      )}
+    >
       <aside className="flex min-h-0 w-64 shrink-0 flex-col border-r border-border bg-surface-1">
         {pills.length > 0 && (
           <div className="flex flex-wrap gap-1 border-b border-border p-2">
@@ -102,8 +125,21 @@ export function FilesView({
           </div>
         )}
 
-        <div className="flex items-center gap-1 px-2 py-1.5">
+        <div className="flex items-center justify-between gap-1 px-2 py-1.5">
           <ModeToggle mode={mode} setMode={chooseMode} hasChanges={hasChanges} />
+          <button
+            type="button"
+            onClick={() => setFullscreen((v) => !v)}
+            title={fullscreen ? "Exit full screen (Esc)" : "Full screen"}
+            aria-label={fullscreen ? "Exit full screen" : "Full screen"}
+            className="rounded p-1 text-muted-foreground transition-colors hover:bg-surface-3 hover:text-foreground"
+          >
+            {fullscreen ? (
+              <Minimize className="h-3.5 w-3.5" />
+            ) : (
+              <Maximize className="h-3.5 w-3.5" />
+            )}
+          </button>
         </div>
 
         <WorkspaceTree
@@ -124,6 +160,8 @@ export function FilesView({
           activePath={activePath}
           onActivate={onActivate}
           onClose={onClose}
+          canEdit={canEdit}
+          drafts={drafts}
         />
       </div>
     </div>
