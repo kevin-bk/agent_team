@@ -187,9 +187,14 @@ class SidecarAcpWorker:
                         break
                     elif mtype == proto.MSG_ERROR:
                         errored = True
+                        err_text = str(msg.get("message") or "sidecar error")
+                        logger.error(
+                            "SidecarAcpWorker: sidecar error for run=%s task=%s "
+                            "engine=%s: %s",
+                            ctx.run_id, ctx.task_id, self.engine, err_text,
+                        )
                         await emit(*ev.error(
-                            error_class="SidecarError",
-                            message=str(msg.get("message") or "sidecar error"),
+                            error_class="SidecarError", message=err_text,
                         ))
                         break
                     # MSG_HELLO and unknown types are ignored.
@@ -218,7 +223,20 @@ class SidecarAcpWorker:
             )
             if log_tail:
                 message += f"\n\n--- sidecar log (tail) ---\n{log_tail}"
+            # Mirror to the host log too — run events are easy to miss in the UI
+            # when a turn dies this early, and operators watch the console.
+            logger.error(
+                "SidecarAcpWorker: no output for run=%s task=%s engine=%s %s\n%s",
+                ctx.run_id,
+                ctx.task_id,
+                self.engine,
+                close_info or "(socket not closed abnormally)",
+                log_tail or "(sidecar log empty/unreadable)",
+            )
             await emit(*ev.error(error_class="SidecarNoResult", message=message))
+            # Surface it as the turn's reply too (like _fail does) — an error
+            # event alone renders as a silent, empty turn in the chat UI.
+            final_text = message
 
         if masker.active:
             final_text = masker(final_text)
