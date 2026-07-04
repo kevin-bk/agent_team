@@ -267,46 +267,7 @@ export interface BoardRuntimeProfile {
   strict_isolation?: boolean;
   allow_fallback?: boolean;
   use_server_proxy?: boolean;
-  /** Name/id of a credential account to inject into this board's sandboxes. */
-  credential_account?: string;
 }
-
-/** One provider identity usable by isolated task sandboxes (admin registry). */
-export interface CredentialAccountDTO {
-  id: string;
-  name: string;
-  description: string;
-  provider: string;
-  backend: string;
-  effective_backend: string;
-  material_ref: Record<string, string>;
-  enabled: boolean;
-  weight: number;
-  max_concurrency: number;
-  ready: boolean;
-  created_at?: string | null;
-  updated_at?: string | null;
-}
-
-export interface CredentialProviderInfo {
-  provider: string;
-  label: string;
-  backends: string[];
-  material_keys: string[];
-}
-
-export interface CredentialAccountCreateBody {
-  name: string;
-  description?: string;
-  provider: string;
-  backend?: string;
-  material_ref?: Record<string, string>;
-  enabled?: boolean;
-  weight?: number;
-  max_concurrency?: number;
-}
-
-export type CredentialAccountUpdateBody = Partial<CredentialAccountCreateBody>;
 
 export interface BoardDTO {
   id: string;

@@ -136,7 +136,9 @@ class JiraClient:
             return []
         try:
             # /user/search returns a JSON array (not the object _get is typed for).
-            data: Any = self._get("/rest/api/2/user/search", {"query": q, "maxResults": max_results})
+            data: Any = self._get(
+                "/rest/api/2/user/search", {"query": q, "maxResults": max_results}
+            )
         except JiraError:
             return []
         return data if isinstance(data, list) else []

@@ -20,14 +20,14 @@ from agent_team.features.board.runtime.credentials.backends.mount_backend import
 from agent_team.features.board.runtime.credentials.backends.vault_backend import (
     VaultBackend,
 )
-from agent_team.features.board.runtime.credentials.models import (
-    AgentTeamCredentialAccount,
-)
 from agent_team.features.board.runtime.credentials.registry import (
     default_backend_for,
     requirements_for,
 )
-from agent_team.features.board.runtime.credentials.spec import InjectionPlan
+from agent_team.features.board.runtime.credentials.spec import (
+    InjectionPlan,
+    ResolvedAccount,
+)
 
 #: Available injection backends.
 _BACKENDS: dict[str, CredentialBackend] = {
@@ -37,7 +37,7 @@ _BACKENDS: dict[str, CredentialBackend] = {
 }
 
 
-def build_plan(account: AgentTeamCredentialAccount) -> InjectionPlan:
+def build_plan(account: ResolvedAccount) -> InjectionPlan:
     """Build the injection plan for ``account``.
 
     :raises CredentialError: unknown provider, unwired backend, or a backend

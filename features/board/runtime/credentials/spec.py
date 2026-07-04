@@ -62,6 +62,26 @@ class CredentialRequirement:
     static_env: dict[str, str] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class ResolvedAccount:
+    """A provider identity resolved to concrete material, ready for a backend.
+
+    ORM-free on purpose: the account may come from the AI Code Factory
+    Environment Pool (``config_dir`` → ``material={"host_path": ...}``) or any
+    other source. Backends only read :attr:`name` and :meth:`material_ref`.
+    """
+
+    name: str
+    provider: str
+    #: "" = the provider's default backend (see :mod:`registry`).
+    backend: str = ""
+    #: Reference material, e.g. ``{"host_path": "/…"}`` or ``{"secret_env": "…"}``.
+    material: dict[str, str] = field(default_factory=dict)
+
+    def material_ref(self) -> dict[str, str]:
+        return dict(self.material)
+
+
 @dataclass
 class InjectionPlan:
     """Everything a backend contributes to a sandbox for one account.

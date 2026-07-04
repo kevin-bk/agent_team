@@ -33,7 +33,6 @@ from sqlalchemy.orm import Session
 from agent_team.features.board.models import AgentTeamTask
 from agent_team.features.repos.paths import task_copy_path
 from agent_team.features.repos.repositories import repos_for_board
-from agent_team.features.repos.task_copy import task_branch_name
 
 logger = logging.getLogger(__name__)
 

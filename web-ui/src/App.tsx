@@ -19,7 +19,6 @@ import { BoardView } from "@/features/board/BoardView";
 import { BoardsView } from "@/features/board/BoardsView";
 import { ChatView } from "@/features/chat/ChatView";
 import { ReposPage } from "@/features/repos/ReposPage";
-import { CredentialAccountsPage } from "@/features/credentials/CredentialAccountsPage";
 import { ChannelsPage } from "@/features/comm/ChannelsPage";
 
 const LS_PROFILE = "da.profile";
@@ -27,7 +26,6 @@ const LS_PROFILE = "da.profile";
 function viewFromPath(pathname: string): View {
   if (pathname.startsWith("/chat")) return "chat";
   if (pathname.startsWith("/repositories")) return "repos";
-  if (pathname.startsWith("/credentials")) return "credentials";
   if (pathname.startsWith("/channels")) return "channels";
   return "board";
 }
@@ -63,7 +61,6 @@ function Shell() {
   const goToView = (v: View) => {
     if (v === "board") navigate("/boards");
     else if (v === "repos") navigate("/repositories");
-    else if (v === "credentials") navigate("/credentials");
     else if (v === "channels") navigate("/channels");
     else navigate(`/${v}`);
   };
@@ -144,7 +141,6 @@ export function App() {
           <Route path="chat" element={<ChatRoute />} />
           <Route path="chat/:convId" element={<ChatRoute />} />
           <Route path="repositories" element={<ReposPage />} />
-          <Route path="credentials" element={<CredentialAccountsPage />} />
           <Route path="channels" element={<ChannelsPage />} />
           <Route path="*" element={<Navigate to="/boards" replace />} />
         </Route>

@@ -72,6 +72,7 @@ class SandboxedCliWorker:
                 task_id=ctx.task_id or ctx.run_id,
                 host_workspace_path=ctx.workspace_path,
                 profile=profile,
+                board_id=ctx.board_id,
             )
         except SandboxError as exc:
             if profile.strict_isolation or not profile.allow_fallback:

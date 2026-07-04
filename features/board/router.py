@@ -1119,7 +1119,7 @@ async def autopilot_summary(
     if err:
         return err
 
-    from datetime import UTC, datetime
+    from datetime import datetime
 
     from agent_team.features.board.models import AgentTeamRun, AgentTeamTask
 

@@ -25,12 +25,10 @@ import os
 from agent_team.features.board.runtime.credentials.backends.base import (
     CredentialError,
 )
-from agent_team.features.board.runtime.credentials.models import (
-    AgentTeamCredentialAccount,
-)
 from agent_team.features.board.runtime.credentials.spec import (
     CredentialRequirement,
     InjectionPlan,
+    ResolvedAccount,
 )
 
 
@@ -39,7 +37,7 @@ class VaultBackend:
 
     def plan(
         self,
-        account: AgentTeamCredentialAccount,
+        account: ResolvedAccount,
         req: CredentialRequirement,
     ) -> InjectionPlan:
         if req.kind != "header_token":

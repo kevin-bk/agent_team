@@ -174,6 +174,7 @@ async def prepare_task_sandbox(
     task_id: str,
     host_workspace_path: str,
     profile: RuntimeProfile,
+    board_id: str = "",
     extra_env: dict[str, str] | None = None,
 ) -> Sandbox:
     """Get-or-open-or-resume the sandbox for ``task_id`` and return it ready to use.
@@ -218,17 +219,19 @@ async def prepare_task_sandbox(
             )
         await manager.close(task_id)
 
-    # Credential injection (opt-in via profile.credential_account). Only for the
-    # isolated provider — the local runtime uses the host's own credentials.
+    # Credential injection, driven by the board's staffed coding agents +
+    # remote MCP hosts. Only for the isolated provider — the local runtime uses
+    # the host's own credentials. Each staffed agent's login folder (from the AI
+    # Code Factory pool) is mounted into the same task sandbox.
     plan = None
     merged_env = extra_env
     cred_mounts: list[Any] = []
-    if profile.is_sandboxed and profile.credential_account:
+    if profile.is_sandboxed and board_id:
         from agent_team.features.board.runtime.credentials.service import (
-            build_injection_for,
+            build_injection_for_board,
         )
 
-        plan = build_injection_for(profile.credential_account)
+        plan = build_injection_for_board(board_id)
         if plan is not None:
             if plan.env:
                 merged_env = {**(extra_env or {}), **plan.env}

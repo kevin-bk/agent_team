@@ -1,6 +1,6 @@
 # Isolated runtime (OpenSandbox)
 
-Last updated: 2026-07-02 · [↩ index](../index.md) · Source:
+Last updated: 2026-07-04 · [↩ index](../index.md) · Source:
 [`../../plans/opensandbox-runtime-implementation-plan.md`](../../plans/opensandbox-runtime-implementation-plan.md),
 [`../../plans/opensandbox-phase2-acp-sidecar.md`](../../plans/opensandbox-phase2-acp-sidecar.md),
 `features/board/runtime/sandbox/`
@@ -60,9 +60,9 @@ Workers (`features/board/runtime/workers/`): `registry.resolve_worker` picks
 
 1. `resolve_worker(alias, role, board_id)` resolves the profile and returns the
    worker for the strategy.
-2. Worker calls `prepare_task_sandbox(task_id, workspace, profile)` → open a
-   fresh sandbox (bind-mount the task workspace at `/workspace`), resume a paused
-   one, or reopen a dead one.
+2. Worker calls `prepare_task_sandbox(task_id, workspace, profile, board_id)` →
+   open a fresh sandbox (bind-mount the task workspace at `/workspace` + the
+   board's credential mounts), resume a paused one, or reopen a dead one.
 3. **oneshot:** `exec_shell(argv)` with an `on_stdout` line callback →
    `cli_exec` translator → `emit(event, data)`.
    **acp_sidecar:** `open_sidecar_channel` (start server, resolve `ws://…/acp`)
@@ -80,7 +80,6 @@ AGENT_TEAM_RUNTIME_IMAGE=<reg>/runtime-full:v1 # one image for both strategies
 AGENT_TEAM_RUNTIME_IDLE_MINUTES=30             # pause→reap idle sandboxes
 AGENT_TEAM_RUNTIME_WORKSPACE_MODE=mount        # mount | sync
 AGENT_TEAM_RUNTIME_STRICT=1                    # no host fallback
-AGENT_TEAM_RUNTIME_CREDENTIAL_ACCOUNT=         # optional: default credential account name
 OPEN_SANDBOX_DOMAIN=https://<server>
 OPEN_SANDBOX_API_KEY=<key>
 ```
@@ -92,30 +91,31 @@ default. `GET /api/tasks/{id}/runtime` (`describe_runtime`) powers the cockpit
 
 ## Credentials (`features/board/runtime/credentials/`)
 
-A coding CLI inside a sandbox needs auth. Instead of baking secrets into images,
-register a **credential account** (admin, `Credentials` nav → `/credentials`)
-and point a board at it (Board settings → isolated runtime → **Credential
-account**, or `AGENT_TEAM_RUNTIME_CREDENTIAL_ACCOUNT`). See
+A coding CLI inside a sandbox needs auth. **No second registry** — credentials
+come from the **AI Code Factory Environment Pool** (each Claude/Codex account
+already stores a `config_dir` login folder) and are chosen by the **board's
+staffed agents**. See
 [`../../plans/opensandbox-phase3-credentials.md`](../../plans/opensandbox-phase3-credentials.md).
 
-- **No secret in the DB or API** — an account stores only a *reference*
-  (`material_ref`): a host **env-var name** (`secret_env`) or a host **path**
-  (`host_path` / `pvc_claim`). The real value is read from the host at inject time.
-- **Provider-driven, backend-pluggable** (`registry.PROVIDER_REQUIREMENTS`):
-  - **Claude Code** → `header_token`. Default backend **`env`** (injects
-    `CLAUDE_CODE_OAUTH_TOKEN`, infra-free) — flip to **`vault`** once the server
-    has Credential Vault egress so the real token never enters the sandbox (the
-    egress proxy adds the `Authorization` header).
-  - **Codex** → `config_dir`. Backend **`mount`** — the writable `$CODEX_HOME`
-    (`auth.json`) is mounted so token refresh persists. Because a real secret
-    then lives in the sandbox, **network egress is `deny`-by-default + allowlist**
-    the provider hosts only, so a compromised agent can't exfiltrate it.
-- **Adding a provider** = one descriptor entry; a new `header_token` provider
-  (e.g. GitHub) reuses the `vault` backend with no coding-agent code changes.
-- `prepare_task_sandbox` resolves the account (lazy `core.database` import),
-  builds an `InjectionPlan` (env + mounts + network rules + vault bindings), and
-  passes `network_policy`/`credential_proxy` to `opensandbox.open()`; vault
-  bindings are written post-open via `write_vault()`.
+- **Board-driven.** `build_injection_for_board(board_id)` reads the board's
+  `cli_target_ids()` (`cli:claude`, `cli:codex`), resolves each to a pool account
+  via `ai_code_source.resolve_account_for_provider` (enabled env with a
+  `config_dir`, ordered by `weight`), and **merges** one `InjectionPlan` per
+  provider — so a multi-agent board mounts Claude *and* Codex into the **same**
+  task sandbox. A provider with no pool account is skipped (ambient image login).
+- **Both agents = `config_dir` + `mount`** (`registry.PROVIDER_REQUIREMENTS`):
+  the writable login folder (`CLAUDE_CONFIG_DIR` → `/root/.claude`, `$CODEX_HOME`
+  → `/root/.codex`) is mounted so token refresh persists. Because a real secret
+  lives in the sandbox, **network egress is `deny`-by-default + allowlist** the
+  provider hosts only (under `strict_isolation`), so a compromised agent can't
+  exfiltrate it. `env`/`vault` backends remain for future header-token providers.
+- **Remote MCP still works.** http/sse MCP servers from the board's `agent_mcp`
+  have their hosts added to the egress allow-list; stdio (`command`) MCP is
+  skipped (runs in-sandbox).
+- `prepare_task_sandbox(board_id=…)` builds the merged plan (lazy `core.database`
+  + `ai_code` imports), merges `plan.env`/`plan.mounts`, and passes
+  `network_policy`/`credential_proxy` to `opensandbox.open()`; vault bindings (if
+  any) are written post-open via `write_vault()`.
 
 ## Image (`infra/runtime/`)
 
@@ -123,6 +123,12 @@ account**, or `AGENT_TEAM_RUNTIME_CREDENTIAL_ACCOUNT`). See
   `agent-team-runtime-server` + the `agent_team` runtime subtree (ACP stack +
   protocol only — no `src/`/`core`/`plugins`). ACP session state persists in a
   sandbox-local SQLite via the stdlib store backend (`AGENT_TEAM_ACP_STORE_DB`).
+- **Toolchain baked in:** `node`/`npm`/`npx` (npx-based stdio MCP servers run
+  out of the box), `python`/`python3`/`pip` + `uv`/`uvx` (Python tasks + Python
+  stdio MCP like `uvx mcp-server-git`), `build-essential`+`python3-dev` (native
+  wheels), plus `ripgrep`/`git`/`gh`/`jq`. First-run `npx`/`uvx` package fetches
+  need egress to the registry — fine under allow-all; under a network policy
+  add the registry host (a per-MCP `allow_hosts` field is a planned follow-up).
 
 Built by `scripts/build-runtime-images.sh` (operator runs on their server; the
 app never builds images at runtime). Build context = the plugin root. See

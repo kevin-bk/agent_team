@@ -10,7 +10,6 @@ from agent_team.features.board.models import (
     AgentTeamActivity,
     AgentTeamAttempt,
     AgentTeamAutopilot,
-    AgentTeamTaskSchedule,
     AgentTeamBoard,
     AgentTeamBoardMember,
     AgentTeamComment,
@@ -21,13 +20,11 @@ from agent_team.features.board.models import (
     AgentTeamRun,
     AgentTeamRunEvent,
     AgentTeamTask,
+    AgentTeamTaskSchedule,
     AgentTeamToolOutput,
 )
 from agent_team.features.board.repositories import boards as boards_repo
 from agent_team.features.board.repositories import tasks as tasks_repo
-from agent_team.features.board.runtime.credentials.models import (
-    AgentTeamCredentialAccount,
-)
 from agent_team.features.board.workspace import workspace_path_for
 from agent_team.features.repos.models import AgentTeamBoardRepo, AgentTeamRepo
 from agent_team.plugin import SPA_MOUNT_PATH, AgentTeamPlugin
@@ -53,7 +50,6 @@ _PLUGIN_MODELS = (
     AgentTeamAttempt,
     AgentTeamEvaluation,
     AgentTeamJournalEntry,
-    AgentTeamCredentialAccount,
 )
 
 
@@ -131,47 +127,65 @@ def test_plugin_meta_models_and_menu():
         "plugin_agent_team_comm_external_thread",
         "plugin_agent_team_comm_action_request",
         "plugin_agent_team_comm_inbound_message",
-        "plugin_agent_team_credential_account",
     ]
     menu = plugin.menu_items()
     assert len(menu) == 1
     assert menu[0].url == f"{SPA_MOUNT_PATH}/"
 
 
-def test_build_injection_for_resolves_account(db, monkeypatch):
-    """End-to-end: a persisted account resolves + injects its host secret."""
-    from agent_team.features.board.runtime.credentials.backends.base import (
-        CredentialError,
-    )
-    from agent_team.features.board.runtime.credentials.service import (
-        build_injection_for,
-    )
+def test_build_injection_for_board_merges_pool_and_mcp(db, monkeypatch):
+    """A board's staffed CLI agents + remote MCP produce one merged plan.
 
-    monkeypatch.setenv("HOST_CLAUDE_TOKEN", "sk-ant-oat01-live")
-    db.add(
-        AgentTeamCredentialAccount(
-            name="claude-prod", provider="claude", backend="env",
-            material_ref_json='{"secret_env": "HOST_CLAUDE_TOKEN"}',
-        )
+    Each staffed provider is resolved from the AI Code Factory pool (stubbed
+    here) to a mount, and remote MCP hosts join the egress allow-list.
+    """
+    import json
+
+    from agent_team.features.board.runtime.credentials import service as cred_svc
+    from agent_team.features.board.runtime.credentials.spec import ResolvedAccount
+
+    board = boards_repo.create_board(
+        db, name="Sandbox Board", description=None, columns=None, owner_id=None
     )
-    db.add(
-        AgentTeamCredentialAccount(
-            name="claude-off", provider="claude", backend="env",
-            material_ref_json='{"secret_env": "HOST_CLAUDE_TOKEN"}',
-            enabled=False,
-        )
+    board.cli_targets_json = json.dumps(["cli:claude", "cli:codex"])
+    board.agent_mcp_json = json.dumps(
+        {"cli:claude": {"mcpServers": {"docs": {"url": "https://mcp.example.com/sse"}}}}
     )
     db.commit()
 
-    plan = build_injection_for("claude-prod")
-    assert plan is not None
-    assert plan.env["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-live"
+    def _fake_resolve(provider: str):
+        return ResolvedAccount(
+            name=f"{provider}-pool", provider=provider, backend="mount",
+            material={"host_path": f"/host/{provider}"},
+        )
 
-    # Disabled + unknown accounts fail loud rather than run unauthenticated.
-    with pytest.raises(CredentialError):
-        build_injection_for("claude-off")
-    with pytest.raises(CredentialError):
-        build_injection_for("does-not-exist")
+    monkeypatch.setattr(cred_svc, "resolve_account_for_provider", _fake_resolve)
+
+    plan = cred_svc.build_injection_for_board(board.id)
+    assert plan is not None
+    # Both providers mounted into the same sandbox.
+    mount_paths = {m.mount_path for m in plan.mounts}
+    assert mount_paths == {"/root/.claude", "/root/.codex"}
+    assert plan.env["CLAUDE_CONFIG_DIR"] == "/root/.claude"
+    assert plan.env["CODEX_HOME"] == "/root/.codex"
+    # Remote MCP host allow-listed alongside the provider hosts.
+    targets = {r["target"] for r in plan.network_rules}
+    assert "mcp.example.com" in targets
+    assert "api.anthropic.com" in targets
+
+
+def test_build_injection_for_board_none_when_nothing_to_inject(db, monkeypatch):
+    from agent_team.features.board.runtime.credentials import service as cred_svc
+
+    board = boards_repo.create_board(
+        db, name="Empty Board", description=None, columns=None, owner_id=None
+    )
+    db.commit()
+
+    # No staffed CLI agents and no MCP → nothing to inject.
+    monkeypatch.setattr(cred_svc, "resolve_account_for_provider", lambda _p: None)
+    assert cred_svc.build_injection_for_board(board.id) is None
+    assert cred_svc.build_injection_for_board("does-not-exist") is None
 
 
 # ---------------------------------------------------------------------------
@@ -1704,12 +1718,11 @@ def test_loop_controller_references_plan_when_present():
 
 
 async def test_run_loop_runs_planning_phase_first(db, monkeypatch):
-    from sqlalchemy.orm import sessionmaker
-
     from agent_team.features.board.runtime.loop import driver
     from agent_team.features.board.runtime.loop.driver import GeneratorTurn, run_loop
     from agent_team.features.board.runtime.loop.status import LoopState
     from agent_team.features.board.runtime.loop.verdict import LoopVerdict, Verdict
+    from sqlalchemy.orm import sessionmaker
 
     factory = sessionmaker(bind=db.get_bind(), autoflush=False, future=True)
     monkeypatch.setattr(driver, "SessionLocal", factory)
@@ -1764,11 +1777,10 @@ async def test_run_loop_runs_planning_phase_first(db, monkeypatch):
 
 
 async def test_run_loop_planning_failopen(db, monkeypatch):
-    from sqlalchemy.orm import sessionmaker
-
     from agent_team.features.board.runtime.loop import driver
     from agent_team.features.board.runtime.loop.driver import GeneratorTurn, run_loop
     from agent_team.features.board.runtime.loop.verdict import LoopVerdict, Verdict
+    from sqlalchemy.orm import sessionmaker
 
     factory = sessionmaker(bind=db.get_bind(), autoflush=False, future=True)
     monkeypatch.setattr(driver, "SessionLocal", factory)
@@ -1815,12 +1827,11 @@ async def test_run_loop_planning_failopen(db, monkeypatch):
 
 
 async def test_run_loop_drives_attempts_until_pass(db, monkeypatch):
-    from sqlalchemy.orm import sessionmaker
-
     from agent_team.features.board.repositories import attempts as attempts_repo
     from agent_team.features.board.runtime.loop import driver
     from agent_team.features.board.runtime.loop.driver import GeneratorTurn, run_loop
     from agent_team.features.board.runtime.loop.verdict import LoopVerdict, Verdict
+    from sqlalchemy.orm import sessionmaker
 
     factory = sessionmaker(bind=db.get_bind(), autoflush=False, future=True)
     monkeypatch.setattr(driver, "SessionLocal", factory)
@@ -1875,8 +1886,6 @@ async def test_run_loop_drives_attempts_until_pass(db, monkeypatch):
 
 async def test_run_loop_pauses_on_plan_change_request(db, monkeypatch):
     """A generator that flags the plan pauses the loop before grading."""
-    from sqlalchemy.orm import sessionmaker
-
     from agent_team.features.board.runtime.loop import driver
     from agent_team.features.board.runtime.loop.driver import GeneratorTurn, run_loop
     from agent_team.features.board.runtime.loop.status import (
@@ -1884,6 +1893,7 @@ async def test_run_loop_pauses_on_plan_change_request(db, monkeypatch):
         outcome_to_state,
     )
     from agent_team.features.board.runtime.loop.verdict import LoopVerdict, Verdict
+    from sqlalchemy.orm import sessionmaker
 
     factory = sessionmaker(bind=db.get_bind(), autoflush=False, future=True)
     monkeypatch.setattr(driver, "SessionLocal", factory)
@@ -1928,8 +1938,6 @@ async def test_run_loop_pauses_on_plan_change_request(db, monkeypatch):
 
 async def test_run_loop_pauses_on_questions(db, monkeypatch):
     """A generator that raises blocking questions pauses the loop before grading."""
-    from sqlalchemy.orm import sessionmaker
-
     from agent_team.features.board.runtime.loop import driver
     from agent_team.features.board.runtime.loop.driver import GeneratorTurn, run_loop
     from agent_team.features.board.runtime.loop.status import (
@@ -1937,6 +1945,7 @@ async def test_run_loop_pauses_on_questions(db, monkeypatch):
         outcome_to_state,
     )
     from agent_team.features.board.runtime.loop.verdict import LoopVerdict, Verdict
+    from sqlalchemy.orm import sessionmaker
 
     factory = sessionmaker(bind=db.get_bind(), autoflush=False, future=True)
     monkeypatch.setattr(driver, "SessionLocal", factory)
@@ -1982,13 +1991,12 @@ async def test_run_task_graph_executes_tasks_in_dependency_order(db, monkeypatch
     """The orchestrator schedules by dependency and marks each task complete."""
     import json as _json
 
-    from sqlalchemy.orm import sessionmaker
-
     from agent_team.features.board.runtime.loop import driver
     from agent_team.features.board.runtime.loop import planning_artifacts as A
     from agent_team.features.board.runtime.loop.driver import GeneratorTurn
     from agent_team.features.board.runtime.loop.task_graph import run_task_graph
     from agent_team.features.board.runtime.loop.verdict import LoopVerdict, Verdict
+    from sqlalchemy.orm import sessionmaker
 
     factory = sessionmaker(bind=db.get_bind(), autoflush=False, future=True)
     monkeypatch.setattr(driver, "SessionLocal", factory)
@@ -2050,13 +2058,12 @@ async def test_run_task_graph_blocks_task_that_never_passes(db, monkeypatch, tmp
     """A task that exhausts its attempt cap is marked blocked and escalates."""
     import json as _json
 
-    from sqlalchemy.orm import sessionmaker
-
     from agent_team.features.board.runtime.loop import driver
     from agent_team.features.board.runtime.loop import planning_artifacts as A
     from agent_team.features.board.runtime.loop.driver import GeneratorTurn
     from agent_team.features.board.runtime.loop.task_graph import run_task_graph
     from agent_team.features.board.runtime.loop.verdict import LoopVerdict, Verdict
+    from sqlalchemy.orm import sessionmaker
 
     factory = sessionmaker(bind=db.get_bind(), autoflush=False, future=True)
     monkeypatch.setattr(driver, "SessionLocal", factory)
@@ -2098,10 +2105,9 @@ async def test_run_task_graph_blocks_task_that_never_passes(db, monkeypatch, tmp
 
 
 async def test_run_loop_caps_when_never_passing(db, monkeypatch):
-    from sqlalchemy.orm import sessionmaker
-
     from agent_team.features.board.runtime.loop import driver
     from agent_team.features.board.runtime.loop.driver import GeneratorTurn, run_loop
+    from sqlalchemy.orm import sessionmaker
 
     factory = sessionmaker(bind=db.get_bind(), autoflush=False, future=True)
     monkeypatch.setattr(driver, "SessionLocal", factory)
@@ -2308,7 +2314,9 @@ def test_loop_controller_relays_evidence_in_followup():
             LoopVerdict.FAIL,
             missing="fix the build",
             evidence={
-                "commands": [{"cmd": "npm run build", "exit_code": 2, "summary": "TS2345 cart.ts:42"}]
+                "commands": [
+                    {"cmd": "npm run build", "exit_code": 2, "summary": "TS2345 cart.ts:42"}
+                ]
             },
         )
     )
@@ -2321,12 +2329,11 @@ def test_loop_controller_relays_evidence_in_followup():
 async def test_run_loop_counts_evaluator_spend_in_budget(db, monkeypatch):
     """The evaluator turn's spend must count against the budget, not just the
     generator's — otherwise a token/cost cap silently overshoots."""
-    from sqlalchemy.orm import sessionmaker
-
     from agent_team.features.board.runtime.loop import driver
     from agent_team.features.board.runtime.loop.budget import LoopBudget
     from agent_team.features.board.runtime.loop.driver import GeneratorTurn, run_loop
     from agent_team.features.board.runtime.loop.verdict import LoopVerdict, Verdict
+    from sqlalchemy.orm import sessionmaker
 
     factory = sessionmaker(bind=db.get_bind(), autoflush=False, future=True)
     monkeypatch.setattr(driver, "SessionLocal", factory)
@@ -2377,13 +2384,12 @@ def test_outcome_to_state_routes_caps_to_human():
 
 
 async def test_run_loop_stops_on_token_budget(db, monkeypatch):
-    from sqlalchemy.orm import sessionmaker
-
     from agent_team.features.board.runtime.loop import driver
     from agent_team.features.board.runtime.loop.budget import LoopBudget
     from agent_team.features.board.runtime.loop.driver import GeneratorTurn, run_loop
     from agent_team.features.board.runtime.loop.status import LoopState
     from agent_team.features.board.runtime.loop.verdict import LoopVerdict, Verdict
+    from sqlalchemy.orm import sessionmaker
 
     factory = sessionmaker(bind=db.get_bind(), autoflush=False, future=True)
     monkeypatch.setattr(driver, "SessionLocal", factory)
@@ -2432,14 +2438,13 @@ async def test_run_loop_stops_when_generator_keeps_erroring(db, monkeypatch):
     """A generator that errors every turn (e.g. provider limit) must not loop
     forever grading empty output — the stall guard stops it after N tries and
     the evaluator is never even called."""
-    from sqlalchemy.orm import sessionmaker
-
     from agent_team.features.board.runtime.loop import driver
     from agent_team.features.board.runtime.loop.driver import GeneratorTurn, run_loop
     from agent_team.features.board.runtime.loop.status import (
         LoopState,
         outcome_to_state,
     )
+    from sqlalchemy.orm import sessionmaker
 
     factory = sessionmaker(bind=db.get_bind(), autoflush=False, future=True)
     monkeypatch.setattr(driver, "SessionLocal", factory)
@@ -3923,7 +3928,6 @@ def test_diff_service_file_diff_added_modified_deleted(tmp_path):
 
 def test_diff_service_file_diff_rejects_traversal(tmp_path):
     import pytest
-
     from agent_team.features.repos import diff_service
 
     workspace, _copy = _seed_task_repo_copy(tmp_path)
@@ -4501,8 +4505,8 @@ def test_usage_totals_roundtrip_producer_to_consumer():
     Cursor/Codex don't yet — see the gauge fallback test below.)
     """
     from acp.schema import Usage
-
     from agent_team.features.board.runtime.direct_acp import _parse_usage_totals
+
     from plugins.ai_code.tools._acp_base import _format_usage_totals
 
     usage = Usage.model_validate(
@@ -5223,10 +5227,9 @@ def test_task_schedule_run_tick_advances_cursor(db, monkeypatch):
     """The tick fires due schedules and advances ``next_run_at`` (at-most-once)."""
     from datetime import UTC, datetime, timedelta
 
-    from sqlalchemy.orm import sessionmaker
-
     from agent_team.features.board.runtime import dispatch
     from agent_team.features.board.runtime import task_schedule as ts
+    from sqlalchemy.orm import sessionmaker
 
     factory = sessionmaker(
         bind=db.get_bind(), autoflush=False, autocommit=False, future=True
@@ -5287,9 +5290,8 @@ def test_access_role_owner_member_admin_and_nonmember(db):
     members_repo.add_member(db, board_id=board.id, user_id="u-viewer", role="viewer")
     db.flush()
 
-    role = lambda uid, admin=False: members_repo.access_role(
-        db, board, user_id=uid, is_admin=admin
-    )
+    def role(uid, admin=False):
+        return members_repo.access_role(db, board, user_id=uid, is_admin=admin)
 
     assert role("u-owner") == "owner"
     assert role("u-editor") == "editor"

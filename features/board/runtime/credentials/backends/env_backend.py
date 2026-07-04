@@ -1,13 +1,14 @@
 """``env`` backend — forward a real token into the sandbox environment.
 
-For ``header_token`` credentials (e.g. Claude's ``CLAUDE_CODE_OAUTH_TOKEN``).
-The real secret is read from a **host** env var named by the account's
-``material_ref["secret_env"]`` and placed into the sandbox env under the
-requirement's ``secret_sandbox_env``.
+For ``header_token`` credentials (raw API keys — e.g. a future GitHub token).
+The coding agents authenticate via a login folder (``mount`` backend), so this
+backend is not on their default path. The real secret is read from a **host**
+env var named by the account's ``material_ref["secret_env"]`` and placed into the
+sandbox env under the requirement's ``secret_sandbox_env``.
 
 Trade-off: the real token lives inside the sandbox (readable by the agent). Use
-the ``vault`` backend (Đợt 3) when the auth is header-based and refresh-free
-(Claude) to keep the secret out of the sandbox entirely.
+the ``vault`` backend when the auth is header-based and refresh-free to keep the
+secret out of the sandbox entirely.
 """
 
 from __future__ import annotations
@@ -17,12 +18,10 @@ import os
 from agent_team.features.board.runtime.credentials.backends.base import (
     CredentialError,
 )
-from agent_team.features.board.runtime.credentials.models import (
-    AgentTeamCredentialAccount,
-)
 from agent_team.features.board.runtime.credentials.spec import (
     CredentialRequirement,
     InjectionPlan,
+    ResolvedAccount,
 )
 
 
@@ -31,7 +30,7 @@ class EnvBackend:
 
     def plan(
         self,
-        account: AgentTeamCredentialAccount,
+        account: ResolvedAccount,
         req: CredentialRequirement,
     ) -> InjectionPlan:
         if req.kind != "header_token":

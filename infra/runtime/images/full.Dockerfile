@@ -56,6 +56,8 @@ ENV CLAUDE_CONFIG_DIR=/etc/claude-code
 # --- OS tools the agents lean on ---------------------------------------------
 # ripgrep powers Grep tools; git for diff/commit; jq for shell glue;
 # bubblewrap + socat are needed if Claude Code's BashTool sandboxing kicks in.
+# build-essential + python3-dev let pip/uv build native wheels for tasks whose
+# Python deps ship no prebuilt wheel (psycopg, lxml, etc.).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ripgrep \
         fd-find \
@@ -69,6 +71,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         socat \
         nodejs \
         npm \
+        build-essential \
+        python3-dev \
+        python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
 # --- Coding CLIs --------------------------------------------------------------
@@ -107,8 +112,14 @@ RUN mkdir -p "${CLAUDE_CONFIG_DIR}" /home/sandbox /root \
        done \
     && chmod -R a+rX "${CLAUDE_CONFIG_DIR}" /root/.claude.json /home/sandbox/.claude.json
 
-# --- Python helpers the agent often reaches for -------------------------------
-RUN python3 -m pip install --no-cache-dir \
+# --- Python toolchain the agent often reaches for -----------------------------
+# `python`→`python3` so scripts that call bare `python` work. `uv`/`uvx` is the
+# standard runner for Python-based stdio MCP servers (e.g. `uvx mcp-server-git`)
+# and gives tasks a fast installer/venv manager. Pinned for reproducible builds.
+ARG UV_VERSION=0.5.11
+RUN ln -sf "$(command -v python3)" /usr/local/bin/python \
+    && python3 -m pip install --no-cache-dir \
+        "uv==${UV_VERSION}" \
         ruff==0.6.9 \
         pytest==8.3.3 \
         requests==2.32.3
@@ -163,6 +174,9 @@ RUN claude --version \
     && rg --version \
     && git --version \
     && node --version \
+    && python --version \
+    && uv --version \
+    && uvx --version \
     && python3 -c "import agent_team.features.board.runtime.acp as a; \
 import agent_team.features.board.runtime.sandbox.sidecar_protocol as p; \
 print('acp engines:', sorted(a.ENGINES)); print('sidecar proto v', p.PROTOCOL_VERSION)"

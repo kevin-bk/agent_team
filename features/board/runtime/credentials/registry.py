@@ -10,25 +10,31 @@ from __future__ import annotations
 from agent_team.features.board.runtime.credentials.spec import CredentialRequirement
 
 #: Provider identifier → declarative credential requirements.
+#:
+#: Both coding agents authenticate via a **subscription login folder** (the way
+#: the AI Code Factory Environment Pool stores accounts): Claude in
+#: ``CLAUDE_CONFIG_DIR`` and Codex in ``$CODEX_HOME``. Both are ``config_dir`` ⇒
+#: the ``mount`` backend mounts the (writable) host folder into the sandbox so
+#: the CLI reads its login and can refresh/rewrite auth state in place.
+#:
+#: The ``header_token`` shape (env/vault backends) is intentionally kept in the
+#: codebase for future API-key providers (e.g. GitHub), but is not the default
+#: path — nobody here uses raw API keys for the coding agents.
 PROVIDER_REQUIREMENTS: dict[str, list[CredentialRequirement]] = {
-    # Claude Code subscription: a static ~1yr OAuth token sent as
-    # ``Authorization: Bearer`` to api.anthropic.com. Static + no refresh ⇒
-    # vault-friendly (Đợt 3); ``env`` backend works today (Đợt 1).
+    # Claude Code subscription: `claude /login` writes auth into CLAUDE_CONFIG_DIR.
     # IS_SANDBOX=1 lets bypassPermissions run as root in the container.
     "claude": [
         CredentialRequirement(
-            name="anthropic-oauth",
-            kind="header_token",
+            name="claude-config",
+            kind="config_dir",
             hosts=["api.anthropic.com"],
-            paths=["/v1/*"],
-            secret_sandbox_env="CLAUDE_CODE_OAUTH_TOKEN",
-            auth_type="bearer",
+            target_dir_env="CLAUDE_CONFIG_DIR",
+            mount_path="/root/.claude",
             static_env={"IS_SANDBOX": "1"},
         )
     ],
     # Codex subscription: ChatGPT-account auth stored in $CODEX_HOME/auth.json,
-    # refreshed (token endpoint, body param) and rewritten during use ⇒ needs a
-    # writable mounted dir; not vault-coverable.
+    # refreshed and rewritten during use ⇒ needs a writable mounted dir.
     "codex": [
         CredentialRequirement(
             name="codex-home",
@@ -40,13 +46,10 @@ PROVIDER_REQUIREMENTS: dict[str, list[CredentialRequirement]] = {
     ],
 }
 
-#: Backend used when an account leaves ``backend`` blank. Defaults are the
-#: **infra-free** options so a fresh deploy works without egress ``dns+nft``:
-#: Claude=``env`` (token in-sandbox), Codex=``mount`` (writable auth dir). Flip a
-#: Claude account to ``backend="vault"`` (zero-secret) once the server has the
-#: Credential Vault egress configured.
+#: Backend used when an account leaves ``backend`` blank. Both coding agents use
+#: a login folder ⇒ ``mount``. (API-key providers would default to ``env`` here.)
 DEFAULT_BACKEND_BY_PROVIDER: dict[str, str] = {
-    "claude": "env",
+    "claude": "mount",
     "codex": "mount",
 }
 

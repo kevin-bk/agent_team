@@ -220,7 +220,7 @@ def _rewrite_jira_block_macros(text: str) -> str:
     return _apply_outside_fences(text, fn)
 
 
-def _list_line(m: "re.Match") -> str:
+def _list_line(m: re.Match) -> str:
     """Render a Jira ``*``/``#`` list item as a Markdown list item."""
     markers = m.group(1)
     depth = len(markers)
@@ -310,7 +310,7 @@ def _rewrite_jira_lines(text: str) -> str:
     return "\n".join(out)
 
 
-def _mention(m: "re.Match") -> str:
+def _mention(m: re.Match) -> str:
     """Render a Jira ``[~user]`` mention as ``@user`` (opaque ids → ``@user``)."""
     value = m.group(1).strip()
     if value.lower().startswith("accountid:"):

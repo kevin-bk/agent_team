@@ -11,12 +11,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
-    from agent_team.features.board.runtime.credentials.models import (
-        AgentTeamCredentialAccount,
-    )
     from agent_team.features.board.runtime.credentials.spec import (
         CredentialRequirement,
         InjectionPlan,
+        ResolvedAccount,
     )
 
 
@@ -36,7 +34,7 @@ class CredentialBackend(Protocol):
 
     def plan(
         self,
-        account: AgentTeamCredentialAccount,
+        account: ResolvedAccount,
         req: CredentialRequirement,
     ) -> InjectionPlan:
         """Build the injection fragment for ``req`` using ``account``'s material.

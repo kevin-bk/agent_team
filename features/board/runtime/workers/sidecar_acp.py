@@ -73,6 +73,7 @@ class SidecarAcpWorker:
                 task_id=task_key,
                 host_workspace_path=ctx.workspace_path,
                 profile=profile,
+                board_id=ctx.board_id,
             )
             ws_url = await open_sidecar_channel(sandbox, profile)
         except SandboxError as exc:

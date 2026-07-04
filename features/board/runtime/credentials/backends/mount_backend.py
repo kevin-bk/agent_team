@@ -1,16 +1,18 @@
-"""``mount`` backend — mount a writable config dir into the sandbox.
+"""``mount`` backend — mount a writable login/config dir into the sandbox.
 
-For ``config_dir`` credentials (e.g. Codex's ``$CODEX_HOME`` with ``auth.json``).
-The dir must be **writable** because the CLI refreshes and rewrites its auth
-state during use. The account's ``material_ref`` points at the host source:
+For ``config_dir`` credentials — the login folders both coding agents use:
+Claude's ``CLAUDE_CONFIG_DIR`` (``~/.claude``) and Codex's ``$CODEX_HOME`` (with
+``auth.json``). The dir must be **writable** because the CLI refreshes and
+rewrites its auth state during use. The account's ``material_ref`` points at the
+host source (typically an AI Code Factory environment's ``config_dir``):
 
 * ``{"host_path": "/var/lib/agent-team/codex/acc1"}`` — a host bind mount
   (the path must be in the OpenSandbox server's ``allowed_host_paths``), or
 * ``{"pvc_claim": "at-codex-acc1"}`` — a Docker named volume / PVC.
 
 Security: the mounted secret is readable by the sandboxed agent; the egress
-network policy (Đợt 2, deny-by-default + allowlist of ``req.hosts``) is what
-prevents exfiltration and is mandatory whenever this backend is used.
+network policy (deny-by-default + allowlist of ``req.hosts``) is what prevents
+exfiltration and is mandatory whenever this backend is used.
 """
 
 from __future__ import annotations
@@ -18,12 +20,10 @@ from __future__ import annotations
 from agent_team.features.board.runtime.credentials.backends.base import (
     CredentialError,
 )
-from agent_team.features.board.runtime.credentials.models import (
-    AgentTeamCredentialAccount,
-)
 from agent_team.features.board.runtime.credentials.spec import (
     CredentialRequirement,
     InjectionPlan,
+    ResolvedAccount,
 )
 from agent_team.features.board.runtime.sandbox.config import VolumeMount
 
@@ -33,7 +33,7 @@ class MountBackend:
 
     def plan(
         self,
-        account: AgentTeamCredentialAccount,
+        account: ResolvedAccount,
         req: CredentialRequirement,
     ) -> InjectionPlan:
         if req.kind != "config_dir":

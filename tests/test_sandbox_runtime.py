@@ -694,59 +694,63 @@ async def test_sidecar_worker_strict_fail_when_unavailable(monkeypatch):
     assert "could not be prepared" in result.final_text
 
 
-# ─── credential injection (Phase 3, Đợt 1: env + mount) ────────────────────
+# ─── credential injection (config_dir mounts from the AI Code pool) ────────
 
 
-def _cred_account(**kwargs):
-    from agent_team.features.board.runtime.credentials.models import (
-        AgentTeamCredentialAccount,
+def _resolved(**kwargs):
+    """Build a :class:`ResolvedAccount` (the ORM-free input backends consume)."""
+    from agent_team.features.board.runtime.credentials.spec import ResolvedAccount
+
+    return ResolvedAccount(**kwargs)
+
+
+def _header_req(**kwargs):
+    """A header_token requirement for exercising the env/vault backends directly.
+
+    No provider defaults to these backends anymore (both coding agents mount a
+    login folder), but the backends are kept for future API-key providers, so we
+    test them at the backend seam with a hand-built requirement.
+    """
+    from agent_team.features.board.runtime.credentials.spec import (
+        CredentialRequirement,
     )
 
-    return AgentTeamCredentialAccount(**kwargs)
+    base = dict(
+        name="anthropic-oauth",
+        kind="header_token",
+        hosts=["api.anthropic.com"],
+        secret_sandbox_env="CLAUDE_CODE_OAUTH_TOKEN",
+        auth_type="bearer",
+    )
+    base.update(kwargs)
+    return CredentialRequirement(**base)
 
 
-def test_overlay_accepts_credential_account():
-    cleaned, err = validate_overlay({"credential_account": "claude-acc1"})
-    assert err is None
-    assert cleaned == {"credential_account": "claude-acc1"}
-
-
-def test_env_backend_injects_token(monkeypatch):
+def test_mount_backend_mounts_claude_config():
     from agent_team.features.board.runtime.credentials.injector import build_plan
 
-    monkeypatch.setenv("MY_CLAUDE_TOKEN", "sk-ant-oat01-secret")
-    acc = _cred_account(
-        name="claude-acc1", provider="claude", backend="env",
-        material_ref_json='{"secret_env": "MY_CLAUDE_TOKEN"}',
+    acc = _resolved(
+        name="claude-acc1", provider="claude", backend="mount",
+        material={"host_path": "/var/lib/at/claude/acc1"},
     )
     plan = build_plan(acc)
-    assert plan.env["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-secret"
+    assert len(plan.mounts) == 1
+    mount = plan.mounts[0]
+    assert mount.kind == "host"
+    assert mount.host_path == "/var/lib/at/claude/acc1"
+    assert mount.mount_path == "/root/.claude"
+    assert mount.read_only is False
+    assert plan.env["CLAUDE_CONFIG_DIR"] == "/root/.claude"
     assert plan.env["IS_SANDBOX"] == "1"
-    assert not plan.mounts
     assert {"action": "allow", "target": "api.anthropic.com"} in plan.network_rules
-
-
-def test_env_backend_missing_host_env_raises(monkeypatch):
-    from agent_team.features.board.runtime.credentials.backends.base import (
-        CredentialError,
-    )
-    from agent_team.features.board.runtime.credentials.injector import build_plan
-
-    monkeypatch.delenv("MISSING_TOKEN", raising=False)
-    acc = _cred_account(
-        name="claude-acc2", provider="claude", backend="env",
-        material_ref_json='{"secret_env": "MISSING_TOKEN"}',
-    )
-    with pytest.raises(CredentialError):
-        build_plan(acc)
 
 
 def test_mount_backend_mounts_codex_home():
     from agent_team.features.board.runtime.credentials.injector import build_plan
 
-    acc = _cred_account(
+    acc = _resolved(
         name="codex-acc1", provider="codex", backend="mount",
-        material_ref_json='{"host_path": "/var/lib/at/codex/acc1"}',
+        material={"host_path": "/var/lib/at/codex/acc1"},
     )
     plan = build_plan(acc)
     assert len(plan.mounts) == 1
@@ -761,9 +765,9 @@ def test_mount_backend_mounts_codex_home():
 def test_mount_backend_supports_pvc_claim():
     from agent_team.features.board.runtime.credentials.injector import build_plan
 
-    acc = _cred_account(
+    acc = _resolved(
         name="codex-acc2", provider="codex", backend="mount",
-        material_ref_json='{"pvc_claim": "at-codex-acc2"}',
+        material={"pvc_claim": "at-codex-acc2"},
     )
     plan = build_plan(acc)
     assert plan.mounts[0].kind == "pvc"
@@ -776,28 +780,24 @@ def test_mount_backend_missing_material_raises():
     )
     from agent_team.features.board.runtime.credentials.injector import build_plan
 
-    acc = _cred_account(
-        name="codex-acc3", provider="codex", backend="mount",
-        material_ref_json="{}",
-    )
+    acc = _resolved(name="codex-acc3", provider="codex", backend="mount")
     with pytest.raises(CredentialError):
         build_plan(acc)
 
 
-def test_injector_uses_provider_default_backend(monkeypatch):
-    """No explicit backend → claude defaults to env, codex to mount."""
+def test_injector_uses_provider_default_backend():
+    """No explicit backend → both claude and codex default to mount."""
     from agent_team.features.board.runtime.credentials.injector import build_plan
 
-    monkeypatch.setenv("MY_CLAUDE_TOKEN", "sk-ant-oat01-x")
-    claude = _cred_account(
+    claude = _resolved(
         name="c", provider="claude", backend="",
-        material_ref_json='{"secret_env": "MY_CLAUDE_TOKEN"}',
+        material={"host_path": "/claude"},
     )
-    assert build_plan(claude).env["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-x"
+    assert build_plan(claude).env["CLAUDE_CONFIG_DIR"] == "/root/.claude"
 
-    codex = _cred_account(
+    codex = _resolved(
         name="d", provider="codex", backend="",
-        material_ref_json='{"host_path": "/p"}',
+        material={"host_path": "/codex"},
     )
     assert build_plan(codex).env["CODEX_HOME"] == "/root/.codex"
 
@@ -808,20 +808,56 @@ def test_injector_unknown_provider_raises():
     )
     from agent_team.features.board.runtime.credentials.injector import build_plan
 
-    acc = _cred_account(name="x", provider="gemini", backend="env")
+    acc = _resolved(name="x", provider="gemini", backend="mount")
     with pytest.raises(CredentialError):
         build_plan(acc)
 
 
+def test_env_backend_injects_token(monkeypatch):
+    """The env backend forwards a host secret env into the sandbox (backend seam)."""
+    from agent_team.features.board.runtime.credentials.backends.env_backend import (
+        EnvBackend,
+    )
+
+    monkeypatch.setenv("MY_CLAUDE_TOKEN", "sk-ant-oat01-secret")
+    acc = _resolved(
+        name="k", provider="claude", backend="env",
+        material={"secret_env": "MY_CLAUDE_TOKEN"},
+    )
+    plan = EnvBackend().plan(acc, _header_req())
+    assert plan.env["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-secret"
+    assert not plan.mounts
+    assert {"action": "allow", "target": "api.anthropic.com"} in plan.network_rules
+
+
+def test_env_backend_missing_host_env_raises(monkeypatch):
+    from agent_team.features.board.runtime.credentials.backends.base import (
+        CredentialError,
+    )
+    from agent_team.features.board.runtime.credentials.backends.env_backend import (
+        EnvBackend,
+    )
+
+    monkeypatch.delenv("MISSING_TOKEN", raising=False)
+    acc = _resolved(
+        name="k", provider="claude", backend="env",
+        material={"secret_env": "MISSING_TOKEN"},
+    )
+    with pytest.raises(CredentialError):
+        EnvBackend().plan(acc, _header_req())
+
+
 def test_vault_backend_builds_credential_and_binding(monkeypatch):
-    from agent_team.features.board.runtime.credentials.injector import build_plan
+    from agent_team.features.board.runtime.credentials.backends.vault_backend import (
+        VaultBackend,
+    )
 
     monkeypatch.setenv("HOST_CLAUDE_TOKEN", "sk-ant-oat01-real")
-    acc = _cred_account(
-        name="claude-vault", provider="claude", backend="vault",
-        material_ref_json='{"secret_env": "HOST_CLAUDE_TOKEN"}',
+    acc = _resolved(
+        name="k", provider="claude", backend="vault",
+        material={"secret_env": "HOST_CLAUDE_TOKEN"},
     )
-    plan = build_plan(acc)
+    plan = VaultBackend().plan(acc, _header_req())
 
     # Real token never lands in the sandbox — only a placeholder.
     assert plan.env["CLAUDE_CODE_OAUTH_TOKEN"] != "sk-ant-oat01-real"
@@ -843,15 +879,21 @@ def test_vault_backend_rejects_config_dir():
     from agent_team.features.board.runtime.credentials.backends.base import (
         CredentialError,
     )
-    from agent_team.features.board.runtime.credentials.injector import build_plan
-
-    # Codex is config_dir → cannot use vault (body-param + refresh auth).
-    acc = _cred_account(
-        name="codex-vault", provider="codex", backend="vault",
-        material_ref_json='{"secret_env": "X"}',
+    from agent_team.features.board.runtime.credentials.backends.vault_backend import (
+        VaultBackend,
     )
+    from agent_team.features.board.runtime.credentials.spec import (
+        CredentialRequirement,
+    )
+
+    req = CredentialRequirement(
+        name="codex-home", kind="config_dir",
+        target_dir_env="CODEX_HOME", mount_path="/root/.codex",
+    )
+    acc = _resolved(name="k", provider="codex", backend="vault",
+                    material={"secret_env": "X"})
     with pytest.raises(CredentialError):
-        build_plan(acc)
+        VaultBackend().plan(acc, req)
 
 
 # ─── network policy resolution (Đợt 2) ─────────────────────────────────────
@@ -875,9 +917,9 @@ def test_network_policy_strict_denies_by_default_with_credential():
         _resolve_network_policy,
     )
 
-    acc = _cred_account(
+    acc = _resolved(
         name="c", provider="codex", backend="mount",
-        material_ref_json='{"host_path": "/p"}',
+        material={"host_path": "/p"},
     )
     plan = build_plan(acc)
     policy = _resolve_network_policy(_profile(strict_isolation=True), plan)
@@ -899,9 +941,9 @@ def test_network_policy_merges_board_base_and_dedupes():
             "egress": [{"action": "allow", "target": "pypi.org"}],
         },
     )
-    acc = _cred_account(
+    acc = _resolved(
         name="c", provider="codex", backend="mount",
-        material_ref_json='{"host_path": "/p"}',
+        material={"host_path": "/p"},
     )
     policy = _resolve_network_policy(monkeypatch_env, build_plan(acc))
     targets = [r["target"] for r in policy["egress"]]
@@ -947,10 +989,57 @@ async def test_opensandbox_write_vault(monkeypatch):
     await rt.close()
 
 
-def test_build_injection_for_none_returns_none():
+def test_build_injection_for_board_empty_returns_none():
     from agent_team.features.board.runtime.credentials.service import (
-        build_injection_for,
+        build_injection_for_board,
     )
 
-    assert build_injection_for(None) is None
-    assert build_injection_for("") is None
+    assert build_injection_for_board(None) is None
+    assert build_injection_for_board("") is None
+
+
+class _FakeBoard:
+    def __init__(self, aliases, mcp):
+        self._aliases = aliases
+        self._mcp = mcp
+
+    def cli_target_ids(self):
+        return self._aliases
+
+    def agent_mcp(self):
+        return self._mcp
+
+
+def test_providers_for_board_maps_cli_aliases_deduped():
+    from agent_team.features.board.runtime.credentials.service import (
+        _providers_for_board,
+    )
+
+    board = _FakeBoard(
+        ["cli:claude", "cli:codex", "cli:claude", "agent-99"], {}
+    )
+    assert _providers_for_board(board) == ["claude", "codex"]
+
+
+def test_mcp_allow_rules_extracts_remote_hosts_only():
+    from agent_team.features.board.runtime.credentials.service import (
+        _mcp_allow_rules,
+    )
+
+    board = _FakeBoard(
+        [],
+        {
+            "cli:claude": {
+                "mcpServers": {
+                    "docs": {"url": "https://mcp.example.com/sse"},
+                    "local": {"command": "npx", "args": ["-y", "thing"]},
+                }
+            },
+            "cli:codex": {
+                "mcpServers": {"docs2": {"url": "https://mcp.example.com/x"}}
+            },
+        },
+    )
+    rules = _mcp_allow_rules(board)
+    # stdio (command) skipped; remote host added once (deduped across agents).
+    assert rules == [{"action": "allow", "target": "mcp.example.com"}]

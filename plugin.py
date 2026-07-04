@@ -111,9 +111,6 @@ class AgentTeamPlugin(PluginBase):
             AgentTeamTaskSchedule,
             AgentTeamToolOutput,
         )
-        from agent_team.features.board.runtime.credentials.models import (
-            AgentTeamCredentialAccount,
-        )
         from agent_team.features.comm.models import (
             AgentTeamBoardChannel,
             AgentTeamCommConnection,
@@ -153,14 +150,10 @@ class AgentTeamPlugin(PluginBase):
             AgentTeamExternalThread,
             AgentTeamHumanActionRequest,
             AgentTeamInboundMessage,
-            AgentTeamCredentialAccount,
         ]
 
     def routers(self) -> list[APIRouter]:
         from agent_team.features.board.router import router as board_router
-        from agent_team.features.board.runtime.credentials.router import (
-            router as credentials_router,
-        )
         from agent_team.features.comm.router import router as comm_router
         from agent_team.features.repos.router import router as repos_router
         from agent_team.router import router as platform_router
@@ -170,7 +163,6 @@ class AgentTeamPlugin(PluginBase):
             board_router,
             repos_router,
             comm_router,
-            credentials_router,
         ]
 
     def tool_factories(self) -> list[ToolFactory]:
