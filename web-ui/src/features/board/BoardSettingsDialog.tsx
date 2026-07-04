@@ -294,7 +294,7 @@ export function BoardSettingsDialog({
                 </span>
                 <Input
                   value={rt.image}
-                  placeholder="agent-team/runtime-full:latest"
+                  placeholder="agent-team/agent-team-sandbox:latest"
                   onChange={(e) => setRtField("image", e.target.value)}
                 />
               </label>

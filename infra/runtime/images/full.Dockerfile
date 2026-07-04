@@ -22,7 +22,7 @@
 # subtree + server are copyable. See scripts/build-runtime-images.sh:
 #   docker build \
 #     --platform linux/amd64 \
-#     -t agent-team/runtime-full:v1 \
+#     -t agent-team/agent-team-sandbox:v1 \
 #     -f infra/runtime/images/full.Dockerfile \
 #     .            # <-- context = plugin root
 # =============================================================================

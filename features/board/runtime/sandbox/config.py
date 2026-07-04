@@ -54,7 +54,7 @@ class RuntimeProfile:
     """Resolved runtime configuration for a task's execution environment."""
 
     provider: Provider = "local"
-    image: str = "agent-team/runtime-full:latest"
+    image: str = "agent-team/agent-team-sandbox:latest"
     snapshot_id: str | None = None
 
     # OpenSandbox server connection (falls back to env / ~/.sandbox.toml in the
@@ -219,7 +219,7 @@ def profile_from_env() -> RuntimeProfile:
 
     return RuntimeProfile(
         provider=provider,  # type: ignore[arg-type]
-        image=_env("AGENT_TEAM_RUNTIME_IMAGE", "agent-team/runtime-full:latest"),
+        image=_env("AGENT_TEAM_RUNTIME_IMAGE", "agent-team/agent-team-sandbox:latest"),
         snapshot_id=_env("AGENT_TEAM_RUNTIME_SNAPSHOT") or None,
         server_url=_env("OPEN_SANDBOX_DOMAIN"),
         api_key_env="OPEN_SANDBOX_API_KEY",

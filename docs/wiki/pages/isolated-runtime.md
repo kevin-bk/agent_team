@@ -76,7 +76,7 @@ Workers (`features/board/runtime/workers/`): `registry.resolve_worker` picks
 ```bash
 AGENT_TEAM_RUNTIME_PROVIDER=opensandbox        # default: local (host)
 AGENT_TEAM_RUNTIME_STRATEGY=oneshot            # oneshot | acp_sidecar
-AGENT_TEAM_RUNTIME_IMAGE=<reg>/runtime-full:v1 # one image for both strategies
+AGENT_TEAM_RUNTIME_IMAGE=<reg>/agent-team-sandbox:v1 # one image for both strategies
 AGENT_TEAM_RUNTIME_IDLE_MINUTES=30             # pause→reap idle sandboxes
 AGENT_TEAM_RUNTIME_WORKSPACE_MODE=mount        # mount | sync
 AGENT_TEAM_RUNTIME_STRICT=1                    # no host fallback
@@ -119,7 +119,8 @@ staffed agents**. See
 
 ## Image (`infra/runtime/`)
 
-- `runtime-full` — **one** image for both strategies: claude + codex CLIs +
+- `agent-team-sandbox` (built from `full.Dockerfile`) — **one** image for both
+  strategies: claude + codex CLIs +
   `agent-team-runtime-server` + the `agent_team` runtime subtree (ACP stack +
   protocol only — no `src/`/`core`/`plugins`). ACP session state persists in a
   sandbox-local SQLite via the stdlib store backend (`AGENT_TEAM_ACP_STORE_DB`).

@@ -22,7 +22,8 @@ infra/runtime/opensandbox/config.toml         # your server config (gitignored �
 scripts/build-runtime-images.sh               # build/push helper
 ```
 
-There is **one** image (`runtime-full`) that supports both execution strategies
+There is **one** image (`agent-team-sandbox`, built from `full.Dockerfile`) that
+supports both execution strategies
 (`oneshot` and `acp_sidecar`). The ACP sidecar reuses only the `agent_team`
 runtime subtree (ACP stack + protocol) baked into the image — no `src/`, no
 `core`/`plugins`.
@@ -98,11 +99,14 @@ On the build server (must be able to reach Docker + npm + the OpenSandbox base
 image):
 
 ```bash
-# Build the "full" image → agent-team/runtime-full:v1 (+ :latest)
+# Build the "full" image → agent-team/agent-team-sandbox:v1 (+ :latest)
 ./scripts/build-runtime-images.sh full
 
-# Push under your registry/account
+# Push under your registry/account → myuser/agent-team-sandbox:v1 (+ :latest)
 REGISTRY=myuser PUSH=1 ./scripts/build-runtime-images.sh full
+
+# …and prune old untagged (<none>) images afterwards to save disk
+REGISTRY=myuser PUSH=1 PRUNE=1 ./scripts/build-runtime-images.sh full
 
 # Pin CLI versions baked into the image
 CLAUDE_CODE_VERSION=2.1.146 CODEX_VERSION=0.9.0 \
@@ -135,7 +139,7 @@ Point the process env at the provider + image (see
 
 ```bash
 AGENT_TEAM_RUNTIME_PROVIDER=opensandbox
-AGENT_TEAM_RUNTIME_IMAGE=myuser/runtime-full:v1     # default: agent-team/runtime-full:latest
+AGENT_TEAM_RUNTIME_IMAGE=myuser/agent-team-sandbox:v1  # default: agent-team/agent-team-sandbox:latest
 OPEN_SANDBOX_DOMAIN=https://<your-opensandbox-server>
 OPEN_SANDBOX_API_KEY=<key>
 
@@ -162,14 +166,14 @@ sandbox:
 | `oneshot` (default) | `SandboxedCliWorker` | Non-interactive print mode; text / tool / usage frames. Enough for unattended runs. |
 | `acp_sidecar` | `SidecarAcpWorker` | Full ACP: live plan checklist, tool cards, thinking, MCP passthrough — same `DirectCliRun` as the host, run next to the workspace. |
 
-Both strategies use the **same** `runtime-full` image — the sidecar is baked in.
+Both strategies use the **same** `agent-team-sandbox` image — the sidecar is baked in.
 
 Enable the sidecar strategy:
 
 ```bash
 AGENT_TEAM_RUNTIME_PROVIDER=opensandbox
 AGENT_TEAM_RUNTIME_STRATEGY=acp_sidecar
-AGENT_TEAM_RUNTIME_IMAGE=myuser/runtime-full:v1
+AGENT_TEAM_RUNTIME_IMAGE=myuser/agent-team-sandbox:v1
 AGENT_TEAM_RUNTIME_SIDECAR_PORT=8871      # in-sandbox server port (proxied to host)
 ```
 

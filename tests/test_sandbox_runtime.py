@@ -46,12 +46,12 @@ def test_profile_from_env_defaults_to_local(monkeypatch):
 
 def test_profile_from_env_opensandbox(monkeypatch):
     monkeypatch.setenv("AGENT_TEAM_RUNTIME_PROVIDER", "opensandbox")
-    monkeypatch.setenv("AGENT_TEAM_RUNTIME_IMAGE", "agent-team/runtime-full:test")
+    monkeypatch.setenv("AGENT_TEAM_RUNTIME_IMAGE", "agent-team/agent-team-sandbox:test")
     monkeypatch.setenv("AGENT_TEAM_RUNTIME_IDLE_MINUTES", "5")
     monkeypatch.setenv("AGENT_TEAM_RUNTIME_STRICT", "1")
     prof = profile_from_env()
     assert prof.is_sandboxed
-    assert prof.image == "agent-team/runtime-full:test"
+    assert prof.image == "agent-team/agent-team-sandbox:test"
     assert prof.idle_timeout_minutes == 5
     assert prof.strict_isolation is True
 
@@ -72,7 +72,7 @@ def test_validate_overlay_accepts_known_fields():
         {
             "provider": "opensandbox",
             "runtime_strategy": "acp_sidecar",
-            "image": "myuser/runtime-full:v1",
+            "image": "myuser/agent-team-sandbox:v1",
             "cpu": 4,
             "memory_mb": 8192,
             "idle_timeout_minutes": 15,
