@@ -62,6 +62,7 @@ import {
   type RepoSyncResult,
   type RepoUpdateBody,
   type TaskRepoDir,
+  type TaskRuntimeDTO,
   type SearchHit,
   type TaskActivityDTO,
   type CommentAttachment,
@@ -777,6 +778,14 @@ export class ApiClient {
   }
   listTaskRepos(taskId: string) {
     return this.request<TaskRepoDir[]>(`/api/tasks/${taskId}/repos`);
+  }
+  getTaskRuntime(taskId: string) {
+    return this.request<TaskRuntimeDTO>(`/api/tasks/${taskId}/runtime`);
+  }
+  controlTaskRuntime(taskId: string, action: "pause" | "kill") {
+    return this.request<TaskRuntimeDTO>(`/api/tasks/${taskId}/runtime/${action}`, {
+      method: "POST",
+    });
   }
   resetTaskRepos(taskId: string) {
     return this.request<{ prepared: TaskRepoDir[] }>(

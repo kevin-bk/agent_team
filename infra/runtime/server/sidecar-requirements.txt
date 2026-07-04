@@ -1,0 +1,10 @@
+# Python deps for the in-sandbox ACP sidecar server.
+# Installed into the runtime image on top of the CLIs. Keep versions aligned with
+# the host app so the ACP wire format matches.
+#
+# NOTE: no sqlalchemy — the ACP session store uses the stdlib sqlite3 backend
+# inside the sandbox (see acp/store.py + AGENT_TEAM_ACP_STORE_DB). uvicorn[standard]
+# already bundles the websocket implementation the server needs.
+fastapi>=0.135.3
+uvicorn[standard]>=0.42.0
+agent-client-protocol==0.10.1

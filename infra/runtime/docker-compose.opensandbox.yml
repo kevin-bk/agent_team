@@ -1,0 +1,59 @@
+# =============================================================================
+# OpenSandbox server for the agent_team isolated runtime.
+#
+# Run this on the machine that should HOST the task sandboxes (your server).
+# It is independent of the agent-manager app: the app talks to it over HTTP at
+# OPEN_SANDBOX_DOMAIN (default http://127.0.0.1:8090).
+#
+# Usage (from this directory):
+#   cp .env.example .env            # then edit OPENSANDBOX_BIND_ADDR / keys
+#   docker compose -f docker-compose.opensandbox.yml up -d
+#   docker compose -f docker-compose.opensandbox.yml logs -f opensandbox
+#   docker compose -f docker-compose.opensandbox.yml down       # keep data
+#
+# Readiness check:
+#   curl http://localhost:8090/            # or grep logs for "startup complete"
+#
+# Then point the agent-manager server at it:
+#   AGENT_TEAM_RUNTIME_PROVIDER=opensandbox
+#   OPEN_SANDBOX_DOMAIN=http://<this-host>:8090
+#
+# Prereqs: Docker running on this host; the runtime image built/pulled
+# (see README.md → scripts/build-runtime-images.sh). ~2 GB free RAM minimum.
+# =============================================================================
+
+services:
+  opensandbox:
+    # Pinned for reproducibility. Tags:
+    #   https://hub.docker.com/r/opensandbox/server/tags
+    image: opensandbox/server:v0.1.13
+    container_name: agent-team-opensandbox
+    restart: unless-stopped
+    ports:
+      # Pick exactly ONE binding:
+      #   127.0.0.1 → same-host / dev (safe, not reachable from LAN)
+      #   0.0.0.0   → only behind a reverse proxy / tunnel on another interface
+      # Never leave both bound — docker-proxy collides on the second one.
+      - "${OPENSANDBOX_BIND_ADDR:-127.0.0.1}:8090:8090"
+    environment:
+      SANDBOX_CONFIG_PATH: /etc/opensandbox/config.toml
+      # Acknowledge the empty-api-key warning (safe when bound to 127.0.0.1).
+      # For prod set `[server] api_key` in config.toml and remove this line.
+      # OPENSANDBOX_INSECURE_SERVER: "YES"
+    # Linux Docker: containers can't resolve host.docker.internal unless mapped.
+    # The server uses it (see [docker].host_ip) to reach spawned sandboxes.
+    # No-op on Docker Desktop; keep it for portability.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # Host docker socket so the server can spawn sibling sandbox containers.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./opensandbox/config.toml:/etc/opensandbox/config.toml:ro
+      - opensandbox-workspaces:/var/lib/opensandbox/workspaces
+
+volumes:
+  opensandbox-workspaces:
+
+networks:
+  default:
+    name: agent-team-runtime

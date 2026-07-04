@@ -68,6 +68,11 @@ class TurnContext:
     workspace_path: str
     thread_id: str
     role: WorkerRole = WorkerRole.CHAT
+    #: The task this turn runs against — used to key a per-task isolated sandbox
+    #: (empty for callers that predate the isolated runtime).
+    task_id: str = ""
+    #: The board owning the task — used to resolve a board-level runtime profile.
+    board_id: str = ""
     permission_mode: PermissionMode = PermissionMode.AUTO
     usage: dict[str, int] = field(default_factory=_zero_usage)
     #: Per-agent MCP config (``{"mcpServers": {...}}``) for a direct-CLI worker,

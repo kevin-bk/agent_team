@@ -123,6 +123,7 @@ const CodeWorkspace = lazy(() =>
   })),
 );
 import { TaskRepoCard } from "./cockpit/TaskRepoCard";
+import { TaskRuntimeCard } from "./cockpit/TaskRuntimeCard";
 import { PRIORITY_META, PRIORITY_ORDER, PriorityIcon } from "./priority";
 import { SelectMenu } from "@/components/ui/select-menu";
 import { statusColor } from "./statusColor";
@@ -735,6 +736,11 @@ export function TaskCockpit({
                   taskId={task.id}
                   canEdit={canEdit}
                   onOpenPath={setFilePath}
+                />
+                <TaskRuntimeCard
+                  taskId={task.id}
+                  canControl={canEdit}
+                  busy={runningAgents.size > 0}
                 />
               </>
             )}

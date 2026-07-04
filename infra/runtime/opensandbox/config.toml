@@ -1,0 +1,57 @@
+# =============================================================================
+# OpenSandbox server configuration for the agent_team isolated runtime.
+#
+# Schema matches the upstream sample:
+#   https://github.com/alibaba/OpenSandbox/blob/main/server/docker-compose.example.yaml
+#
+# Mounted into the server container at /etc/opensandbox/config.toml by
+# docker-compose.opensandbox.yml.
+# =============================================================================
+
+[server]
+host = "0.0.0.0"
+port = 8090
+# api_key = "set-me-in-prod"   # set a random string in prod; must match
+                               # OPEN_SANDBOX_API_KEY in the agent-manager .env
+
+[log]
+level = "INFO"
+
+[runtime]
+type = "docker"
+# Tags: https://hub.docker.com/r/opensandbox/execd/tags
+execd_image = "opensandbox/execd:v1.0.16"
+
+[egress]
+# Tags: https://hub.docker.com/r/opensandbox/egress/tags
+image = "opensandbox/egress:v1.0.12"
+
+[docker]
+# Spawn sandbox containers on the SAME docker network as the server so the
+# server can reach them on the bridge network (Linux isolation).
+network_mode = "agent-team-runtime"
+host_ip = "host.docker.internal"
+drop_capabilities = [
+    "AUDIT_WRITE",
+    "MKNOD",
+    "NET_ADMIN",
+    "NET_RAW",
+    "SYS_ADMIN",
+    "SYS_MODULE",
+    "SYS_PTRACE",
+    "SYS_TIME",
+    "SYS_TTY_CONFIG",
+]
+no_new_privileges = true
+# Bump to 4096+ in prod to avoid "can't start new thread" under load.
+pids_limit = 4096
+
+[ingress]
+mode = "direct"
+
+[storage]
+# Allowlist of host path PREFIXES that may be bind-mounted into a sandbox
+# (workspace mode = "mount"). A bind mount is REJECTED if the host path is not
+# under one of these prefixes. Add the parent dir of your task workspaces here,
+# create it on THIS host, then restart the server.
+allowed_host_paths = ["/var/www", "/workspace"]

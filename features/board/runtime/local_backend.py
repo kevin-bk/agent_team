@@ -116,12 +116,14 @@ class LocalRunBackend:
             workspace_path=workspace_path,
             thread_id=thread_id,
             role=WorkerRole.CHAT,
+            task_id=task_id,
+            board_id=board_id,
             usage=usage,
             mcp_config=context.get("mcp_config"),
             secrets=context.get("secrets") or [],
         )
         try:
-            worker = resolve_worker(agent_alias, WorkerRole.CHAT)
+            worker = resolve_worker(agent_alias, WorkerRole.CHAT, board_id=board_id)
             result = await worker.run_turn(ctx, emit, handle.cancel_event)
             final_text = result.final_text
             cancelled = result.cancelled

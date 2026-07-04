@@ -35,9 +35,12 @@ Two implementations under `runtime/workers/`:
 - **`AcpCliWorker`** (`acp_cli.py`) — wraps `DirectCliRun` over the shared ACP
   infra, with an **idle timeout** and a **permission mode** (`auto`/`read_only`).
 
-`registry.resolve_worker(alias, role)` picks one: `cli:*` → `AcpCliWorker`, else
+`registry.resolve_worker(alias, role, board_id)` picks one: `cli:*` →
+`AcpCliWorker` (host), or — when the board/env selects an isolated
+`RuntimeProfile` — `SandboxedCliWorker` / `SidecarAcpWorker`; anything else →
 `LlmGraphWorker`. `local_backend._drive` collapses to: *load context → resolve
-worker → `run_turn` → finalize*.
+worker → `run_turn` → finalize*. The isolated variants are documented in
+[`isolated-runtime.md`](isolated-runtime.md).
 
 ### Why `emit` instead of returning frames
 

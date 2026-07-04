@@ -185,6 +185,10 @@ class AgentTeamBoard(Base):
     #: JSON-encoded list of skill pack names made available to direct-CLI agents
     #: on this board (materialised into each task workspace). Empty = no skills.
     skills_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    #: JSON object overriding the isolated-runtime profile for this board (shaped
+    #: like ``RuntimeProfile``: provider/image/cpu/memory/idle_timeout_minutes/
+    #: strict_isolation/workspace_mode/...). Empty object = use env defaults.
+    runtime_profile_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     #: Optional reusable "starter" chat message for this board. When set, a task's
     #: chat shows a one-click button to send it as the first message of a new
     #: conversation (handy for direct-CLI tasks that all start the same way).
@@ -254,6 +258,14 @@ class AgentTeamBoard(Base):
         except (json.JSONDecodeError, TypeError):
             return []
         return [str(item) for item in value] if isinstance(value, list) else []
+
+    def runtime_profile(self) -> dict:
+        """Return the decoded runtime-profile override (empty = use env defaults)."""
+        try:
+            value = json.loads(self.runtime_profile_json or "{}")
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        return value if isinstance(value, dict) else {}
 
     def agent_mcp(self) -> dict[str, dict]:
         """Return the full ``alias -> mcp_config`` map (empty = no per-agent MCP)."""

@@ -235,6 +235,13 @@ async def update_board(
         board.agent_mcp_json = json.dumps(cleaned)
     if payload.starter_prompt is not None:
         board.starter_prompt = payload.starter_prompt.strip()
+    if payload.runtime_profile is not None:
+        from agent_team.features.board.runtime.sandbox.config import validate_overlay
+
+        cleaned_rt, rt_err = validate_overlay(payload.runtime_profile)
+        if rt_err:
+            return JSONResponse(status_code=422, content={"detail": rt_err})
+        board.runtime_profile_json = json.dumps(cleaned_rt)
     if payload.archived is not None:
         board.archived = payload.archived
     # ── Jira config ──────────────────────────────────────────────────────
@@ -850,6 +857,48 @@ async def list_task_repos(task_id: str, request: Request, db: Session = Depends(
     from agent_team.features.repos.task_copy import list_task_repo_dirs
 
     return list_task_repo_dirs(db, task)
+
+
+@router.get("/tasks/{task_id}/runtime")
+async def get_task_runtime(task_id: str, request: Request, db: Session = Depends(get_db)):
+    """Read-only runtime snapshot for a task (provider, isolation, sandbox state)."""
+    ctx, err = authz.guard_task(db, request, task_id, min_role="viewer")
+    if err:
+        return err
+    from agent_team.features.board.runtime.sandbox.service import describe_runtime
+
+    task = ctx.task
+    return describe_runtime(task_id=task.id, board_id=task.board_id)
+
+
+@router.post("/tasks/{task_id}/runtime/{action}")
+async def control_task_runtime(
+    task_id: str, action: str, request: Request, db: Session = Depends(get_db)
+):
+    """Manually ``pause`` or ``kill`` a task's sandbox from the cockpit.
+
+    Refused with 409 while any run is queued/running so a live CLI agent is never
+    torn down mid-turn. ``pause`` suspends (resumable next turn); ``kill`` discards
+    the environment (reprovisioned from scratch next turn).
+    """
+    if action not in ("pause", "kill"):
+        return JSONResponse(status_code=404, content={"detail": "unknown runtime action"})
+    ctx, err = authz.guard_task(db, request, task_id, min_role="editor")
+    if err:
+        return err
+    task = ctx.task
+    if runs_repo.has_active_run(db, task.id):
+        return JSONResponse(
+            status_code=409,
+            content={"detail": "an agent is currently running on this task"},
+        )
+    from agent_team.features.board.runtime.sandbox import service as sandbox_service
+
+    if action == "pause":
+        await sandbox_service.pause_task_sandbox(task.id)
+    else:
+        await sandbox_service.kill_task_sandbox(task.id)
+    return sandbox_service.describe_runtime(task_id=task.id, board_id=task.board_id)
 
 
 @router.post("/tasks/{task_id}/repos/prepare")

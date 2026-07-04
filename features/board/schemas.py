@@ -37,6 +37,10 @@ class BoardUpdate(BaseModel):
     agent_mcp: dict | None = None
     #: Reusable starter chat message offered as a one-click first message.
     starter_prompt: str | None = None
+    #: Isolated-runtime override for this board (see ``RuntimeProfile`` /
+    #: ``config.OVERLAY_FIELDS``): provider/runtime_strategy/image/cpu/memory_mb/
+    #: idle_timeout_minutes/strict_isolation/workspace_mode/... Empty = env default.
+    runtime_profile: dict | None = None
     archived: bool | None = None
     # ── Jira sync config (write side) ─────────────────────────────────────
     jira_enabled: bool | None = None
@@ -73,6 +77,9 @@ class BoardDTO(BaseModel):
     agent_mcp: dict = Field(default_factory=dict)
     #: Reusable starter chat message offered as a one-click first message.
     starter_prompt: str = ""
+    #: Isolated-runtime override for this board (owner-only; may embed tuning that
+    #: overlays the env defaults). Empty object = use the process env defaults.
+    runtime_profile: dict = Field(default_factory=dict)
     archived: bool
     task_count: int = 0
     #: The requesting user's role on this board (owner/editor/viewer).

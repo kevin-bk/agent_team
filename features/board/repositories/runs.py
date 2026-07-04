@@ -109,6 +109,23 @@ def get_active_loop_run(db: Session, *, task_id: str) -> AgentTeamRun | None:
     )
 
 
+def has_active_run(db: Session, task_id: str) -> bool:
+    """True when any run (chat or loop) for the task is queued or running.
+
+    Guards manual sandbox pause/kill so we never yank the environment out from
+    under a live CLI agent mid-turn.
+    """
+    return (
+        db.query(AgentTeamRun.id)
+        .filter(
+            AgentTeamRun.task_id == task_id,
+            AgentTeamRun.status.in_((RUN_QUEUED, RUN_RUNNING)),
+        )
+        .first()
+        is not None
+    )
+
+
 def list_runs_for_conversation(db: Session, conversation_id: str) -> list[AgentTeamRun]:
     """Return a conversation's runs oldest-first (transcript order)."""
     return (

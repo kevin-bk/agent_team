@@ -79,6 +79,7 @@ export const qk = {
   repos: ["repos"] as const,
   boardRepos: (id: string) => ["board-repos", id] as const,
   taskRepos: (taskId: string) => ["task-repos", taskId] as const,
+  taskRuntime: (taskId: string) => ["task-runtime", taskId] as const,
   commConnections: ["comm-connections"] as const,
   commUserLinks: (connId: string) => ["comm-user-links", connId] as const,
   boardChannel: (id: string) => ["board-channel", id] as const,
@@ -1026,6 +1027,27 @@ export function useTaskRepos(taskId: string | undefined) {
     queryKey: qk.taskRepos(taskId ?? "_"),
     queryFn: () => client.listTaskRepos(taskId as string),
     enabled: !!taskId,
+  });
+}
+
+export function useTaskRuntime(taskId: string | undefined) {
+  const { client } = useApi();
+  return useQuery({
+    queryKey: qk.taskRuntime(taskId ?? "_"),
+    queryFn: () => client.getTaskRuntime(taskId as string),
+    enabled: !!taskId,
+    refetchInterval: 15000,
+  });
+}
+
+export function useControlTaskRuntime(taskId: string) {
+  const { client } = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (action: "pause" | "kill") =>
+      client.controlTaskRuntime(taskId, action),
+    onSuccess: () =>
+      qc.invalidateQueries({ queryKey: qk.taskRuntime(taskId) }),
   });
 }
 

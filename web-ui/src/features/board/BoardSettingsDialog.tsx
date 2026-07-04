@@ -2,7 +2,7 @@ import { ArrowDown, ArrowUp, Plus, Trash2 } from "@/components/icons";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { useUpdateBoard } from "@/api/hooks";
-import type { BoardColumn, BoardDTO } from "@/api/types";
+import type { BoardColumn, BoardDTO, BoardRuntimeProfile } from "@/api/types";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { Button } from "@/components/ui/button";
 import {
@@ -33,6 +33,63 @@ function uniqueKey(base: string, taken: Set<string>): string {
   return `${base}-${i}`;
 }
 
+/**
+ * String-friendly form state for the runtime override. Empty string = "leave to
+ * the env default" (the field is omitted from the payload on save).
+ */
+type RuntimeDraft = {
+  provider: string;
+  runtime_strategy: string;
+  image: string;
+  cpu: string;
+  memory_mb: string;
+  idle_timeout_minutes: string;
+  workspace_mode: string;
+  strict_isolation: string; // "" | "on" | "off"
+};
+
+function toRuntimeDraft(p: BoardRuntimeProfile | undefined): RuntimeDraft {
+  const rp = p ?? {};
+  const strict =
+    rp.strict_isolation === undefined ? "" : rp.strict_isolation ? "on" : "off";
+  return {
+    provider: rp.provider ?? "",
+    runtime_strategy: rp.runtime_strategy ?? "",
+    image: rp.image ?? "",
+    cpu: rp.cpu !== undefined ? String(rp.cpu) : "",
+    memory_mb: rp.memory_mb !== undefined ? String(rp.memory_mb) : "",
+    idle_timeout_minutes:
+      rp.idle_timeout_minutes !== undefined ? String(rp.idle_timeout_minutes) : "",
+    workspace_mode: rp.workspace_mode ?? "",
+    strict_isolation: strict,
+  };
+}
+
+/** Build the sparse override payload; only user-set fields are included. */
+function fromRuntimeDraft(d: RuntimeDraft): BoardRuntimeProfile {
+  const p: BoardRuntimeProfile = {};
+  if (d.provider) p.provider = d.provider as BoardRuntimeProfile["provider"];
+  if (d.runtime_strategy)
+    p.runtime_strategy = d.runtime_strategy as BoardRuntimeProfile["runtime_strategy"];
+  if (d.image.trim()) p.image = d.image.trim();
+  if (d.workspace_mode)
+    p.workspace_mode = d.workspace_mode as BoardRuntimeProfile["workspace_mode"];
+  const num = (s: string): number | undefined => {
+    if (!s.trim()) return undefined;
+    const n = Number(s);
+    return Number.isFinite(n) ? n : undefined;
+  };
+  const cpu = num(d.cpu);
+  if (cpu !== undefined) p.cpu = cpu;
+  const mem = num(d.memory_mb);
+  if (mem !== undefined) p.memory_mb = mem;
+  const idle = num(d.idle_timeout_minutes);
+  if (idle !== undefined) p.idle_timeout_minutes = idle;
+  if (d.strict_isolation === "on") p.strict_isolation = true;
+  else if (d.strict_isolation === "off") p.strict_isolation = false;
+  return p;
+}
+
 export function BoardSettingsDialog({
   board,
   canArchive,
@@ -54,6 +111,7 @@ export function BoardSettingsDialog({
   const [description, setDescription] = useState(board.description ?? "");
   const [columns, setColumns] = useState<BoardColumn[]>(board.columns);
   const [starterPrompt, setStarterPrompt] = useState(board.starter_prompt ?? "");
+  const [rt, setRt] = useState<RuntimeDraft>(() => toRuntimeDraft(board.runtime_profile));
 
   // Reset the draft whenever the dialog (re)opens for a board.
   useEffect(() => {
@@ -62,8 +120,12 @@ export function BoardSettingsDialog({
       setDescription(board.description ?? "");
       setColumns(board.columns);
       setStarterPrompt(board.starter_prompt ?? "");
+      setRt(toRuntimeDraft(board.runtime_profile));
     }
   }, [open, board]);
+
+  const setRtField = <K extends keyof RuntimeDraft>(key: K, value: RuntimeDraft[K]) =>
+    setRt((prev) => ({ ...prev, [key]: value }));
 
   const renameColumn = (idx: number, value: string) =>
     setColumns((cols) =>
@@ -120,6 +182,7 @@ export function BoardSettingsDialog({
         description: description.trim() || null,
         columns: cleaned,
         starter_prompt: starterPrompt.trim(),
+        runtime_profile: fromRuntimeDraft(rt),
       });
       toast.success("Board updated");
       onClose();
@@ -194,6 +257,108 @@ export function BoardSettingsDialog({
               onChange={(e) => setStarterPrompt(e.target.value)}
             />
           </label>
+
+          <div className="grid gap-2 rounded-lg border border-border p-3">
+            <span className="text-[13px] font-medium text-muted-foreground">
+              Isolated runtime
+            </span>
+            <span className="text-[12.5px] text-muted-foreground/80">
+              Override the server's runtime defaults for this board. Leave a field
+              on “Default” / blank to inherit the process env value. Applies to
+              direct-CLI (`cli:`) agents only.
+            </span>
+            <div className="mt-1 grid gap-3 sm:grid-cols-2">
+              <RtSelect
+                label="Provider"
+                value={rt.provider}
+                onChange={(v) => setRtField("provider", v)}
+                options={[
+                  ["", "Default"],
+                  ["local", "Host (local)"],
+                  ["opensandbox", "OpenSandbox (isolated)"],
+                ]}
+              />
+              <RtSelect
+                label="Strategy"
+                value={rt.runtime_strategy}
+                onChange={(v) => setRtField("runtime_strategy", v)}
+                options={[
+                  ["", "Default"],
+                  ["oneshot", "One-shot CLI"],
+                  ["acp_sidecar", "ACP sidecar (full)"],
+                ]}
+              />
+              <label className="grid gap-1.5 sm:col-span-2">
+                <span className="text-[12.5px] font-medium text-muted-foreground">
+                  Image
+                </span>
+                <Input
+                  value={rt.image}
+                  placeholder="agent-team/runtime-full:latest"
+                  onChange={(e) => setRtField("image", e.target.value)}
+                />
+              </label>
+              <label className="grid gap-1.5">
+                <span className="text-[12.5px] font-medium text-muted-foreground">
+                  CPU (vCPU)
+                </span>
+                <Input
+                  type="number"
+                  min={0}
+                  step="0.5"
+                  value={rt.cpu}
+                  placeholder="2"
+                  onChange={(e) => setRtField("cpu", e.target.value)}
+                />
+              </label>
+              <label className="grid gap-1.5">
+                <span className="text-[12.5px] font-medium text-muted-foreground">
+                  Memory (MB)
+                </span>
+                <Input
+                  type="number"
+                  min={0}
+                  step="256"
+                  value={rt.memory_mb}
+                  placeholder="4096"
+                  onChange={(e) => setRtField("memory_mb", e.target.value)}
+                />
+              </label>
+              <label className="grid gap-1.5">
+                <span className="text-[12.5px] font-medium text-muted-foreground">
+                  Idle timeout (min)
+                </span>
+                <Input
+                  type="number"
+                  min={0}
+                  step="1"
+                  value={rt.idle_timeout_minutes}
+                  placeholder="30"
+                  onChange={(e) => setRtField("idle_timeout_minutes", e.target.value)}
+                />
+              </label>
+              <RtSelect
+                label="Workspace"
+                value={rt.workspace_mode}
+                onChange={(v) => setRtField("workspace_mode", v)}
+                options={[
+                  ["", "Default"],
+                  ["mount", "mount"],
+                  ["sync", "sync"],
+                ]}
+              />
+              <RtSelect
+                label="Strict isolation"
+                value={rt.strict_isolation}
+                onChange={(v) => setRtField("strict_isolation", v)}
+                options={[
+                  ["", "Default"],
+                  ["on", "On (no host fallback)"],
+                  ["off", "Off (allow fallback)"],
+                ]}
+              />
+            </div>
+          </div>
 
           <div className="grid gap-1.5">
             <span className="text-[13px] font-medium text-muted-foreground">
@@ -299,5 +464,34 @@ export function BoardSettingsDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function RtSelect({
+  label,
+  value,
+  onChange,
+  options,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  options: Array<[string, string]>;
+}) {
+  return (
+    <label className="grid gap-1.5">
+      <span className="text-[12.5px] font-medium text-muted-foreground">{label}</span>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="h-9 rounded-md border border-input bg-transparent px-2 text-[14px] text-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring"
+      >
+        {options.map(([val, text]) => (
+          <option key={val} value={val}>
+            {text}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }

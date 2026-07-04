@@ -246,6 +246,29 @@ export interface AgentMcpConfig {
 /** Per-CLI-agent MCP config keyed by the `cli:<engine>` alias. */
 export type BoardAgentMcp = Record<string, AgentMcpConfig>;
 
+/**
+ * Board-level override of the isolated-runtime profile. Every field is optional;
+ * an omitted field falls back to the process env default. Mirrors the server's
+ * `config.OVERLAY_FIELDS`.
+ */
+export interface BoardRuntimeProfile {
+  provider?: "local" | "opensandbox";
+  runtime_strategy?: "oneshot" | "acp_sidecar";
+  image?: string;
+  snapshot_id?: string;
+  cpu?: number;
+  memory_mb?: number;
+  timeout_minutes?: number;
+  idle_timeout_minutes?: number;
+  ready_timeout_seconds?: number;
+  workspace_mode?: "mount" | "sync";
+  workspace_mount_path?: string;
+  sidecar_port?: number;
+  strict_isolation?: boolean;
+  allow_fallback?: boolean;
+  use_server_proxy?: boolean;
+}
+
 export interface BoardDTO {
   id: string;
   slug: string;
@@ -263,6 +286,8 @@ export interface BoardDTO {
   agent_mcp?: BoardAgentMcp;
   /** Reusable starter chat message offered as a one-click first message. */
   starter_prompt?: string;
+  /** Isolated-runtime override (owner-only; empty = env defaults). */
+  runtime_profile?: BoardRuntimeProfile;
   archived: boolean;
   created_at: string;
   updated_at: string;
@@ -545,6 +570,8 @@ export interface PatchBoardBody {
   agent_mcp?: BoardAgentMcp;
   /** Reusable starter chat message offered as a one-click first message. */
   starter_prompt?: string;
+  /** Isolated-runtime override; empty object = use the env defaults. */
+  runtime_profile?: BoardRuntimeProfile;
   archived?: boolean;
   /** Jira sync config. Omit jira_api_token to keep it; send "" to clear it. */
   jira_enabled?: boolean;
@@ -1086,6 +1113,28 @@ export interface TaskRepoDir {
   path: string;
   /** True when the working copy exists in the task folder. */
   present: boolean;
+}
+
+export interface TaskRuntimeDTO {
+  /** Runtime provider — "local" (host) or "opensandbox" (isolated). */
+  provider: string;
+  /** True when the task runs in an isolated sandbox. */
+  isolated: boolean;
+  /** How the CLI is driven when isolated: "oneshot" (Phase 1) or "acp_sidecar" (Phase 2). */
+  strategy: string | null;
+  /** When isolated: fail the run instead of silently falling back to host. */
+  strict_isolation: boolean;
+  /** Sandbox image ref (null when running on the host). */
+  image: string | null;
+  /** Workspace strategy inside the sandbox ("mount" or "sync"). */
+  workspace_mode: string;
+  cpu: number;
+  memory_mb: number;
+  idle_timeout_minutes: number;
+  /** Live sandbox id when one is currently tracked for the task. */
+  sandbox_id: string | null;
+  /** Live sandbox lifecycle state (e.g. "running", "paused"). */
+  sandbox_state: string | null;
 }
 
 export interface RepoStatusDTO {

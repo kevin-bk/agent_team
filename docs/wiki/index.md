@@ -9,7 +9,7 @@
 > [`pages/board-wiki.md`](pages/board-wiki.md)). Knowledge is **compiled once and
 > kept current** instead of disappearing into chat threads and PR descriptions.
 
-Last updated: 2026-06-30 · Owner: `agent_team` plugin
+Last updated: 2026-07-02 · Owner: `agent_team` plugin
 
 ---
 
@@ -61,6 +61,7 @@ Last updated: 2026-06-30 · Owner: `agent_team` plugin
 |---|---|---|
 | [`pages/boards-tasks-workspaces.md`](pages/boards-tasks-workspaces.md) | Boards, tasks, conversations, per-task workspaces, notes/attachments, the Code review surface (git Changes + Files) | `README.md` |
 | [`pages/runtime-and-runs.md`](pages/runtime-and-runs.md) | Run backend, `AgentWorker` abstraction, event store, streaming/SSE, ACP | [`../plans/loop-engineering.md`](../plans/loop-engineering.md) |
+| [`pages/isolated-runtime.md`](pages/isolated-runtime.md) | Per-task isolated execution via OpenSandbox: idle/pause, one-shot (Phase 1) + ACP sidecar (Phase 2), runtime profiles, images | [`../plans/opensandbox-runtime-implementation-plan.md`](../plans/opensandbox-runtime-implementation-plan.md), [`../plans/opensandbox-phase2-acp-sidecar.md`](../plans/opensandbox-phase2-acp-sidecar.md) |
 | [`pages/autonomous-loop.md`](pages/autonomous-loop.md) | The controller/evaluator loop, budgets, the task state machine | [`../plans/loop-engineering.md`](../plans/loop-engineering.md) |
 | [`pages/planning-workflow.md`](pages/planning-workflow.md) | Strict planning, the `.agent-team/` artifact contract, approval gate | [`../plans/planning-workflow-upgrade.md`](../plans/planning-workflow-upgrade.md), [`../plans/planning-workflow-implementation-decisions.md`](../plans/planning-workflow-implementation-decisions.md) |
 | [`pages/task-journal.md`](pages/task-journal.md) | The semantic, append-only decision timeline + agent note inbox | [`../plans/task-journal-plan.md`](../plans/task-journal-plan.md) |
