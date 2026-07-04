@@ -23,6 +23,8 @@ import type {
   PatchTaskScheduleBody,
   RepoCreateBody,
   RepoUpdateBody,
+  CredentialAccountCreateBody,
+  CredentialAccountUpdateBody,
   BoardChannelUpsertBody,
   CommConnectionCreateBody,
   CommConnectionUpdateBody,
@@ -77,6 +79,8 @@ export const qk = {
   taskJournal: (taskId: string) => ["task-journal", taskId] as const,
   users: (q: string) => ["users", q] as const,
   repos: ["repos"] as const,
+  credentialAccounts: ["credential-accounts"] as const,
+  credentialProviders: ["credential-providers"] as const,
   boardRepos: (id: string) => ["board-repos", id] as const,
   taskRepos: (taskId: string) => ["task-repos", taskId] as const,
   taskRuntime: (taskId: string) => ["task-runtime", taskId] as const,
@@ -978,6 +982,51 @@ export function useRepoMutations() {
     }),
     pull: useMutation({
       mutationFn: (repoId: string) => client.pullRepo(repoId),
+      onSuccess: invalidate,
+    }),
+  };
+}
+
+// ── credential accounts (admin) ────────────────────────────────────
+
+export function useCredentialProviders() {
+  const { client } = useApi();
+  return useQuery({
+    queryKey: qk.credentialProviders,
+    queryFn: () => client.listCredentialProviders(),
+    staleTime: 5 * 60_000,
+  });
+}
+
+export function useCredentialAccounts() {
+  const { client } = useApi();
+  return useQuery({
+    queryKey: qk.credentialAccounts,
+    queryFn: () => client.listCredentialAccounts(),
+  });
+}
+
+export function useCredentialAccountMutations() {
+  const { client } = useApi();
+  const qc = useQueryClient();
+  const invalidate = () =>
+    void qc.invalidateQueries({ queryKey: qk.credentialAccounts });
+  return {
+    create: useMutation({
+      mutationFn: (body: CredentialAccountCreateBody) =>
+        client.createCredentialAccount(body),
+      onSuccess: invalidate,
+    }),
+    patch: useMutation({
+      mutationFn: (vars: {
+        accountId: string;
+        body: CredentialAccountUpdateBody;
+      }) => client.patchCredentialAccount(vars.accountId, vars.body),
+      onSuccess: invalidate,
+    }),
+    remove: useMutation({
+      mutationFn: (accountId: string) =>
+        client.deleteCredentialAccount(accountId),
       onSuccess: invalidate,
     }),
   };

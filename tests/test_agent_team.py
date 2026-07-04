@@ -25,6 +25,9 @@ from agent_team.features.board.models import (
 )
 from agent_team.features.board.repositories import boards as boards_repo
 from agent_team.features.board.repositories import tasks as tasks_repo
+from agent_team.features.board.runtime.credentials.models import (
+    AgentTeamCredentialAccount,
+)
 from agent_team.features.board.workspace import workspace_path_for
 from agent_team.features.repos.models import AgentTeamBoardRepo, AgentTeamRepo
 from agent_team.plugin import SPA_MOUNT_PATH, AgentTeamPlugin
@@ -50,6 +53,7 @@ _PLUGIN_MODELS = (
     AgentTeamAttempt,
     AgentTeamEvaluation,
     AgentTeamJournalEntry,
+    AgentTeamCredentialAccount,
 )
 
 
@@ -127,10 +131,47 @@ def test_plugin_meta_models_and_menu():
         "plugin_agent_team_comm_external_thread",
         "plugin_agent_team_comm_action_request",
         "plugin_agent_team_comm_inbound_message",
+        "plugin_agent_team_credential_account",
     ]
     menu = plugin.menu_items()
     assert len(menu) == 1
     assert menu[0].url == f"{SPA_MOUNT_PATH}/"
+
+
+def test_build_injection_for_resolves_account(db, monkeypatch):
+    """End-to-end: a persisted account resolves + injects its host secret."""
+    from agent_team.features.board.runtime.credentials.backends.base import (
+        CredentialError,
+    )
+    from agent_team.features.board.runtime.credentials.service import (
+        build_injection_for,
+    )
+
+    monkeypatch.setenv("HOST_CLAUDE_TOKEN", "sk-ant-oat01-live")
+    db.add(
+        AgentTeamCredentialAccount(
+            name="claude-prod", provider="claude", backend="env",
+            material_ref_json='{"secret_env": "HOST_CLAUDE_TOKEN"}',
+        )
+    )
+    db.add(
+        AgentTeamCredentialAccount(
+            name="claude-off", provider="claude", backend="env",
+            material_ref_json='{"secret_env": "HOST_CLAUDE_TOKEN"}',
+            enabled=False,
+        )
+    )
+    db.commit()
+
+    plan = build_injection_for("claude-prod")
+    assert plan is not None
+    assert plan.env["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-live"
+
+    # Disabled + unknown accounts fail loud rather than run unauthenticated.
+    with pytest.raises(CredentialError):
+        build_injection_for("claude-off")
+    with pytest.raises(CredentialError):
+        build_injection_for("does-not-exist")
 
 
 # ---------------------------------------------------------------------------

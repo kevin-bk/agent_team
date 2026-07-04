@@ -61,6 +61,10 @@ import {
   type RepoStatusDTO,
   type RepoSyncResult,
   type RepoUpdateBody,
+  type CredentialAccountDTO,
+  type CredentialAccountCreateBody,
+  type CredentialAccountUpdateBody,
+  type CredentialProviderInfo,
   type TaskRepoDir,
   type TaskRuntimeDTO,
   type SearchHit,
@@ -749,6 +753,34 @@ export class ApiClient {
   }
   repoStatus(repoId: string) {
     return this.request<RepoStatusDTO>(`/api/repos/${repoId}/status`);
+  }
+
+  // ── credential accounts (admin) ──────────────────────────────────
+  listCredentialProviders() {
+    return this.request<CredentialProviderInfo[]>(
+      "/api/credential-accounts/providers",
+    );
+  }
+  listCredentialAccounts() {
+    return this.request<CredentialAccountDTO[]>("/api/credential-accounts");
+  }
+  createCredentialAccount(body: CredentialAccountCreateBody) {
+    return this.request<CredentialAccountDTO>("/api/credential-accounts", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+  patchCredentialAccount(accountId: string, body: CredentialAccountUpdateBody) {
+    return this.request<CredentialAccountDTO>(
+      `/api/credential-accounts/${accountId}`,
+      { method: "PATCH", body: JSON.stringify(body) },
+    );
+  }
+  deleteCredentialAccount(accountId: string) {
+    return this.request<{ ok: boolean }>(
+      `/api/credential-accounts/${accountId}`,
+      { method: "DELETE" },
+    );
   }
   listBoardRepos(boardId: string) {
     return this.request<BoardReposResponse>(`/api/boards/${boardId}/repos`);

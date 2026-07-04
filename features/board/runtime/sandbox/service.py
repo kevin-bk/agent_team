@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+from typing import Any
 
 from agent_team.features.board.runtime.sandbox.base import Sandbox, SandboxError
 from agent_team.features.board.runtime.sandbox.config import (
@@ -114,6 +115,49 @@ def get_manager(profile: RuntimeProfile | None = None) -> SandboxManager:
     return _manager
 
 
+def _resolve_network_policy(
+    profile: RuntimeProfile,
+    plan: Any | None,
+) -> dict[str, Any] | None:
+    """Build the effective egress policy for a task sandbox.
+
+    Merges the board-configured ``profile.network_policy`` (operator base) with
+    the credential plan's provider-host allow rules. ``default_action`` resolves
+    to: the board's explicit setting, else ``deny`` when ``strict_isolation`` is
+    on *and* a credential is being injected (so an in-sandbox secret can't be
+    exfiltrated), else ``allow`` (non-breaking — pip/npm/git keep working).
+
+    Returns ``None`` when there is nothing to enforce (allow-all, no rules).
+    """
+    base = dict(profile.network_policy or {})
+    rules: list[dict[str, str]] = [
+        dict(r) for r in (base.get("egress") or []) if r.get("target")
+    ]
+    if plan is not None:
+        rules.extend(r for r in plan.network_rules if r.get("target"))
+
+    default_action = base.get("default_action")
+    if default_action not in ("allow", "deny"):
+        default_action = (
+            "deny" if (profile.strict_isolation and plan is not None) else "allow"
+        )
+
+    if not rules and default_action == "allow":
+        return None
+
+    # Dedupe by target, first rule wins (matches the sidecar's merge semantics).
+    seen: set[str] = set()
+    deduped: list[dict[str, str]] = []
+    for r in rules:
+        target = r["target"]
+        if target in seen:
+            continue
+        seen.add(target)
+        deduped.append({"action": r.get("action", "allow"), "target": target})
+
+    return {"default_action": default_action, "egress": deduped}
+
+
 def _workspace_mount(profile: RuntimeProfile, host_workspace_path: str) -> VolumeMount:
     """Build the task-workspace mount for mount-mode (host path → /workspace)."""
     return VolumeMount(
@@ -174,16 +218,53 @@ async def prepare_task_sandbox(
             )
         await manager.close(task_id)
 
-    extra_mounts = None
+    # Credential injection (opt-in via profile.credential_account). Only for the
+    # isolated provider — the local runtime uses the host's own credentials.
+    plan = None
+    merged_env = extra_env
+    cred_mounts: list[Any] = []
+    if profile.is_sandboxed and profile.credential_account:
+        from agent_team.features.board.runtime.credentials.service import (
+            build_injection_for,
+        )
+
+        plan = build_injection_for(profile.credential_account)
+        if plan is not None:
+            if plan.env:
+                merged_env = {**(extra_env or {}), **plan.env}
+            cred_mounts = list(plan.mounts)
+
+    extra_mounts: list[Any] = []
     if profile.workspace_mode == "mount":
-        extra_mounts = [_workspace_mount(profile, host_workspace_path)]
+        extra_mounts.append(_workspace_mount(profile, host_workspace_path))
+    extra_mounts.extend(cred_mounts)
+
+    network_policy = _resolve_network_policy(profile, plan)
+    credential_proxy = bool(plan is not None and plan.needs_credential_proxy)
 
     sb = await manager.open_for_task(
         task_id,
         workspace_root=host_workspace_path,  # used by the local provider
-        extra_env=extra_env,
-        extra_mounts=extra_mounts,
+        extra_env=merged_env,
+        extra_mounts=extra_mounts or None,
+        network_policy=network_policy,
+        credential_proxy=credential_proxy,
     )
+
+    # Provision the Credential Vault after open (secrets stay at the egress proxy,
+    # never in the sandbox). Only on this fresh-open path; a reused/resumed
+    # sandbox already has its vault from its first open.
+    if plan is not None and plan.vault_bindings:
+        try:
+            await sb.write_vault(plan.vault_credentials, plan.vault_bindings)
+        except SandboxError:
+            logger.exception(
+                "agent_team runtime: credential vault write failed for task=%s; "
+                "closing the sandbox to avoid an unauthenticated run",
+                task_id,
+            )
+            await manager.close(task_id)
+            raise
     return sb
 
 

@@ -6,7 +6,7 @@ import { SessionList } from "@/features/sessions/SessionList";
 import { cn } from "@/lib/utils";
 import { ProfilePicker } from "./ProfilePicker";
 
-export type View = "board" | "chat" | "repos" | "channels";
+export type View = "board" | "chat" | "repos" | "credentials" | "channels";
 
 /**
  * The contextual project sidebar that sits between the deep-blue {@link NavRail}

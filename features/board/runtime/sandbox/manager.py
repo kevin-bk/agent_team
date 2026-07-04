@@ -113,6 +113,8 @@ class SandboxManager:
         workspace_root: str | None = None,
         extra_env: dict[str, str] | None = None,
         extra_mounts: list[Any] | None = None,
+        network_policy: dict[str, Any] | None = None,
+        credential_proxy: bool = False,
         extra: dict[str, Any] | None = None,
     ) -> Sandbox:
         """Spawn a fresh sandbox dedicated to ``task_id`` and remember it.
@@ -160,6 +162,8 @@ class SandboxManager:
                     name=display,
                     extra_env=extra_env,
                     extra_mounts=extra_mounts,
+                    network_policy=network_policy,
+                    credential_proxy=credential_proxy,
                 )
 
                 logger.info(

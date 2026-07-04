@@ -1,5 +1,6 @@
 import {
   FolderGit2,
+  KeyRound,
   LayoutGrid,
   MessagesSquare,
   Moon,
@@ -24,6 +25,7 @@ const ITEMS: NavItem[] = [
 
 const ADMIN_ITEMS: NavItem[] = [
   { id: "repos", label: "Repositories", icon: FolderGit2 },
+  { id: "credentials", label: "Credentials", icon: KeyRound },
   { id: "channels", label: "Channels", icon: Send },
 ];
 

@@ -23,6 +23,8 @@ def build_sandbox(
     name: str | None = None,
     extra_env: dict[str, str] | None = None,
     extra_mounts: list[Any] | None = None,
+    network_policy: dict[str, Any] | None = None,
+    credential_proxy: bool = False,
 ) -> Sandbox:
     """Instantiate a sandbox from a :class:`RuntimeProfile`.
 
@@ -81,6 +83,8 @@ def build_sandbox(
             use_server_proxy=profile.use_server_proxy,
             workspace_mount_path=profile.workspace_mount_path,
             name=name,
+            network_policy=network_policy,
+            credential_proxy=credential_proxy,
         )
 
     raise SandboxError(f"Unknown runtime provider: {profile.provider!r}")

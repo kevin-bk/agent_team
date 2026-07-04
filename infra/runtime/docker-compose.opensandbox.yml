@@ -26,7 +26,10 @@ services:
   opensandbox:
     # Pinned for reproducibility. Tags:
     #   https://hub.docker.com/r/opensandbox/server/tags
-    image: opensandbox/server:v0.1.13
+    # v0.2.x is REQUIRED for the Credential Vault (credentialProxy); v0.1.x
+    # servers reject a credential-proxy request. (This is the SERVER image line —
+    # independent from the Python SDK, whose latest is 0.1.13.)
+    image: opensandbox/server:v0.2.1
     container_name: agent-team-opensandbox
     restart: unless-stopped
     ports:

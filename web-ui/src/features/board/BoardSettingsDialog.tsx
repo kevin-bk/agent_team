@@ -1,7 +1,7 @@
 import { ArrowDown, ArrowUp, Plus, Trash2 } from "@/components/icons";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { useUpdateBoard } from "@/api/hooks";
+import { useCredentialAccounts, useUpdateBoard } from "@/api/hooks";
 import type { BoardColumn, BoardDTO, BoardRuntimeProfile } from "@/api/types";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { Button } from "@/components/ui/button";
@@ -46,6 +46,7 @@ type RuntimeDraft = {
   idle_timeout_minutes: string;
   workspace_mode: string;
   strict_isolation: string; // "" | "on" | "off"
+  credential_account: string;
 };
 
 function toRuntimeDraft(p: BoardRuntimeProfile | undefined): RuntimeDraft {
@@ -62,6 +63,7 @@ function toRuntimeDraft(p: BoardRuntimeProfile | undefined): RuntimeDraft {
       rp.idle_timeout_minutes !== undefined ? String(rp.idle_timeout_minutes) : "",
     workspace_mode: rp.workspace_mode ?? "",
     strict_isolation: strict,
+    credential_account: rp.credential_account ?? "",
   };
 }
 
@@ -87,6 +89,7 @@ function fromRuntimeDraft(d: RuntimeDraft): BoardRuntimeProfile {
   if (idle !== undefined) p.idle_timeout_minutes = idle;
   if (d.strict_isolation === "on") p.strict_isolation = true;
   else if (d.strict_isolation === "off") p.strict_isolation = false;
+  if (d.credential_account.trim()) p.credential_account = d.credential_account.trim();
   return p;
 }
 
@@ -107,6 +110,7 @@ export function BoardSettingsDialog({
 }) {
   const update = useUpdateBoard(board.id);
   const confirm = useConfirm();
+  const credentialAccounts = useCredentialAccounts();
   const [name, setName] = useState(board.name);
   const [description, setDescription] = useState(board.description ?? "");
   const [columns, setColumns] = useState<BoardColumn[]>(board.columns);
@@ -126,6 +130,19 @@ export function BoardSettingsDialog({
 
   const setRtField = <K extends keyof RuntimeDraft>(key: K, value: RuntimeDraft[K]) =>
     setRt((prev) => ({ ...prev, [key]: value }));
+
+  // Credential-account dropdown: "Default", the admin-registered accounts, plus
+  // the current value if it points at an account we can't list (e.g. non-admin).
+  const credOptions: Array<[string, string]> = [["", "Default (env credentials)"]];
+  for (const acc of credentialAccounts.data ?? []) {
+    credOptions.push([acc.name, `${acc.name} (${acc.provider})`]);
+  }
+  if (
+    rt.credential_account &&
+    !credOptions.some(([v]) => v === rt.credential_account)
+  ) {
+    credOptions.push([rt.credential_account, rt.credential_account]);
+  }
 
   const renameColumn = (idx: number, value: string) =>
     setColumns((cols) =>
@@ -356,6 +373,12 @@ export function BoardSettingsDialog({
                   ["on", "On (no host fallback)"],
                   ["off", "Off (allow fallback)"],
                 ]}
+              />
+              <RtSelect
+                label="Credential account"
+                value={rt.credential_account}
+                onChange={(v) => setRtField("credential_account", v)}
+                options={credOptions}
               />
             </div>
           </div>

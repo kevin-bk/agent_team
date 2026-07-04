@@ -201,6 +201,19 @@ class Sandbox(abc.ABC):
         data = Path(local).expanduser().read_bytes()
         await self.upload_bytes(data, remote_path)
 
+    async def write_vault(
+        self,
+        credentials: list[dict],
+        bindings: list[dict],
+    ) -> None:
+        """Provision a Credential Vault (secrets injected at egress, not stored).
+
+        Only remote runtimes with an egress proxy support this; the default
+        raises so a misconfigured local run fails loud instead of silently
+        running unauthenticated.
+        """
+        raise SandboxError(f"{self.kind} sandbox does not support a credential vault")
+
     async def upload_bytes(
         self,
         data: bytes,

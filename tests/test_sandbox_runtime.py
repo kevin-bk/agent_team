@@ -187,8 +187,18 @@ class _Msg:
         self.text = text
 
 
+class _FakeCredentialVault:
+    def __init__(self) -> None:
+        self.created: list[dict] = []
+
+    async def create(self, *, credentials, bindings):
+        self.created.append({"credentials": credentials, "bindings": bindings})
+        return {"revision": 1}
+
+
 class _FakeSdkSandbox:
     created: list[str] = []
+    last_create_kwargs: dict = {}
 
     def __init__(self, image: str, sandbox_id: str = "sbx-1") -> None:
         self.image = image
@@ -198,11 +208,13 @@ class _FakeSdkSandbox:
         self.paused = False
         self.killed = False
         self.renewed = 0
+        self.credential_vault = _FakeCredentialVault()
 
     @classmethod
     async def create(cls, image, **kwargs):
         inst = cls(image)
         cls.created.append(image)
+        cls.last_create_kwargs = kwargs
         return inst
 
     @classmethod
@@ -253,6 +265,18 @@ def _fake_sdk() -> dict:
     class _Exc(Exception):
         pass
 
+    class _NetPolicy:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class _NetRule:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class _CredProxy:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
     return {
         "ConnectionConfig": _ConnCfg,
         "SandboxException": _Exc,
@@ -263,6 +287,9 @@ def _fake_sdk() -> dict:
         "Host": _FakeHost,
         "PVC": _FakeVolume,
         "OSSFS": _FakeVolume,
+        "NetworkPolicy": _NetPolicy,
+        "NetworkRule": _NetRule,
+        "CredentialProxyConfig": _CredProxy,
     }
 
 
@@ -665,3 +692,265 @@ async def test_sidecar_worker_strict_fail_when_unavailable(monkeypatch):
     result = await worker.run_turn(ctx, emit, asyncio.Event())
     assert any(e[0] == "error" for e in emitted)
     assert "could not be prepared" in result.final_text
+
+
+# ─── credential injection (Phase 3, Đợt 1: env + mount) ────────────────────
+
+
+def _cred_account(**kwargs):
+    from agent_team.features.board.runtime.credentials.models import (
+        AgentTeamCredentialAccount,
+    )
+
+    return AgentTeamCredentialAccount(**kwargs)
+
+
+def test_overlay_accepts_credential_account():
+    cleaned, err = validate_overlay({"credential_account": "claude-acc1"})
+    assert err is None
+    assert cleaned == {"credential_account": "claude-acc1"}
+
+
+def test_env_backend_injects_token(monkeypatch):
+    from agent_team.features.board.runtime.credentials.injector import build_plan
+
+    monkeypatch.setenv("MY_CLAUDE_TOKEN", "sk-ant-oat01-secret")
+    acc = _cred_account(
+        name="claude-acc1", provider="claude", backend="env",
+        material_ref_json='{"secret_env": "MY_CLAUDE_TOKEN"}',
+    )
+    plan = build_plan(acc)
+    assert plan.env["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-secret"
+    assert plan.env["IS_SANDBOX"] == "1"
+    assert not plan.mounts
+    assert {"action": "allow", "target": "api.anthropic.com"} in plan.network_rules
+
+
+def test_env_backend_missing_host_env_raises(monkeypatch):
+    from agent_team.features.board.runtime.credentials.backends.base import (
+        CredentialError,
+    )
+    from agent_team.features.board.runtime.credentials.injector import build_plan
+
+    monkeypatch.delenv("MISSING_TOKEN", raising=False)
+    acc = _cred_account(
+        name="claude-acc2", provider="claude", backend="env",
+        material_ref_json='{"secret_env": "MISSING_TOKEN"}',
+    )
+    with pytest.raises(CredentialError):
+        build_plan(acc)
+
+
+def test_mount_backend_mounts_codex_home():
+    from agent_team.features.board.runtime.credentials.injector import build_plan
+
+    acc = _cred_account(
+        name="codex-acc1", provider="codex", backend="mount",
+        material_ref_json='{"host_path": "/var/lib/at/codex/acc1"}',
+    )
+    plan = build_plan(acc)
+    assert len(plan.mounts) == 1
+    mount = plan.mounts[0]
+    assert mount.kind == "host"
+    assert mount.host_path == "/var/lib/at/codex/acc1"
+    assert mount.mount_path == "/root/.codex"
+    assert mount.read_only is False
+    assert plan.env["CODEX_HOME"] == "/root/.codex"
+
+
+def test_mount_backend_supports_pvc_claim():
+    from agent_team.features.board.runtime.credentials.injector import build_plan
+
+    acc = _cred_account(
+        name="codex-acc2", provider="codex", backend="mount",
+        material_ref_json='{"pvc_claim": "at-codex-acc2"}',
+    )
+    plan = build_plan(acc)
+    assert plan.mounts[0].kind == "pvc"
+    assert plan.mounts[0].pvc_claim == "at-codex-acc2"
+
+
+def test_mount_backend_missing_material_raises():
+    from agent_team.features.board.runtime.credentials.backends.base import (
+        CredentialError,
+    )
+    from agent_team.features.board.runtime.credentials.injector import build_plan
+
+    acc = _cred_account(
+        name="codex-acc3", provider="codex", backend="mount",
+        material_ref_json="{}",
+    )
+    with pytest.raises(CredentialError):
+        build_plan(acc)
+
+
+def test_injector_uses_provider_default_backend(monkeypatch):
+    """No explicit backend → claude defaults to env, codex to mount."""
+    from agent_team.features.board.runtime.credentials.injector import build_plan
+
+    monkeypatch.setenv("MY_CLAUDE_TOKEN", "sk-ant-oat01-x")
+    claude = _cred_account(
+        name="c", provider="claude", backend="",
+        material_ref_json='{"secret_env": "MY_CLAUDE_TOKEN"}',
+    )
+    assert build_plan(claude).env["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-x"
+
+    codex = _cred_account(
+        name="d", provider="codex", backend="",
+        material_ref_json='{"host_path": "/p"}',
+    )
+    assert build_plan(codex).env["CODEX_HOME"] == "/root/.codex"
+
+
+def test_injector_unknown_provider_raises():
+    from agent_team.features.board.runtime.credentials.backends.base import (
+        CredentialError,
+    )
+    from agent_team.features.board.runtime.credentials.injector import build_plan
+
+    acc = _cred_account(name="x", provider="gemini", backend="env")
+    with pytest.raises(CredentialError):
+        build_plan(acc)
+
+
+def test_vault_backend_builds_credential_and_binding(monkeypatch):
+    from agent_team.features.board.runtime.credentials.injector import build_plan
+
+    monkeypatch.setenv("HOST_CLAUDE_TOKEN", "sk-ant-oat01-real")
+    acc = _cred_account(
+        name="claude-vault", provider="claude", backend="vault",
+        material_ref_json='{"secret_env": "HOST_CLAUDE_TOKEN"}',
+    )
+    plan = build_plan(acc)
+
+    # Real token never lands in the sandbox — only a placeholder.
+    assert plan.env["CLAUDE_CODE_OAUTH_TOKEN"] != "sk-ant-oat01-real"
+    assert "sk-ant-oat01-real" not in plan.env.values()
+    assert plan.needs_credential_proxy is True
+
+    # Real secret is carried in the vault credential (goes to the proxy only).
+    assert plan.vault_credentials == [
+        {"name": "anthropic-oauth",
+         "source": {"value": "sk-ant-oat01-real", "type": "inline"}}
+    ]
+    binding = plan.vault_bindings[0]
+    assert binding["match"]["hosts"] == ["api.anthropic.com"]
+    assert binding["auth"] == {"type": "bearer", "credential": "anthropic-oauth"}
+    assert {"action": "allow", "target": "api.anthropic.com"} in plan.network_rules
+
+
+def test_vault_backend_rejects_config_dir():
+    from agent_team.features.board.runtime.credentials.backends.base import (
+        CredentialError,
+    )
+    from agent_team.features.board.runtime.credentials.injector import build_plan
+
+    # Codex is config_dir → cannot use vault (body-param + refresh auth).
+    acc = _cred_account(
+        name="codex-vault", provider="codex", backend="vault",
+        material_ref_json='{"secret_env": "X"}',
+    )
+    with pytest.raises(CredentialError):
+        build_plan(acc)
+
+
+# ─── network policy resolution (Đợt 2) ─────────────────────────────────────
+
+
+def _profile(**kwargs):
+    return RuntimeProfile(provider="opensandbox", **kwargs)
+
+
+def test_network_policy_none_when_allow_all_no_rules():
+    from agent_team.features.board.runtime.sandbox.service import (
+        _resolve_network_policy,
+    )
+
+    assert _resolve_network_policy(_profile(), None) is None
+
+
+def test_network_policy_strict_denies_by_default_with_credential():
+    from agent_team.features.board.runtime.credentials.injector import build_plan
+    from agent_team.features.board.runtime.sandbox.service import (
+        _resolve_network_policy,
+    )
+
+    acc = _cred_account(
+        name="c", provider="codex", backend="mount",
+        material_ref_json='{"host_path": "/p"}',
+    )
+    plan = build_plan(acc)
+    policy = _resolve_network_policy(_profile(strict_isolation=True), plan)
+    assert policy is not None
+    assert policy["default_action"] == "deny"
+    targets = {r["target"] for r in policy["egress"]}
+    assert "api.openai.com" in targets and "chatgpt.com" in targets
+
+
+def test_network_policy_merges_board_base_and_dedupes():
+    from agent_team.features.board.runtime.credentials.injector import build_plan
+    from agent_team.features.board.runtime.sandbox.service import (
+        _resolve_network_policy,
+    )
+
+    monkeypatch_env = _profile(
+        network_policy={
+            "default_action": "deny",
+            "egress": [{"action": "allow", "target": "pypi.org"}],
+        },
+    )
+    acc = _cred_account(
+        name="c", provider="codex", backend="mount",
+        material_ref_json='{"host_path": "/p"}',
+    )
+    policy = _resolve_network_policy(monkeypatch_env, build_plan(acc))
+    targets = [r["target"] for r in policy["egress"]]
+    assert "pypi.org" in targets
+    assert targets.count("api.openai.com") == 1  # deduped
+
+
+# ─── OpenSandboxRuntime: network policy + credential proxy + vault (Đợt 2/3) ─
+
+
+async def test_opensandbox_open_passes_network_policy_and_proxy(monkeypatch):
+    monkeypatch.setattr(osb, "_import_sdk", _fake_sdk)
+    rt = osb.OpenSandboxRuntime(
+        image="img:test",
+        renew_interval_seconds=3600,
+        network_policy={
+            "default_action": "deny",
+            "egress": [{"action": "allow", "target": "api.anthropic.com"}],
+        },
+        credential_proxy=True,
+    )
+    await rt.open()
+    kw = _FakeSdkSandbox.last_create_kwargs
+    assert kw["network_policy"].kwargs["default_action"] == "deny"
+    assert kw["credential_proxy"].kwargs["enabled"] is True
+    await rt.close()
+
+
+async def test_opensandbox_write_vault(monkeypatch):
+    monkeypatch.setattr(osb, "_import_sdk", _fake_sdk)
+    rt = osb.OpenSandboxRuntime(image="img:test", renew_interval_seconds=3600)
+    await rt.open()
+    await rt.write_vault(
+        [{"name": "anthropic-oauth",
+          "source": {"value": "secret", "type": "inline"}}],
+        [{"name": "anthropic-oauth",
+          "match": {"hosts": ["api.anthropic.com"]},
+          "auth": {"type": "bearer", "credential": "anthropic-oauth"}}],
+    )
+    vault = rt._sdk_sandbox.credential_vault
+    assert len(vault.created) == 1
+    assert vault.created[0]["credentials"][0]["name"] == "anthropic-oauth"
+    await rt.close()
+
+
+def test_build_injection_for_none_returns_none():
+    from agent_team.features.board.runtime.credentials.service import (
+        build_injection_for,
+    )
+
+    assert build_injection_for(None) is None
+    assert build_injection_for("") is None

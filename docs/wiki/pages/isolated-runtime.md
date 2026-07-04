@@ -80,6 +80,7 @@ AGENT_TEAM_RUNTIME_IMAGE=<reg>/runtime-full:v1 # one image for both strategies
 AGENT_TEAM_RUNTIME_IDLE_MINUTES=30             # pause→reap idle sandboxes
 AGENT_TEAM_RUNTIME_WORKSPACE_MODE=mount        # mount | sync
 AGENT_TEAM_RUNTIME_STRICT=1                    # no host fallback
+AGENT_TEAM_RUNTIME_CREDENTIAL_ACCOUNT=         # optional: default credential account name
 OPEN_SANDBOX_DOMAIN=https://<server>
 OPEN_SANDBOX_API_KEY=<key>
 ```
@@ -88,6 +89,33 @@ Board overlay: `runtime_profile_json` (migration `029_board_runtime_profile.sql`
 accessor `Board.runtime_profile()`) — any `RuntimeProfile` field overlays the env
 default. `GET /api/tasks/{id}/runtime` (`describe_runtime`) powers the cockpit
 **Runtime** card (provider / mode / image / resources / live sandbox state).
+
+## Credentials (`features/board/runtime/credentials/`)
+
+A coding CLI inside a sandbox needs auth. Instead of baking secrets into images,
+register a **credential account** (admin, `Credentials` nav → `/credentials`)
+and point a board at it (Board settings → isolated runtime → **Credential
+account**, or `AGENT_TEAM_RUNTIME_CREDENTIAL_ACCOUNT`). See
+[`../../plans/opensandbox-phase3-credentials.md`](../../plans/opensandbox-phase3-credentials.md).
+
+- **No secret in the DB or API** — an account stores only a *reference*
+  (`material_ref`): a host **env-var name** (`secret_env`) or a host **path**
+  (`host_path` / `pvc_claim`). The real value is read from the host at inject time.
+- **Provider-driven, backend-pluggable** (`registry.PROVIDER_REQUIREMENTS`):
+  - **Claude Code** → `header_token`. Default backend **`env`** (injects
+    `CLAUDE_CODE_OAUTH_TOKEN`, infra-free) — flip to **`vault`** once the server
+    has Credential Vault egress so the real token never enters the sandbox (the
+    egress proxy adds the `Authorization` header).
+  - **Codex** → `config_dir`. Backend **`mount`** — the writable `$CODEX_HOME`
+    (`auth.json`) is mounted so token refresh persists. Because a real secret
+    then lives in the sandbox, **network egress is `deny`-by-default + allowlist**
+    the provider hosts only, so a compromised agent can't exfiltrate it.
+- **Adding a provider** = one descriptor entry; a new `header_token` provider
+  (e.g. GitHub) reuses the `vault` backend with no coding-agent code changes.
+- `prepare_task_sandbox` resolves the account (lazy `core.database` import),
+  builds an `InjectionPlan` (env + mounts + network rules + vault bindings), and
+  passes `network_policy`/`credential_proxy` to `opensandbox.open()`; vault
+  bindings are written post-open via `write_vault()`.
 
 ## Image (`infra/runtime/`)
 
@@ -116,8 +144,11 @@ app never builds images at runtime). Build context = the plugin root. See
 - **Phase 2 needs live infra.** Unit tests cover the protocol + host relay with a
   fake WS server; the real `get_endpoint` proxy + in-sandbox ACP path must be
   validated against a live OpenSandbox server.
-- **`opensandbox==0.1.9` volume model** — import `Volume`/`Host`/`PVC` from the
-  SDK *domain* layer (UNSET-vs-None fix); see `opensandbox.py` header.
+- **SDK pin `opensandbox==0.1.13`** (PyPI latest; **no 0.2.x SDK** — "0.2.1" was
+  a mix-up with the server image line). Import `Volume`/`Host`/`PVC` + vault
+  models from the SDK *domain* layer `opensandbox.models.sandboxes`
+  (UNSET-vs-None fix); see `opensandbox.py` header. Install plugin deps with
+  `uv run setup-dependencies` (NOT bare `uv sync`, which prunes plugin packages).
 - **ACP session store is pluggable** (`acp/store.py`). Host uses `core.database`
   (`plugin_ai_acp_sessions`); set `AGENT_TEAM_ACP_STORE_DB=<path>` to switch to a
   stdlib-`sqlite3` backend with **zero** `core`/`plugins` imports — this is what

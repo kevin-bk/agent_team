@@ -83,6 +83,9 @@ class RuntimeProfile:
     network_policy: dict[str, Any] = field(default_factory=dict)
     env: dict[str, str] = field(default_factory=dict)
     env_blocklist: list[str] = field(default_factory=list)
+    #: Name/id of a CredentialAccount whose secret is injected into the sandbox
+    #: (see runtime/credentials/). Empty = no credential injection (opt-in).
+    credential_account: str | None = None
 
     # behaviour
     strict_isolation: bool = False
@@ -156,6 +159,7 @@ OVERLAY_FIELDS: frozenset[str] = frozenset({
     "strict_isolation",
     "allow_fallback",
     "use_server_proxy",
+    "credential_account",
 })
 
 _ENUMS: dict[str, frozenset[str]] = {
@@ -233,6 +237,7 @@ def profile_from_env() -> RuntimeProfile:
         runtime_strategy=_env("AGENT_TEAM_RUNTIME_STRATEGY", "oneshot"),  # type: ignore[arg-type]
         sidecar_port=_env_int("AGENT_TEAM_RUNTIME_SIDECAR_PORT", 8871),
         env_blocklist=blocklist,
+        credential_account=_env("AGENT_TEAM_RUNTIME_CREDENTIAL_ACCOUNT") or None,
         strict_isolation=_env_bool("AGENT_TEAM_RUNTIME_STRICT", False),
         allow_fallback=_env_bool("AGENT_TEAM_RUNTIME_ALLOW_FALLBACK", False),
         use_server_proxy=_env_bool("AGENT_TEAM_RUNTIME_SERVER_PROXY", True),

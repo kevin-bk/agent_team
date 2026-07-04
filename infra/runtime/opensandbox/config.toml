@@ -20,11 +20,16 @@ level = "INFO"
 [runtime]
 type = "docker"
 # Tags: https://hub.docker.com/r/opensandbox/execd/tags
-execd_image = "opensandbox/execd:v1.0.16"
+execd_image = "opensandbox/execd:v1.0.20"
 
 [egress]
 # Tags: https://hub.docker.com/r/opensandbox/egress/tags
-image = "opensandbox/egress:v1.0.12"
+image = "opensandbox/egress:v1.1.3"
+# "dns+nft" is REQUIRED for the Credential Vault (credentialProxy.enabled) used
+# by claude backend="vault". Plain "dns" works for env/mount backends but the
+# server rejects a credential proxy request. Deny-default network policies are
+# also only enforced under nft. Keep "dns+nft" so both work.
+mode = "dns+nft"
 
 [docker]
 # Spawn sandbox containers on the SAME docker network as the server so the
@@ -51,7 +56,8 @@ mode = "direct"
 
 [storage]
 # Allowlist of host path PREFIXES that may be bind-mounted into a sandbox
-# (workspace mode = "mount"). A bind mount is REJECTED if the host path is not
-# under one of these prefixes. Add the parent dir of your task workspaces here,
-# create it on THIS host, then restart the server.
-allowed_host_paths = ["/var/www", "/workspace"]
+# (workspace mode = "mount", and credential mount backend). A bind mount is
+# REJECTED if the host path is not under one of these prefixes. Add the parent
+# dir of your task workspaces AND of any credential dirs (e.g. Codex auth.json
+# via material_ref.host_path), create them on THIS host, then restart the server.
+allowed_host_paths = ["/var/www", "/workspace", "/var/lib/agent-team/credentials"]

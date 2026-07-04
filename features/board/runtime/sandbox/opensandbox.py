@@ -116,6 +116,29 @@ def _import_sdk() -> dict[str, Any]:
         except ImportError:
             pass
 
+    # Egress / Credential Vault models (opensandbox >= 0.1.13). Best-effort so an
+    # older SDK still imports; the runtime raises only if a policy/vault is
+    # actually requested without these present.
+    network_policy_cls: Any | None = None
+    network_rule_cls: Any | None = None
+    credential_proxy_cls: Any | None = None
+    try:
+        from opensandbox.models.sandboxes import (  # type: ignore
+            CredentialProxyConfig as _CredProxy,
+        )
+        from opensandbox.models.sandboxes import (
+            NetworkPolicy as _NetPolicy,
+        )
+        from opensandbox.models.sandboxes import (
+            NetworkRule as _NetRule,
+        )
+
+        network_policy_cls = _NetPolicy
+        network_rule_cls = _NetRule
+        credential_proxy_cls = _CredProxy
+    except ImportError:  # pragma: no cover — old SDK
+        pass
+
     return {
         "ConnectionConfig": ConnectionConfig,
         "SandboxException": SandboxException,
@@ -126,6 +149,9 @@ def _import_sdk() -> dict[str, Any]:
         "Host": host_cls,
         "PVC": pvc_cls,
         "OSSFS": ossfs_cls,
+        "NetworkPolicy": network_policy_cls,
+        "NetworkRule": network_rule_cls,
+        "CredentialProxyConfig": credential_proxy_cls,
     }
 
 
@@ -165,6 +191,8 @@ class OpenSandboxRuntime(Sandbox):
         request_timeout_seconds: int = 600,
         use_server_proxy: bool = True,
         workspace_mount_path: str = "/workspace",
+        network_policy: dict[str, Any] | None = None,
+        credential_proxy: bool = False,
     ) -> None:
         super().__init__()
         self.server_url = server_url
@@ -190,6 +218,10 @@ class OpenSandboxRuntime(Sandbox):
         self.use_server_proxy = use_server_proxy
         self.name = name
         self.sandbox_workspace_root = workspace_mount_path
+        #: Egress policy dict {"default_action", "egress":[{"action","target"}]}.
+        self.network_policy = dict(network_policy) if network_policy else None
+        #: Enable the Credential Vault MITM proxy at create time (Đợt 3).
+        self.credential_proxy = credential_proxy
 
         self._sdk: dict[str, Any] | None = None
         self._sdk_sandbox: Any | None = None
@@ -254,6 +286,19 @@ class OpenSandboxRuntime(Sandbox):
         }
         if volumes is not None:
             create_kwargs["volumes"] = volumes
+
+        if self.network_policy:
+            np = _build_network_policy(self.network_policy, sdk=sdk)
+            if np is not None:
+                create_kwargs["network_policy"] = np
+        if self.credential_proxy:
+            cp_cls = sdk.get("CredentialProxyConfig")
+            if cp_cls is None:
+                raise SandboxError(
+                    "credential proxy requested but the installed opensandbox SDK "
+                    "lacks CredentialProxyConfig (upgrade to opensandbox>=0.1.13)"
+                )
+            create_kwargs["credential_proxy"] = cp_cls(enabled=True)
 
         try:
             self._sdk_sandbox = await sdk["SdkSandbox"].create(self.image, **create_kwargs)
@@ -574,6 +619,34 @@ class OpenSandboxRuntime(Sandbox):
         data = Path(local).expanduser().read_bytes()
         await self.upload_bytes(data, remote_path)
 
+    # ─── credential vault ────────────────────────────────────────────────
+
+    async def write_vault(
+        self,
+        credentials: list[dict[str, Any]],
+        bindings: list[dict[str, Any]],
+    ) -> None:
+        """Create the sandbox-local Credential Vault (secrets stay at the proxy).
+
+        Dicts are passed straight through — the SDK normalises them into its
+        ``Credential`` / ``CredentialBinding`` models, so this stays robust across
+        SDK minor versions. Requires the sandbox to have been created with
+        ``credential_proxy=True``.
+        """
+        if self.state != "open" or self._sdk_sandbox is None:
+            raise SandboxBrokenError("sandbox not open; call open() first")
+        if not credentials and not bindings:
+            return
+        self._touch()
+        sdk = self._ensure_sdk()
+        try:
+            vault = self._sdk_sandbox.credential_vault
+            await vault.create(
+                credentials=list(credentials), bindings=list(bindings)
+            )
+        except Exception as e:  # noqa: BLE001
+            raise _map_exception(e, sdk=sdk) from e
+
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -586,6 +659,28 @@ def _apply_env_blocklist(env: dict[str, str], blocklist: list[str]) -> dict[str,
         return env
     blocked = set(blocklist)
     return {k: v for k, v in env.items() if k not in blocked}
+
+
+def _build_network_policy(policy: dict[str, Any], *, sdk: dict[str, Any]) -> Any | None:
+    """Translate an egress-policy dict into the SDK ``NetworkPolicy`` model.
+
+    ``policy`` shape: ``{"default_action": "allow"|"deny",
+    "egress": [{"action": "allow"|"deny", "target": "host"}]}``.
+    """
+    np_cls = sdk.get("NetworkPolicy")
+    nr_cls = sdk.get("NetworkRule")
+    if np_cls is None or nr_cls is None:
+        raise SandboxError(
+            "network policy requested but the installed opensandbox SDK lacks the "
+            "NetworkPolicy models (upgrade to opensandbox>=0.1.13)"
+        )
+    egress = [
+        nr_cls(action=r["action"], target=r["target"])
+        for r in (policy.get("egress") or [])
+        if r.get("target")
+    ]
+    default_action = policy.get("default_action") or "deny"
+    return np_cls(default_action=default_action, egress=egress or None)
 
 
 def _build_volumes(mounts: list[Any], *, sdk: dict[str, Any]) -> list[Any]:
