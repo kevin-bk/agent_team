@@ -37,7 +37,14 @@ mode = "dns+nft"
 
 [docker]
 # Spawn sandbox containers on the SAME docker network as the server so the
-# server can reach them on the bridge network (Linux isolation).
+# server can reach them (Linux isolation).
+#
+# ⚠️ Network-policy trade-off: OpenSandbox only enforces a `networkPolicy`
+# (deny-default egress / allow_hosts) when sandboxes run on the plain "bridge"
+# network. On a user-defined network like below, ANY networkPolicy request is
+# rejected ("networkPolicy is not supported when docker network_mode=..."). The
+# app handles this by sending no policy in allow-all mode (the default). If you
+# later want deny-default/allow_hosts, set network_mode = "bridge" here.
 network_mode = "agent-team-runtime"
 host_ip = "host.docker.internal"
 drop_capabilities = [

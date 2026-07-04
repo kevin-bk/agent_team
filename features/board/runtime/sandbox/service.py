@@ -127,7 +127,13 @@ def _resolve_network_policy(
     on *and* a credential is being injected (so an in-sandbox secret can't be
     exfiltrated), else ``allow`` (non-breaking — pip/npm/git keep working).
 
-    Returns ``None`` when there is nothing to enforce (allow-all, no rules).
+    Returns ``None`` when there is nothing to enforce (allow-all with no *deny*
+    rule). Emitting a redundant allow-all policy is not just pointless — the
+    OpenSandbox server REJECTS any ``networkPolicy`` when the sandbox runs on a
+    user-defined docker network (``[docker] network_mode`` in the server
+    ``config.toml``); policy enforcement is only supported on the plain
+    ``bridge`` network. So a deny-default / allow_hosts setup additionally
+    requires switching that server config to ``network_mode = "bridge"``.
     """
     base = dict(profile.network_policy or {})
     rules: list[dict[str, str]] = [
@@ -142,7 +148,12 @@ def _resolve_network_policy(
             "deny" if (profile.strict_isolation and plan is not None) else "allow"
         )
 
-    if not rules and default_action == "allow":
+    # Under an allow-all default, "allow" rules add nothing (allow-all already
+    # permits them). Only emit a policy when something actually restricts egress:
+    # a deny default, or an explicit deny rule. This keeps allow-all runs from
+    # sending a policy the server would reject on a user-defined network.
+    has_deny_rule = any(r.get("action") == "deny" for r in rules)
+    if default_action == "allow" and not has_deny_rule:
         return None
 
     # Dedupe by target, first rule wins (matches the sidecar's merge semantics).
