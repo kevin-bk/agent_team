@@ -298,12 +298,19 @@ _SIDECAR_START = (
 )
 
 
-async def open_sidecar_channel(sandbox: Sandbox, profile: RuntimeProfile) -> str:
-    """Ensure the in-sandbox ACP sidecar is up and return its WebSocket URL.
+async def open_sidecar_channel(
+    sandbox: Sandbox, profile: RuntimeProfile
+) -> tuple[str, dict[str, str]]:
+    """Ensure the in-sandbox ACP sidecar is up; return its WebSocket URL + headers.
 
     Idempotent: starts the server on first turn, no-ops thereafter. The WS URL is
     resolved through the OpenSandbox proxy (:meth:`get_endpoint`) so the host can
     reach the in-sandbox port without direct network access.
+
+    The proxy may require headers on every request (routing / auth token); the
+    endpoint carries them in ``SandboxEndpoint.headers``. They MUST be forwarded
+    on the WebSocket upgrade too, otherwise the proxy closes it with a 1008
+    policy violation.
     """
     port = profile.sidecar_port
     # First cold start imports the app + creates the local SQLite, so allow a
@@ -318,7 +325,15 @@ async def open_sidecar_channel(sandbox: Sandbox, profile: RuntimeProfile) -> str
             f"{(res.stderr or res.stdout)[-500:]}"
         )
     endpoint = await sandbox.get_endpoint(port)
-    return _endpoint_to_ws_url(endpoint, port)
+    return _endpoint_to_ws_url(endpoint, port), _endpoint_headers(endpoint)
+
+
+def _endpoint_headers(endpoint: object) -> dict[str, str]:
+    """Extract the required per-request headers the proxy attaches to an endpoint."""
+    headers = getattr(endpoint, "headers", None)
+    if isinstance(headers, dict):
+        return {str(k): str(v) for k, v in headers.items()}
+    return {}
 
 
 def _endpoint_to_ws_url(endpoint: object, port: int) -> str:

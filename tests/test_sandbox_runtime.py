@@ -627,7 +627,7 @@ async def test_sidecar_worker_relays_frames(monkeypatch):
             return fake
 
         async def _channel(sandbox, profile):
-            return url
+            return url, {}
 
         paused = {"v": False}
 

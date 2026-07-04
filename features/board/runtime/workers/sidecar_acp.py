@@ -75,7 +75,7 @@ class SidecarAcpWorker:
                 profile=profile,
                 board_id=ctx.board_id,
             )
-            ws_url = await open_sidecar_channel(sandbox, profile)
+            ws_url, ws_headers = await open_sidecar_channel(sandbox, profile)
         except SandboxError as exc:
             return await self._fail(
                 ctx, emit, "SandboxUnavailable",
@@ -83,7 +83,7 @@ class SidecarAcpWorker:
             )
 
         try:
-            return await self._drive(ctx, emit, cancel, profile, ws_url)
+            return await self._drive(ctx, emit, cancel, profile, ws_url, ws_headers)
         finally:
             await pause_task_sandbox(task_key)
 
@@ -94,6 +94,7 @@ class SidecarAcpWorker:
         cancel: asyncio.Event,
         profile: RuntimeProfile,
         ws_url: str,
+        ws_headers: dict[str, str] | None = None,
     ) -> TurnResult:
         import websockets
 
@@ -117,7 +118,11 @@ class SidecarAcpWorker:
 
         try:
             async with websockets.connect(
-                ws_url, open_timeout=30, max_size=None, ping_interval=20
+                ws_url,
+                open_timeout=30,
+                max_size=None,
+                ping_interval=20,
+                additional_headers=ws_headers or None,
             ) as ws:
                 await ws.send(proto.encode(request))
                 deadline = time.monotonic() + _TURN_TIMEOUT_SECONDS
