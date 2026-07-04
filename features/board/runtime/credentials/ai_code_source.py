@@ -14,6 +14,7 @@ no pool configured.
 from __future__ import annotations
 
 import logging
+import os
 
 from agent_team.features.board.runtime.credentials.registry import (
     requirements_for,
@@ -32,6 +33,26 @@ _PROVIDER_MODEL = {
     "claude": "AIClaudeCodeEnvironment",
     "codex": "AICodexEnvironment",
 }
+
+#: provider → the CLI's default login dir, used when a pool environment leaves
+#: ``config_dir`` blank. Mirrors the pool's semantics (blank = don't override
+#: CLAUDE_CONFIG_DIR / CODEX_HOME, the CLI reads its default under the app
+#: user's home). Expanded against the app process's home — valid because bind
+#: mounts resolve on the docker host, which is the machine the app runs on in
+#: the supported single-host setup.
+_DEFAULT_CONFIG_DIR = {
+    "claude": "~/.claude",
+    "codex": "~/.codex",
+}
+
+
+def _default_config_dir(provider: str) -> str:
+    """Expanded default login dir for ``provider``, or ``""`` if absent on disk."""
+    raw = _DEFAULT_CONFIG_DIR.get(provider, "")
+    if not raw:
+        return ""
+    path = os.path.expanduser(raw)
+    return path if os.path.isdir(path) else ""
 
 
 def resolve_account_for_provider(provider: str) -> ResolvedAccount | None:
@@ -70,6 +91,16 @@ def resolve_account_for_provider(provider: str) -> ResolvedAccount | None:
             )
             for row in rows:
                 config_dir = (getattr(row, "config_dir", "") or "").strip()
+                if not config_dir:
+                    # Blank config_dir means "use the CLI default" in the pool
+                    # (e.g. ~/.codex); mount that same default dir when it exists.
+                    config_dir = _default_config_dir(provider)
+                    if config_dir:
+                        logger.info(
+                            "agent_team credentials: pool account %r (%s) has no "
+                            "config_dir; mounting the CLI default %s",
+                            str(row.name), provider, config_dir,
+                        )
                 if config_dir:
                     return ResolvedAccount(
                         name=str(row.name),
