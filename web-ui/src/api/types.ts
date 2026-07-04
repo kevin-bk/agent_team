@@ -1157,6 +1157,7 @@ export interface SandboxAdminRow {
   task_key?: string;
   task_title?: string;
   board_id?: string;
+  board_slug?: string;
   board_name?: string | null;
   metrics?: {
     cpu_count: number;

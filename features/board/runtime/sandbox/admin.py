@@ -60,6 +60,7 @@ def _task_rows() -> dict[str, dict[str, Any]]:
                     "task_key": task.human_key,
                     "task_title": task.title,
                     "board_id": board.id,
+                    "board_slug": board.slug,
                     "board_name": getattr(board, "name", None)
                     or getattr(board, "title", None),
                 }

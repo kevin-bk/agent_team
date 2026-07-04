@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import { Cpu, Loader2, RefreshCw, Trash2 } from "@/components/icons";
 import {
@@ -257,7 +258,15 @@ export function SandboxesPage() {
                             {shortId(row.sandbox_id)}
                           </td>
                           <td className="px-3 py-2">
-                            {row.task_key ? (
+                            {row.task_key && row.board_slug ? (
+                              <Link
+                                to={`/boards/${row.board_slug}/tasks/${row.task_key}`}
+                                title={row.task_title ?? undefined}
+                                className="text-primary hover:underline"
+                              >
+                                {row.task_key}
+                              </Link>
+                            ) : row.task_key ? (
                               <span title={row.task_title ?? undefined}>
                                 {row.task_key}
                               </span>
