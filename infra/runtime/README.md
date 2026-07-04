@@ -13,7 +13,7 @@ can pull from, then point the runtime profile at the tag.
 ```
 infra/runtime/images/full.Dockerfile          # single image: CLIs + ACP sidecar
 infra/runtime/server/                         # agent-team-runtime-server (sidecar)
-infra/runtime/.env.example                    # runtime env defaults (copy → app .env)
+infra/runtime/.env.example                    # runtime vars → copy into agent-manager/.env
 infra/runtime/docker-compose.opensandbox.yml  # run an OpenSandbox server on your host
 infra/runtime/opensandbox/config.toml         # server config mounted by the compose file
 scripts/build-runtime-images.sh               # build/push helper
@@ -30,13 +30,24 @@ On the host that should run the task sandboxes (can be the same box as the app):
 
 ```bash
 cd infra/runtime
-cp .env.example .env                                  # edit binding / keys
+cp .env.example .env                                  # see the ⚠️ note below
 docker compose -f docker-compose.opensandbox.yml up -d
 curl http://localhost:8090/                           # readiness check
 ```
 
-Then set `OPEN_SANDBOX_DOMAIN` in the app's `.env` to this server's URL. See
-`.env.example` for every runtime variable with inline docs.
+> ⚠️ **Two different `.env` files — don't confuse them.**
+> The `.env` you just created **here (`infra/runtime/.env`) is read only by
+> `docker compose`**, and the compose file substitutes exactly **one** variable
+> from it: `OPENSANDBOX_BIND_ADDR` (the interface `8090` binds to). Every
+> `AGENT_TEAM_RUNTIME_*` / `OPEN_SANDBOX_*` line in the file is **ignored by
+> compose** — it does not configure the app.
+>
+> The **app** (the FastAPI process) reads its own env from **`agent-manager/.env`
+> (the repo root)** via `core/config.py` (`load_dotenv()` + pydantic `env_file`).
+> So to actually turn on the isolated runtime, copy the `AGENT_TEAM_RUNTIME_*` +
+> `OPEN_SANDBOX_DOMAIN` + `OPEN_SANDBOX_API_KEY` lines from `.env.example` into
+> **`agent-manager/.env`**, then restart the app. See `.env.example` for every
+> variable with inline docs.
 
 ## Build
 
