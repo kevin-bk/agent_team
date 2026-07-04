@@ -1,0 +1,87 @@
+# =============================================================================
+# App database — PostgreSQL + pgvector.
+#
+# SEPARATE from docker-compose.opensandbox.yml (that one runs the sandbox
+# server). This file owns the agent-manager app database, and REUSES the volume
+# the DB used to live in (previously started from ~/deep-agent/infra) so ALL
+# existing data is kept — both the `deep_agent` and `agent` databases inside it.
+#
+# The app itself is unchanged: it still connects over
+#   DATABASE_URL=postgresql://deep_agent:kevindz@localhost:5432/agent
+# (kept in agent-manager/.env). This compose just relocates the container here.
+#
+# ── Migration (run once on the DB host) ──────────────────────────────────────
+#   1) Find the REAL volume name (compose prefixes it with the project dir):
+#        docker volume ls | grep pgdata          # typically `infra_pgdata`
+#      If it differs, set PGDATA_VOLUME in .env (this dir).
+#   2) Stop the old owner so only ONE container binds 5432 + the volume:
+#        (cd ~/deep-agent/infra && docker compose down)     # keeps data
+#   3) Start it from here:
+#        cp .env.example .env                    # set PGDATA_VOLUME / creds
+#        docker compose -f docker-compose.postgres.yml up -d
+#   4) Verify both databases survived:
+#        docker compose -f docker-compose.postgres.yml exec postgres \
+#          psql -U ${DB_USERNAME:-deep_agent} -l     # expect deep_agent + agent
+#
+# SAFETY: the volume is declared `external: true`, so this compose NEVER creates
+# or deletes it — not even `down -v`. A wrong PGDATA_VOLUME just fails `up` with
+# "external volume not found"; your data is never touched.
+#
+# NOTE: after moving, do NOT start deep-agent's own postgres again (it would
+# fight over port 5432 + the volume). deep-agent keeps working by connecting to
+# this same localhost:5432.
+# =============================================================================
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: ${DB_CONTAINER_NAME:-agent-team_db}
+    restart: unless-stopped
+    # Keep user/password identical to how the reused volume was created — the
+    # role already lives in the volume. (On a reused volume POSTGRES_* are only
+    # consulted on first init, but keeping them correct avoids surprises if the
+    # volume is ever recreated.)
+    environment:
+      POSTGRES_USER: ${DB_USERNAME:-deep_agent}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-kevindz}
+      POSTGRES_DB: ${DB_DATABASE:-agent}
+    # Loopback only; the app reaches it via DATABASE_URL=…@localhost:5432/….
+    ports:
+      - "127.0.0.1:${DB_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # First-boot only (ignored when the volume already has data).
+      - ./postgres/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-deep_agent} -d ${DB_DATABASE:-agent}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # Optional DB browser (was part of the deep-agent stack). Reach at
+  # http://127.0.0.1:${ADMINER_PORT:-8081}  (server: postgres, creds from above).
+  adminer:
+    image: adminer
+    container_name: ${ADMINER_CONTAINER_NAME:-agent-team_adminer}
+    command: php -S 0.0.0.0:8080 -t /var/www/html
+    environment:
+      ADMINER_PLUGINS: tables-filter json-column table-indexes-structure
+    ports:
+      - "127.0.0.1:${ADMINER_PORT:-8081}:8080"
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
+volumes:
+  # Reuse the pre-existing data volume by its REAL docker name. `external` means
+  # this compose never creates or wipes it. Default assumes it was created from
+  # ~/deep-agent/infra (compose project `infra`) → `infra_pgdata`. Override via
+  # PGDATA_VOLUME in .env if `docker volume ls` shows a different name.
+  pgdata:
+    external: true
+    name: ${PGDATA_VOLUME:-infra_pgdata}
+
+networks:
+  default:
+    name: agent-team-db

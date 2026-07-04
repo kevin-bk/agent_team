@@ -15,6 +15,8 @@ infra/runtime/images/full.Dockerfile          # single image: CLIs + ACP sidecar
 infra/runtime/server/                         # agent-team-runtime-server (sidecar)
 infra/runtime/.env.example                    # runtime vars → copy into agent-manager/.env
 infra/runtime/docker-compose.opensandbox.yml  # run an OpenSandbox server on your host
+infra/runtime/docker-compose.postgres.yml     # run the app Postgres (reuses existing volume)
+infra/runtime/postgres/schema.sql             # first-boot DB init (fresh volume only)
 infra/runtime/opensandbox/config.toml         # server config mounted by the compose file
 scripts/build-runtime-images.sh               # build/push helper
 ```
@@ -48,6 +50,41 @@ curl http://localhost:8090/                           # readiness check
 > `OPEN_SANDBOX_DOMAIN` + `OPEN_SANDBOX_API_KEY` lines from `.env.example` into
 > **`agent-manager/.env`**, then restart the app. See `.env.example` for every
 > variable with inline docs.
+
+## App database (Postgres)
+
+`docker-compose.postgres.yml` runs the app's PostgreSQL (pgvector) container. It
+is **separate** from the OpenSandbox server above. It **reuses the existing data
+volume** (the DB used to be started from `~/deep-agent/infra`) so nothing is
+lost — both the `deep_agent` and `agent` databases stay intact. The app is
+unchanged; it still connects via `DATABASE_URL=…@localhost:5432/agent` in
+`agent-manager/.env`.
+
+Migrate it here (run on the DB host, once):
+
+```bash
+cd infra/runtime
+cp .env.example .env                                   # set PGDATA_VOLUME / DB_* below
+
+docker volume ls | grep pgdata                         # 1) confirm the REAL volume name
+                                                       #    (usually infra_pgdata; else set
+                                                       #    PGDATA_VOLUME in .env)
+(cd ~/deep-agent/infra && docker compose down)         # 2) stop the old owner (keeps data)
+docker compose -f docker-compose.postgres.yml up -d    # 3) start it from here
+
+# 4) verify both databases survived
+docker compose -f docker-compose.postgres.yml exec postgres psql -U deep_agent -l
+```
+
+> **Safety.** The volume is `external: true` — this compose never creates or
+> wipes it (not even `down -v`). A wrong `PGDATA_VOLUME` just fails `up` with
+> "external volume not found"; your data is never touched.
+>
+> After moving, do **not** start deep-agent's own Postgres again — it would
+> fight over port 5432 and the volume. deep-agent keeps working by connecting to
+> this same `localhost:5432`.
+
+Optional adminer DB browser ships in the same file → `http://127.0.0.1:8081`.
 
 ## Build
 
