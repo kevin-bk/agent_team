@@ -116,10 +116,18 @@ RUN mkdir -p "${CLAUDE_CONFIG_DIR}" /home/sandbox /root \
 # `python`→`python3` so scripts that call bare `python` work. `uv`/`uvx` is the
 # standard runner for Python-based stdio MCP servers (e.g. `uvx mcp-server-git`)
 # and gives tasks a fast installer/venv manager. Pinned for reproducible builds.
+#
+# The base image's system python3 ships WITHOUT pip ("No module named pip"), so
+# install uv via its standalone installer (no pip needed), then let uv install
+# the rest into the system env (--break-system-packages sidesteps PEP 668 on
+# newer Debian/Ubuntu bases).
 ARG UV_VERSION=0.5.11
-RUN ln -sf "$(command -v python3)" /usr/local/bin/python \
-    && python3 -m pip install --no-cache-dir \
-        "uv==${UV_VERSION}" \
+RUN curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" \
+        | env UV_INSTALL_DIR=/usr/local/bin sh \
+    && ln -sf "$(command -v python3)" /usr/local/bin/python \
+    && uv --version \
+    && uvx --version \
+    && uv pip install --system --break-system-packages \
         ruff==0.6.9 \
         pytest==8.3.3 \
         requests==2.32.3
@@ -133,7 +141,7 @@ ENV PYTHONUNBUFFERED=1
 ENV AGENT_TEAM_ACP_STORE_DB=/var/lib/agent-team/acp-sessions.db
 
 COPY infra/runtime/server/sidecar-requirements.txt /tmp/sidecar-requirements.txt
-RUN python3 -m pip install --no-cache-dir -r /tmp/sidecar-requirements.txt
+RUN uv pip install --system --break-system-packages -r /tmp/sidecar-requirements.txt
 
 # Runtime subtree (import closure of the sidecar server). Keeping these as
 # separate COPYs preserves the package tree without dragging the whole plugin.
