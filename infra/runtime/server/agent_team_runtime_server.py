@@ -19,7 +19,11 @@ sandbox-local SQLite when ``AGENT_TEAM_ACP_STORE_DB`` is set (baked into the
 image), so nothing here touches ``core`` / ``plugins`` / ``src``.
 """
 
-from __future__ import annotations
+# NOTE: no `from __future__ import annotations` here — it turns annotations into
+# strings, and `WebSocket` is imported lazily inside build_app() (not module
+# globals), so FastAPI could not resolve the `ws: WebSocket` annotation and
+# treated `ws` as a required query parameter → every /acp upgrade got a 403
+# (surfaced through the OpenSandbox proxy as a 1008 policy violation).
 
 import argparse
 import asyncio
