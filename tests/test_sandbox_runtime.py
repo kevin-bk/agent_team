@@ -1043,3 +1043,99 @@ def test_mcp_allow_rules_extracts_remote_hosts_only():
     rules = _mcp_allow_rules(board)
     # stdio (command) skipped; remote host added once (deduped across agents).
     assert rules == [{"action": "allow", "target": "mcp.example.com"}]
+
+
+# ─── persisted sandbox id: reattach after an app restart ───────────────────
+
+
+class _ReattachableSandbox(Sandbox):
+    """Fake with the OpenSandbox-style reattach API."""
+
+    kind = "fake"
+    is_remote = True
+
+    def __init__(self, *, fail_resume: bool = False) -> None:
+        super().__init__()
+        self.state = "closed"
+        self.sandbox_id = None
+        self.fail_resume = fail_resume
+        self.resumed_with: str | None = None
+        self.closed = False
+
+    async def resume_existing(self, sandbox_id: str) -> None:
+        if self.fail_resume:
+            self.state = "broken"
+            raise SandboxError("sandbox gone")
+        self.sandbox_id = sandbox_id
+        self.resumed_with = sandbox_id
+        self.state = "open"
+
+    async def close(self) -> None:
+        self.closed = True
+        self.state = "closed"
+
+    async def exec_shell(self, command, *, timeout_seconds=None, cwd=None, env=None,
+                         on_stdout=None, on_stderr=None) -> ExecResult:
+        return ExecResult(stdout="", stderr="", exit_code=0)
+
+
+async def test_manager_adopt_tracks_and_closes():
+    mgr = SandboxManager(profile=RuntimeProfile(provider="opensandbox"))
+    sb = _ReattachableSandbox()
+    await sb.resume_existing("sb-live")
+    await mgr.adopt("T-1", sb)
+    assert mgr.get("T-1") is sb
+    with pytest.raises(ValueError):
+        await mgr.adopt("T-1", _ReattachableSandbox())
+    assert await mgr.close("T-1") is True
+    assert sb.closed and mgr.get("T-1") is None
+
+
+async def test_try_reattach_success_adopts_persisted_sandbox(monkeypatch):
+    from agent_team.features.board.runtime.sandbox import factory as factory_mod
+    from agent_team.features.board.runtime.sandbox import service as svc
+
+    sb = _ReattachableSandbox()
+    monkeypatch.setattr(svc, "_load_task_sandbox_id", lambda _t: "sb-persisted")
+    monkeypatch.setattr(factory_mod, "build_sandbox", lambda *a, **k: sb)
+
+    mgr = SandboxManager(profile=RuntimeProfile(provider="opensandbox"))
+    got = await svc._try_reattach_sandbox(
+        mgr, "T-2", RuntimeProfile(provider="opensandbox")
+    )
+    assert got is sb
+    assert sb.resumed_with == "sb-persisted"
+    assert mgr.get("T-2") is sb
+
+
+async def test_try_reattach_stale_id_clears_and_falls_back(monkeypatch):
+    from agent_team.features.board.runtime.sandbox import factory as factory_mod
+    from agent_team.features.board.runtime.sandbox import service as svc
+
+    sb = _ReattachableSandbox(fail_resume=True)
+    cleared: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(svc, "_load_task_sandbox_id", lambda _t: "sb-stale")
+    monkeypatch.setattr(
+        svc, "_store_task_sandbox_id", lambda t, v: cleared.append((t, v))
+    )
+    monkeypatch.setattr(factory_mod, "build_sandbox", lambda *a, **k: sb)
+
+    mgr = SandboxManager(profile=RuntimeProfile(provider="opensandbox"))
+    got = await svc._try_reattach_sandbox(
+        mgr, "T-3", RuntimeProfile(provider="opensandbox")
+    )
+    assert got is None
+    assert ("T-3", None) in cleared  # stale id wiped so the next open overwrites
+    assert sb.closed
+    assert mgr.get("T-3") is None
+
+
+async def test_try_reattach_skips_when_nothing_persisted(monkeypatch):
+    from agent_team.features.board.runtime.sandbox import service as svc
+
+    monkeypatch.setattr(svc, "_load_task_sandbox_id", lambda _t: "")
+    mgr = SandboxManager(profile=RuntimeProfile(provider="opensandbox"))
+    got = await svc._try_reattach_sandbox(
+        mgr, "T-4", RuntimeProfile(provider="opensandbox")
+    )
+    assert got is None

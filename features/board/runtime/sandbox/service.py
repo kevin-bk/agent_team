@@ -169,6 +169,108 @@ def _resolve_network_policy(
     return {"default_action": default_action, "egress": deduped}
 
 
+# ─── persisted sandbox id (survive app restarts) ────────────────────────────
+#
+# The manager's registry lives in RAM, so a restart used to orphan a task's
+# paused sandbox and spawn a fresh one. We persist the OpenSandbox id on the
+# task row (written on open, cleared on kill) and try resume_existing() on the
+# first prepare after a restart. All best-effort: any DB/plugin hiccup just
+# means a fresh sandbox, never a failed run. Stale ids self-heal — if the
+# server already reaped the sandbox, reattach fails, the id is cleared, and a
+# fresh open overwrites it.
+
+
+def _load_task_sandbox_id(task_id: str) -> str:
+    """Persisted sandbox id for ``task_id`` (empty string when none)."""
+    try:
+        from agent_team.features.board.repositories import tasks as tasks_repo
+        from core.database.base import SessionLocal
+
+        with SessionLocal() as db:
+            task = tasks_repo.get_task(db, task_id)
+            return (getattr(task, "sandbox_id", "") or "").strip() if task else ""
+    except Exception:  # noqa: BLE001 — best-effort only
+        logger.debug("agent_team runtime: sandbox_id load failed", exc_info=True)
+        return ""
+
+
+def _store_task_sandbox_id(task_id: str, sandbox_id: str | None) -> None:
+    """Persist (or clear, with ``None``) the sandbox id on the task row."""
+    try:
+        from agent_team.features.board.repositories import tasks as tasks_repo
+        from core.database.base import SessionLocal
+
+        with SessionLocal() as db:
+            task = tasks_repo.get_task(db, task_id)
+            if task is not None:
+                task.sandbox_id = sandbox_id
+                db.commit()
+    except Exception:  # noqa: BLE001 — best-effort only
+        logger.debug("agent_team runtime: sandbox_id store failed", exc_info=True)
+
+
+async def _try_reattach_sandbox(
+    manager: SandboxManager,
+    task_id: str,
+    profile: RuntimeProfile,
+) -> Sandbox | None:
+    """Reattach the task's persisted sandbox after a restart (None ⇒ open fresh).
+
+    Only meaningful for the isolated provider: builds a bare runtime handle,
+    replays ``resume_existing(persisted_id)`` and adopts it into the manager.
+    Mounts/env/policy were fixed at create time and live with the container, so
+    none of that needs rebuilding here.
+    """
+    if not profile.is_sandboxed:
+        return None
+    persisted = _load_task_sandbox_id(task_id)
+    if not persisted:
+        return None
+
+    from agent_team.features.board.runtime.sandbox.factory import build_sandbox
+
+    sb = build_sandbox(profile, workspace_root=None)
+    resume_existing = getattr(sb, "resume_existing", None)
+    if resume_existing is None:  # provider can't reattach (e.g. local)
+        return None
+    try:
+        await resume_existing(persisted)
+    except Exception:  # noqa: BLE001 — stale id / reaped sandbox / server change
+        logger.info(
+            "agent_team runtime: could not reattach persisted sandbox %s for "
+            "task=%s; opening fresh",
+            persisted,
+            task_id,
+        )
+        _store_task_sandbox_id(task_id, None)
+        try:
+            await sb.close()
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+
+    try:
+        await manager.adopt(task_id, sb)
+    except Exception:  # noqa: BLE001 — raced record / no slot: don't leak it
+        logger.warning(
+            "agent_team runtime: adopt failed for reattached sandbox %s "
+            "(task=%s); closing it",
+            persisted,
+            task_id,
+            exc_info=True,
+        )
+        await sb.close()
+        _store_task_sandbox_id(task_id, None)
+        return None
+
+    logger.info(
+        "agent_team runtime: reattached sandbox %s for task=%s after restart",
+        persisted,
+        task_id,
+    )
+    return sb
+
+
 def _workspace_mount(profile: RuntimeProfile, host_workspace_path: str) -> VolumeMount:
     """Build the task-workspace mount for mount-mode (host path → /workspace)."""
     return VolumeMount(
@@ -229,6 +331,14 @@ async def prepare_task_sandbox(
                 sb.state,
             )
         await manager.close(task_id)
+        _store_task_sandbox_id(task_id, None)
+    else:
+        # Nothing in RAM — maybe the app restarted while this task's sandbox
+        # was paused. Try to reattach it before paying for a fresh one.
+        reattached = await _try_reattach_sandbox(manager, task_id, profile)
+        if reattached is not None:
+            manager.mark_used(task_id)
+            return reattached
 
     # Credential injection, driven by the board's staffed coding agents +
     # remote MCP hosts. Only for the isolated provider — the local runtime uses
@@ -264,6 +374,8 @@ async def prepare_task_sandbox(
         network_policy=network_policy,
         credential_proxy=credential_proxy,
     )
+    if profile.is_sandboxed and getattr(sb, "sandbox_id", None):
+        _store_task_sandbox_id(task_id, sb.sandbox_id)
 
     # Provision the Credential Vault after open (secrets stay at the egress proxy,
     # never in the sandbox). Only on this fresh-open path; a reused/resumed
@@ -278,6 +390,7 @@ async def prepare_task_sandbox(
                 task_id,
             )
             await manager.close(task_id)
+            _store_task_sandbox_id(task_id, None)
             raise
     return sb
 
@@ -420,6 +533,7 @@ async def kill_task_sandbox(task_id: str) -> None:
     Unlike :func:`pause_task_sandbox` this discards the environment; the next turn
     reprovisions from scratch. No-op when nothing is tracked for the task.
     """
+    _store_task_sandbox_id(task_id, None)
     if _manager is None:
         return
     if _manager.get(task_id) is None:

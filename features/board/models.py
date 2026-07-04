@@ -402,6 +402,10 @@ class AgentTeamTask(Base):
     jira_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     #: Absolute path of this task's shared workspace folder on the host.
     workspace_path: Mapped[str] = mapped_column(String(1024), nullable=False)
+    #: OpenSandbox id of this task's isolated sandbox (null = none). Written on
+    #: sandbox open, cleared on kill/close; lets the runtime reattach to the same
+    #: paused sandbox after an app restart instead of orphaning it.
+    sandbox_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_by: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

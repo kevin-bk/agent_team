@@ -47,8 +47,8 @@ exactly as before.
 | `opensandbox.py` | `OpenSandboxRuntime` — the SDK-backed isolated runtime: keepalive/TTL renew, idle-close, pause/resume, volume mounts. |
 | `config.py` | `RuntimeProfile` + `VolumeMount` dataclasses; `profile_from_env()`. |
 | `factory.py` | `build_sandbox(profile, …)` → concrete runtime. |
-| `manager.py` | `SandboxManager` — per-task tracking, capacity cap, **idle-GC** + `pin_until`. |
-| `service.py` | process-wide manager, `resolve_profile` (board overlay → env), `prepare_task_sandbox` (open/resume/reopen), `pause_task_sandbox`, `kill_task_sandbox`, `open_sidecar_channel`, `describe_runtime`. |
+| `manager.py` | `SandboxManager` — per-task tracking, capacity cap, **idle-GC** + `pin_until`, `adopt()` for reattached sandboxes. |
+| `service.py` | process-wide manager, `resolve_profile` (board overlay → env), `prepare_task_sandbox` (open/resume/reopen + **reattach after restart** via persisted `task.sandbox_id`), `pause_task_sandbox`, `kill_task_sandbox`, `open_sidecar_channel`, `describe_runtime`. |
 | `cli_exec.py` | Phase-1 one-shot specs + stream→frame translators (`claude`, `codex`, `cursor`). |
 | `sidecar_protocol.py` | Phase-2 host⇄server WebSocket JSON protocol. |
 
@@ -70,6 +70,63 @@ Workers (`features/board/runtime/workers/`): `registry.resolve_worker` picks
 4. Cancel: poll the DB + the turn's cancel event; oneshot stops waiting,
    acp_sidecar sends a `cancel` message.
 5. `pause_task_sandbox(task_id)` — idle task now costs nothing.
+
+## Sandbox lifecycle
+
+State machine (per task; UI labels in parentheses):
+
+```
+            open()                    pause()
+  opening ────────► open (running) ────────► paused (paused)
+     │                ▲                          │
+     │ error          │        resume()          │
+     ▼                └──────────────────────────┘
+  broken                                    close() / GC / kill
+     │                                           │
+     └────────────► closed ◄─────────────────────┘
+```
+
+- **opening → open** — `prepare_task_sandbox` on a task's first run: create the
+  container (workspace bind-mount + credential mounts + policy fixed **at create
+  time**), persist `task.sandbox_id` (migration `031_task_sandbox_id.sql`).
+- **open → paused** — after every turn the worker pauses the sandbox (docker
+  pause: no CPU/RAM, disk kept) so an idle task costs nothing.
+- **paused → open** — the next mention/run resumes the same container; installed
+  packages, ACP session SQLite, and shell state all survive.
+- **broken** — open/exec/resume failed; the next prepare drops the record and
+  opens fresh (never returns a dead handle).
+
+**When is a sandbox deleted?** Four paths:
+
+1. **Idle GC (app)** — untouched longer than `idle_timeout_minutes` (default
+   30 m; board-overridable) → `SandboxManager` closes it. Sweep every 60 s;
+   `pin_until` can hold one warm (e.g. awaiting human review).
+2. **Explicit kill** — `kill_task_sandbox(task_id)` tears it down and clears the
+   persisted `sandbox_id`; next turn reprovisions from scratch.
+3. **Failure paths** — resume failed / credential-vault write failed → closed
+   immediately (vault failure also clears the persisted id) to avoid an
+   unauthenticated or half-dead run.
+4. **Server-side TTL (OpenSandbox)** — every sandbox has an absolute expiry
+   (`timeout_minutes`, default 3 h). While the app tracks it, a keepalive renews
+   the TTL on a cadence; once nothing renews (sandbox forgotten, app down), the
+   OpenSandbox server reaps it within ≤ one TTL window. This is the backstop
+   that guarantees **no orphan lives forever**.
+
+**Restart behaviour (persisted `sandbox_id`).** The manager registry is
+in-memory, but the sandbox id is persisted on the task row when a sandbox opens.
+On the first prepare after an app restart, `_try_reattach_sandbox` replays
+`resume_existing(persisted_id)` and **adopts** the same (paused) sandbox into
+the manager — capacity slot and all — instead of orphaning it and paying for a
+fresh one. If the reattach fails (server reaped it, id stale), the id is cleared
+and a fresh sandbox opens; ids are self-healing, a run never fails because of a
+stale id.
+
+**Duplicates are impossible in-process:** the registry is a dict behind an
+asyncio lock and `open_for_task`/`adopt` raise if the task already has a
+sandbox — exactly one sandbox per task. Note that a **reattached** sandbox keeps
+its create-time image/mounts/policy; to apply a changed board image or a newly
+added credential account, kill the task's sandbox (or restart the app **and**
+let the reattach fail / kill it) so the next turn recreates it.
 
 ## Config (env; board can override via `runtime_profile_json`)
 

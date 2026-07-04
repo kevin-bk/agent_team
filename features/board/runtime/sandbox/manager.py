@@ -200,6 +200,59 @@ class SandboxManager:
                 self._slots.release()
             raise
 
+    async def adopt(
+        self,
+        task_id: str,
+        sandbox: Sandbox,
+        *,
+        name: str | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        """Register an already-open sandbox (e.g. reattached after a restart).
+
+        Takes a capacity slot exactly like :meth:`open_for_task` so the
+        concurrency cap stays honest. Raises :class:`ValueError` if the task
+        already has a tracked sandbox, :class:`SandboxAcquireTimeout` when no
+        slot frees up in time.
+        """
+        if not task_id:
+            raise ValueError("task_id must be a non-empty string")
+
+        timeout = self._acquire_timeout
+        try:
+            if timeout > 0:
+                await asyncio.wait_for(self._slots.acquire(), timeout=timeout)
+            else:
+                await self._slots.acquire()
+        except TimeoutError as exc:
+            raise SandboxAcquireTimeout(
+                f"SandboxManager: timed out after {timeout}s waiting for a free slot "
+                f"(max_concurrent={self._max_concurrent})."
+            ) from exc
+
+        async with self._lock:
+            if task_id in self._records:
+                self._slots.release()
+                raise ValueError(
+                    f"SandboxManager: task_id {task_id!r} already has an open "
+                    "sandbox; close it first."
+                )
+            display = name or self._make_display_name(task_id)
+            self._records[task_id] = _SandboxRecord(
+                task_id=task_id,
+                sandbox=sandbox,
+                name=display,
+                image=self._profile.image,
+                extra=dict(extra or {}),
+            )
+            self._slot_held[task_id] = True
+        logger.info(
+            "SandboxManager: adopted existing sandbox task=%s name=%s id=%s",
+            task_id,
+            display,
+            getattr(sandbox, "sandbox_id", None),
+        )
+
     async def close(self, task_id: str) -> bool:
         """Close ``task_id``'s sandbox and drop it. Idempotent."""
         async with self._lock:
