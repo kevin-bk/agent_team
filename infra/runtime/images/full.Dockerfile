@@ -135,7 +135,10 @@ RUN curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" \
 # --- ACP sidecar (Strategy B) -------------------------------------------------
 # The in-sandbox ACP bridge server + the agent_team runtime subtree it needs.
 # Only the ACP stack + sidecar protocol are shipped — NOT src/ / core / plugins.
-# Session state persists to a sandbox-local SQLite (see acp/store.py).
+# Session state persists to a SQLite (see acp/store.py). The path below is only
+# the sandbox-local FALLBACK — prepare_task_sandbox overrides it at create time
+# to /var/lib/agent-team/state/acp-sessions.db, a bind-mounted per-task host
+# dir, so sessions survive a sandbox kill (container env wins over image ENV).
 ENV PYTHONPATH=/opt/agent-team
 ENV PYTHONUNBUFFERED=1
 ENV AGENT_TEAM_ACP_STORE_DB=/var/lib/agent-team/acp-sessions.db

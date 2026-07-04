@@ -282,6 +282,57 @@ def _workspace_mount(profile: RuntimeProfile, host_workspace_path: str) -> Volum
     )
 
 
+# ─── persistent per-task state (ACP sessions survive a sandbox kill) ─────────
+#
+# The sidecar's ACP conversation→session_id map used to live in a sandbox-local
+# SQLite (the image bakes AGENT_TEAM_ACP_STORE_DB=/var/lib/agent-team/…), so
+# killing a sandbox lost the mapping and the next sandbox started a NEW CLI
+# session even though the CLI's own session files survive in the mounted login
+# dir (~/.claude / ~/.codex). We bind-mount a small per-task host dir at a
+# dedicated state path and repoint the store env there at create time (container
+# env wins over the image ENV), so the mapping outlives any single sandbox and
+# the next one resumes the same session.
+
+#: In-sandbox mount point for the persistent state dir. Deliberately distinct
+#: from the image-baked /var/lib/agent-team root so nothing there is shadowed.
+_STATE_MOUNT_PATH = "/var/lib/agent-team/state"
+#: Env var the in-sandbox ACP store reads (see acp/store.py).
+_ACP_STORE_ENV = "AGENT_TEAM_ACP_STORE_DB"
+
+
+def _state_mount(host_workspace_path: str) -> VolumeMount | None:
+    """Build the persistent per-task state mount (``None`` ⇒ skip, best-effort).
+
+    The host dir sits next to the task workspace —
+    ``<workspace parent>/.sandbox-state/<workspace name>`` — so it falls under
+    the same ``allowed_host_paths`` prefix the workspace mount already
+    requires; no extra OpenSandbox server config. A failure to prepare the dir
+    degrades to the old behaviour (sandbox-local sessions), never a failed run.
+    """
+    ws = os.path.abspath(host_workspace_path)
+    state_dir = os.path.join(
+        os.path.dirname(ws), ".sandbox-state", os.path.basename(ws)
+    )
+    try:
+        os.makedirs(state_dir, exist_ok=True)
+        os.chmod(state_dir, 0o777)  # the sandbox may exec as a different uid
+    except OSError:
+        logger.warning(
+            "agent_team runtime: could not prepare state dir %s; ACP sessions "
+            "will not survive a sandbox kill",
+            state_dir,
+            exc_info=True,
+        )
+        return None
+    return VolumeMount(
+        name="task-state",
+        kind="host",
+        host_path=state_dir,
+        mount_path=_STATE_MOUNT_PATH,
+        read_only=False,
+    )
+
+
 async def prepare_task_sandbox(
     *,
     task_id: str,
@@ -362,6 +413,18 @@ async def prepare_task_sandbox(
     if profile.workspace_mode == "mount":
         extra_mounts.append(_workspace_mount(profile, host_workspace_path))
     extra_mounts.extend(cred_mounts)
+
+    # Persist the ACP session map on the host so a kill/reprovision resumes the
+    # same CLI session (isolated provider only — the host path keeps using the
+    # app database).
+    if profile.is_sandboxed:
+        state_mount = _state_mount(host_workspace_path)
+        if state_mount is not None:
+            extra_mounts.append(state_mount)
+            merged_env = {
+                **(merged_env or {}),
+                _ACP_STORE_ENV: f"{_STATE_MOUNT_PATH}/acp-sessions.db",
+            }
 
     network_policy = _resolve_network_policy(profile, plan)
     credential_proxy = bool(plan is not None and plan.needs_credential_proxy)

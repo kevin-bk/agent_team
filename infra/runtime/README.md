@@ -127,8 +127,12 @@ CLAUDE_CODE_VERSION=2.1.146 CODEX_VERSION=0.9.0 \
   bwrap sandbox disabled — we are already isolated).
 - ACP sidecar: `agent-team-runtime-server` on PATH + the `agent_team` runtime
   subtree (ACP stack) + `fastapi`/`uvicorn`/`agent-client-protocol`. Session
-  state lives in a sandbox-local SQLite (`AGENT_TEAM_ACP_STORE_DB`).
-- Mount points: `/workspace` (task working copy), `/skills`.
+  state uses a SQLite store (`AGENT_TEAM_ACP_STORE_DB`); the image bakes a
+  sandbox-local default, but the app repoints it at create time to the
+  bind-mounted per-task host state dir (`/var/lib/agent-team/state`) so
+  claude/codex sessions survive a sandbox kill.
+- Mount points: `/workspace` (task working copy), `/skills`,
+  `/var/lib/agent-team/state` (per-task persistent state).
 
 Everything is baked in — nothing is installed on task start.
 
@@ -180,10 +184,14 @@ AGENT_TEAM_RUNTIME_SIDECAR_PORT=8871      # in-sandbox server port (proxied to h
 How it works: on the first turn the host starts `agent-team-runtime-server`
 inside the sandbox (idempotent), resolves its port through the OpenSandbox proxy
 (`get_endpoint`), opens a WebSocket, and relays every ACP frame to the cockpit
-unchanged. ACP session state persists to a **sandbox-local SQLite**
-(`AGENT_TEAM_ACP_STORE_DB=/var/lib/agent-team/acp-sessions.db`, baked into the
-image) via the stdlib-only store backend, so it survives pause/resume next to the
-CLI without dragging any app code into the image.
+unchanged. ACP session state persists to a SQLite via the stdlib-only store
+backend (no app code in the image). The image bakes a sandbox-local default
+(`AGENT_TEAM_ACP_STORE_DB=/var/lib/agent-team/acp-sessions.db`), but the app
+overrides it at sandbox create to
+`/var/lib/agent-team/state/acp-sessions.db` — a bind mount of the per-task
+host dir `<workspace parent>/.sandbox-state/<task>` — so the session mapping
+(and with the mounted `~/.claude`/`~/.codex` login dirs, the CLI session
+itself) survives not just pause/resume but a full sandbox kill.
 
 ## CLI secrets
 

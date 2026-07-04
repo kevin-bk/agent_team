@@ -1141,6 +1141,84 @@ async def test_try_reattach_skips_when_nothing_persisted(monkeypatch):
     assert got is None
 
 
+# ─── persistent per-task state: ACP sessions survive a sandbox kill ─────────
+
+
+class _CapturingManager:
+    """Fake SandboxManager that records the open_for_task kwargs."""
+
+    def __init__(self) -> None:
+        self.captured: dict = {}
+
+    async def start_gc(self) -> None:
+        pass
+
+    def get(self, task_id):
+        return None
+
+    def mark_used(self, task_id) -> None:
+        pass
+
+    async def open_for_task(self, task_id, **kwargs):
+        self.captured.update(kwargs)
+        sb = _ReattachableSandbox()
+        await sb.resume_existing("sb-new")
+        return sb
+
+
+async def test_prepare_mounts_persistent_state_and_repoints_store(
+    monkeypatch, tmp_path
+):
+    from agent_team.features.board.runtime.sandbox import service as svc
+
+    mgr = _CapturingManager()
+    monkeypatch.setattr(svc, "get_manager", lambda profile=None: mgr)
+
+    async def _no_reattach(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(svc, "_try_reattach_sandbox", _no_reattach)
+    monkeypatch.setattr(svc, "_store_task_sandbox_id", lambda *_a: None)
+
+    ws = tmp_path / "boardA" / "T-7"
+    await svc.prepare_task_sandbox(
+        task_id="T-7",
+        host_workspace_path=str(ws),
+        profile=RuntimeProfile(provider="opensandbox"),
+    )
+
+    mounts = {m.name: m for m in mgr.captured["extra_mounts"]}
+    state = mounts["task-state"]
+    assert state.mount_path == "/var/lib/agent-team/state"
+    assert state.host_path == str(tmp_path / "boardA" / ".sandbox-state" / "T-7")
+    assert not state.read_only
+    import os
+
+    assert os.path.isdir(state.host_path)  # created eagerly on the host
+    env = mgr.captured["extra_env"]
+    assert env["AGENT_TEAM_ACP_STORE_DB"] == (
+        "/var/lib/agent-team/state/acp-sessions.db"
+    )
+
+
+async def test_prepare_local_provider_keeps_app_db_store(monkeypatch, tmp_path):
+    from agent_team.features.board.runtime.sandbox import service as svc
+
+    mgr = _CapturingManager()
+    monkeypatch.setattr(svc, "get_manager", lambda profile=None: mgr)
+
+    await svc.prepare_task_sandbox(
+        task_id="T-8",
+        host_workspace_path=str(tmp_path / "T-8"),
+        profile=RuntimeProfile(provider="local"),
+    )
+
+    names = [m.name for m in (mgr.captured["extra_mounts"] or [])]
+    assert "task-state" not in names
+    # No env override — the host ACP path must keep using the app database.
+    assert mgr.captured["extra_env"] is None
+
+
 # ─── admin sandboxes overview ───────────────────────────────────────────────
 
 

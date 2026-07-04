@@ -103,6 +103,12 @@ State machine (per task; UI labels in parentheses):
    `pin_until` can hold one warm (e.g. awaiting human review).
 2. **Explicit kill** — `kill_task_sandbox(task_id)` tears it down and clears the
    persisted `sandbox_id`; next turn reprovisions from scratch.
+   **CLI sessions survive this**: the ACP `conversation → session_id` map lives
+   in a per-task **host** dir (`<workspace parent>/.sandbox-state/<task>`)
+   bind-mounted at `/var/lib/agent-team/state`, and the CLI's own session files
+   live in the mounted login dir (`~/.claude` / `~/.codex`) — so the next
+   sandbox resumes the same claude/codex session. Only in-sandbox extras
+   (installed packages, non-workspace files) are lost.
 3. **Failure paths** — resume failed / credential-vault write failed → closed
    immediately (vault failure also clears the persisted id) to avoid an
    unauthenticated or half-dead run.
@@ -199,8 +205,10 @@ staffed agents**. See
 - `agent-team-sandbox` (built from `full.Dockerfile`) — **one** image for both
   strategies: claude + codex CLIs +
   `agent-team-runtime-server` + the `agent_team` runtime subtree (ACP stack +
-  protocol only — no `src/`/`core`/`plugins`). ACP session state persists in a
-  sandbox-local SQLite via the stdlib store backend (`AGENT_TEAM_ACP_STORE_DB`).
+  protocol only — no `src/`/`core`/`plugins`). ACP session state uses the stdlib
+  SQLite store backend (`AGENT_TEAM_ACP_STORE_DB`); the image bakes a
+  sandbox-local default, but `prepare_task_sandbox` repoints it to the
+  bind-mounted per-task host state dir so sessions survive a kill.
 - **Toolchain baked in:** `node`/`npm`/`npx` (npx-based stdio MCP servers run
   out of the box), `python`/`python3`/`pip` + `uv`/`uvx` (Python tasks + Python
   stdio MCP like `uvx mcp-server-git`), `build-essential`+`python3-dev` (native
@@ -236,4 +244,9 @@ app never builds images at runtime). Build context = the plugin root. See
 - **ACP session store is pluggable** (`acp/store.py`). Host uses `core.database`
   (`plugin_ai_acp_sessions`); set `AGENT_TEAM_ACP_STORE_DB=<path>` to switch to a
   stdlib-`sqlite3` backend with **zero** `core`/`plugins` imports — this is what
-  lets the sidecar image ship only the runtime subtree (no `src/`).
+  lets the sidecar image ship only the runtime subtree (no `src/`). In a task
+  sandbox the path points into the bind-mounted per-task state dir
+  (`/var/lib/agent-team/state/acp-sessions.db`, host:
+  `<workspace parent>/.sandbox-state/<task>`) so the mapping — and therefore the
+  claude/codex session — survives a sandbox kill. Sandboxes created before this
+  change keep the old sandbox-local path until they are killed once.
