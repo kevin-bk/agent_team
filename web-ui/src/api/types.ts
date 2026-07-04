@@ -1137,6 +1137,47 @@ export interface TaskRuntimeDTO {
   sandbox_state: string | null;
 }
 
+/** One row on the admin Sandboxes page (merged app + server view). */
+export interface SandboxAdminRow {
+  sandbox_id: string;
+  /** Where we know it from: tracked (RAM) / persisted (DB) / orphan (server only) / stale_link. */
+  source: "tracked" | "persisted" | "orphan" | "stale_link" | "server";
+  /** Normalized display state: "running" | "paused" | null (unknown/dead). */
+  ui_state: string | null;
+  /** App-side lifecycle state when tracked (open/paused/…). */
+  state?: string;
+  /** Raw server state (RUNNING/PAUSED/TERMINATED/…). */
+  server_state?: string | null;
+  image?: string | null;
+  created_at?: string | null;
+  expires_at?: string | null;
+  idle_seconds?: number;
+  name?: string;
+  task_id?: string;
+  task_key?: string;
+  task_title?: string;
+  board_id?: string;
+  board_name?: string | null;
+  metrics?: {
+    cpu_count: number;
+    cpu_used_percentage: number;
+    memory_total_mib: number;
+    memory_used_mib: number;
+  } | null;
+}
+
+export interface SandboxesOverviewDTO {
+  provider: string;
+  server_url: string | null;
+  counts: { running: number; paused: number; orphan: number; other: number };
+  total: number;
+  tracked: number;
+  max_concurrent: number;
+  idle_ttl_seconds: number;
+  server_error: string | null;
+  sandboxes: SandboxAdminRow[];
+}
+
 export interface RepoStatusDTO {
   repo_id: string;
   is_git: boolean;

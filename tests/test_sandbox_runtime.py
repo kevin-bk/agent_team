@@ -1139,3 +1139,97 @@ async def test_try_reattach_skips_when_nothing_persisted(monkeypatch):
         mgr, "T-4", RuntimeProfile(provider="opensandbox")
     )
     assert got is None
+
+
+# ─── admin sandboxes overview ───────────────────────────────────────────────
+
+
+async def test_admin_overview_merges_tracked_persisted_and_orphans(monkeypatch):
+    from agent_team.features.board.runtime.sandbox import admin as adm
+    from agent_team.features.board.runtime.sandbox import service as svc
+
+    # Tracked: one open sandbox for task T-A.
+    mgr = SandboxManager(profile=RuntimeProfile(provider="opensandbox", image="img:v1"))
+    sb = _ReattachableSandbox()
+    await sb.resume_existing("sb-tracked")
+    await mgr.adopt("T-A", sb)
+    monkeypatch.setattr(svc, "_manager", mgr)
+    monkeypatch.setattr(
+        svc, "resolve_profile",
+        lambda *a, **k: RuntimeProfile(provider="opensandbox", image="img:v1"),
+    )
+
+    # DB: T-A links sb-tracked; T-B links sb-persisted (process restarted).
+    monkeypatch.setattr(
+        adm, "_task_rows",
+        lambda: {
+            "sb-tracked": {
+                "task_id": "T-A", "task_key": "K-1", "task_title": "A",
+                "board_id": "B", "board_name": "Board",
+            },
+            "sb-persisted": {
+                "task_id": "T-B", "task_key": "K-2", "task_title": "B",
+                "board_id": "B", "board_name": "Board",
+            },
+        },
+    )
+
+    # Server: knows all three — the extra one is an orphan.
+    async def _server(profile):
+        return (
+            [
+                {"sandbox_id": "sb-tracked", "server_state": "RUNNING",
+                 "created_at": "2026-07-04T10:00:00", "expires_at": None,
+                 "image": "img:v1", "metadata": {}},
+                {"sandbox_id": "sb-persisted", "server_state": "PAUSED",
+                 "created_at": "2026-07-04T09:00:00", "expires_at": None,
+                 "image": "img:v1", "metadata": {}},
+                {"sandbox_id": "sb-orphan", "server_state": "PAUSED",
+                 "created_at": "2026-07-04T08:00:00", "expires_at": None,
+                 "image": "img:v1", "metadata": {}},
+            ],
+            None,
+        )
+
+    monkeypatch.setattr(adm, "_server_rows", _server)
+
+    out = await adm.list_sandboxes_overview()
+    by_id = {r["sandbox_id"]: r for r in out["sandboxes"]}
+    assert by_id["sb-tracked"]["source"] == "tracked"
+    assert by_id["sb-tracked"]["task_key"] == "K-1"
+    assert by_id["sb-tracked"]["ui_state"] == "running"
+    assert by_id["sb-persisted"]["source"] == "persisted"
+    assert by_id["sb-persisted"]["ui_state"] == "paused"
+    assert by_id["sb-orphan"]["source"] == "orphan"
+    assert out["counts"]["orphan"] == 1
+    assert out["tracked"] == 1
+    await mgr.close("T-A")
+
+
+async def test_admin_action_routes_tracked_to_task_kill(monkeypatch):
+    from agent_team.features.board.runtime.sandbox import admin as adm
+    from agent_team.features.board.runtime.sandbox import service as svc
+
+    mgr = SandboxManager(profile=RuntimeProfile(provider="opensandbox"))
+    sb = _ReattachableSandbox()
+    await sb.resume_existing("sb-live")
+    await mgr.adopt("T-K", sb)
+    monkeypatch.setattr(svc, "_manager", mgr)
+
+    killed: list[str] = []
+
+    async def _kill(task_id):
+        killed.append(task_id)
+        await mgr.close(task_id)
+
+    monkeypatch.setattr(svc, "kill_task_sandbox", _kill)
+    res = await adm.sandbox_admin_action("sb-live", "kill")
+    assert res == {"ok": True, "routed": "task", "task_id": "T-K"}
+    assert killed == ["T-K"]
+
+
+async def test_admin_action_unknown_action_rejected():
+    from agent_team.features.board.runtime.sandbox import admin as adm
+
+    res = await adm.sandbox_admin_action("whatever", "explode")
+    assert res["ok"] is False

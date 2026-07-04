@@ -160,6 +160,129 @@ def _import_sdk() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Server-wide admin helpers (no Sandbox instance) — power the admin Sandboxes
+# page: list every sandbox the OpenSandbox server knows (including ones this
+# app forgot), and pause/kill by raw id (orphan cleanup).
+# ---------------------------------------------------------------------------
+
+
+def _make_sandboxes_adapter(
+    *,
+    server_url: str,
+    api_key: str | None,
+    request_timeout_seconds: int = 60,
+) -> Any:
+    """Build a standalone SDK ``Sandboxes`` adapter bound to the server."""
+    try:
+        from opensandbox.adapters.factory import AdapterFactory  # type: ignore
+        from opensandbox.config import ConnectionConfig  # type: ignore
+    except ImportError as e:  # pragma: no cover — depends on env
+        raise SandboxError(
+            "opensandbox SDK not installed. Install with: pip install opensandbox"
+        ) from e
+
+    domain = server_url or "http://localhost:8090"
+    protocol = "http"
+    if "://" in domain:
+        protocol, _, domain = domain.partition("://")
+    cfg = ConnectionConfig(
+        api_key=api_key,
+        domain=domain,
+        protocol=protocol,
+        request_timeout=timedelta(seconds=request_timeout_seconds),
+    )
+    return AdapterFactory(cfg).create_sandbox_service()
+
+
+async def _aclose_adapter(adapter: Any) -> None:
+    """Close the adapter-owned httpx client (private attr; best-effort)."""
+    client = getattr(adapter, "_httpx_client", None)
+    if client is not None:
+        with contextlib.suppress(Exception):
+            await client.aclose()
+
+
+def _iso(value: Any) -> str | None:
+    return value.isoformat() if value is not None else None
+
+
+def _sandbox_info_to_dict(info: Any) -> dict[str, Any]:
+    status = getattr(info, "status", None)
+    image = getattr(info, "image", None)
+    return {
+        "sandbox_id": str(info.id),
+        "server_state": getattr(status, "state", None),
+        "server_reason": getattr(status, "reason", None),
+        "created_at": _iso(getattr(info, "created_at", None)),
+        "expires_at": _iso(getattr(info, "expires_at", None)),
+        "image": getattr(image, "image", None),
+        "metadata": dict(getattr(info, "metadata", None) or {}),
+    }
+
+
+async def list_server_sandboxes(
+    *,
+    server_url: str,
+    api_key: str | None,
+    request_timeout_seconds: int = 60,
+    page_size: int = 100,
+    max_pages: int = 20,
+) -> list[dict[str, Any]]:
+    """Every sandbox the server knows, as plain dicts (paginated under the hood)."""
+    from opensandbox.models.sandboxes import SandboxFilter  # type: ignore
+
+    adapter = _make_sandboxes_adapter(
+        server_url=server_url,
+        api_key=api_key,
+        request_timeout_seconds=request_timeout_seconds,
+    )
+    out: list[dict[str, Any]] = []
+    try:
+        page = 1
+        while page <= max_pages:
+            paged = await adapter.list_sandboxes(
+                SandboxFilter(page=page, page_size=page_size)
+            )
+            out.extend(_sandbox_info_to_dict(i) for i in paged.sandbox_infos)
+            pagination = getattr(paged, "pagination", None)
+            if not (pagination is not None and pagination.has_next_page):
+                break
+            page += 1
+    except Exception as e:  # noqa: BLE001
+        raise _map_exception(e, sdk={}) from e
+    finally:
+        await _aclose_adapter(adapter)
+    return out
+
+
+async def server_sandbox_action(
+    sandbox_id: str,
+    action: str,
+    *,
+    server_url: str,
+    api_key: str | None,
+    request_timeout_seconds: int = 60,
+) -> None:
+    """Pause or kill a sandbox by raw id — used for orphans the app no longer tracks."""
+    if action not in ("pause", "kill"):
+        raise ValueError(f"unknown sandbox action {action!r}")
+    adapter = _make_sandboxes_adapter(
+        server_url=server_url,
+        api_key=api_key,
+        request_timeout_seconds=request_timeout_seconds,
+    )
+    try:
+        if action == "pause":
+            await adapter.pause_sandbox(sandbox_id)
+        else:
+            await adapter.kill_sandbox(sandbox_id)
+    except Exception as e:  # noqa: BLE001
+        raise _map_exception(e, sdk={}) from e
+    finally:
+        await _aclose_adapter(adapter)
+
+
 class OpenSandboxRuntime(Sandbox):
     """Sandbox runtime backed by the OpenSandbox service.
 
@@ -444,6 +567,21 @@ class OpenSandboxRuntime(Sandbox):
             except Exception:  # noqa: BLE001
                 pass
             self._sdk_sandbox = None
+
+    async def get_metrics(self) -> dict[str, float] | None:
+        """Live CPU/memory usage (None when not open or the server can't say)."""
+        if self.state != "open" or self._sdk_sandbox is None:
+            return None
+        try:
+            m = await self._sdk_sandbox.get_metrics()
+        except Exception:  # noqa: BLE001 — metrics are advisory
+            return None
+        return {
+            "cpu_count": float(getattr(m, "cpu_count", 0.0)),
+            "cpu_used_percentage": float(getattr(m, "cpu_used_percentage", 0.0)),
+            "memory_total_mib": float(getattr(m, "memory_total_in_mib", 0.0)),
+            "memory_used_mib": float(getattr(m, "memory_used_in_mib", 0.0)),
+        }
 
     async def is_alive(self) -> bool:
         if self.state != "open" or self._sdk_sandbox is None:

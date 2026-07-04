@@ -105,6 +105,33 @@ class SandboxManager:
         rec = self._records.get(task_id)
         return rec.sandbox if rec else None
 
+    def snapshot(self) -> list[dict[str, Any]]:
+        """Read-only bookkeeping view of every tracked sandbox (admin page)."""
+        now = time.monotonic()
+        out: list[dict[str, Any]] = []
+        for rec in list(self._records.values()):
+            out.append(
+                {
+                    "task_id": rec.task_id,
+                    "name": rec.name,
+                    "sandbox_id": getattr(rec.sandbox, "sandbox_id", None),
+                    "state": rec.sandbox.state,
+                    "image": rec.image,
+                    "idle_seconds": max(0.0, now - rec.last_used_at),
+                    "pinned_until_epoch": rec.pin_until_epoch,
+                    "sandbox": rec.sandbox,
+                }
+            )
+        return out
+
+    @property
+    def max_concurrent(self) -> int:
+        return self._max_concurrent
+
+    @property
+    def idle_ttl_seconds(self) -> float:
+        return self._idle_ttl
+
     async def open_for_task(
         self,
         task_id: str,

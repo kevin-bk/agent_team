@@ -128,6 +128,26 @@ its create-time image/mounts/policy; to apply a changed board image or a newly
 added credential account, kill the task's sandbox (or restart the app **and**
 let the reattach fail / kill it) so the next turn recreates it.
 
+## Admin Sandboxes page (manage + analytics)
+
+Nav → **Sandboxes** (admin-only). One table merging three sources, refreshed
+every 15 s:
+
+| Source badge | Meaning | Actions |
+|---|---|---|
+| **Tracked** | in this process's manager registry (live state, idle time, CPU/RAM metrics for open ones) | Pause / Kill (routed through the task path so bookkeeping + persisted id stay consistent) |
+| **Persisted** | a task row links it (`task.sandbox_id`) but the process doesn't track it (e.g. after restart, before reattach) | Kill (server-direct; also clears the task link) |
+| **Orphan** | only the OpenSandbox server knows it — nothing references it | Kill early instead of waiting out the TTL |
+| **Stale link** | a task points at an id the server no longer has (self-heals on next run) | — |
+
+Overview cards: running / paused / orphan counts, tracked vs capacity
+(`AGENT_TEAM_RUNTIME_MAX_CONCURRENT`), idle TTL. Backend:
+`GET /api/admin/sandboxes` + `POST /api/admin/sandboxes/{id}/{pause|kill}`
+(`runtime/sandbox/admin.py`); the server list uses the SDK's
+`list_sandboxes`/`pause_sandbox`/`kill_sandbox` adapters (module-level helpers
+in `opensandbox.py`). When the OpenSandbox server is unreachable the page
+degrades to the tracked view with a warning banner.
+
 ## Config (env; board can override via `runtime_profile_json`)
 
 ```bash

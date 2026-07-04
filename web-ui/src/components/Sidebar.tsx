@@ -6,7 +6,7 @@ import { SessionList } from "@/features/sessions/SessionList";
 import { cn } from "@/lib/utils";
 import { ProfilePicker } from "./ProfilePicker";
 
-export type View = "board" | "chat" | "repos" | "channels";
+export type View = "board" | "chat" | "repos" | "channels" | "sandboxes";
 
 /**
  * The contextual project sidebar that sits between the deep-blue {@link NavRail}
@@ -31,7 +31,13 @@ export function Sidebar({
   // The repositories page is full-width and needs no contextual sidebar.
   // The board switcher sidebar is temporarily hidden (use the NavRail "Boards"
   // button → All boards to switch boards).
-  if (collapsed || view === "repos" || view === "channels" || view === "board")
+  if (
+    collapsed ||
+    view === "repos" ||
+    view === "channels" ||
+    view === "sandboxes" ||
+    view === "board"
+  )
     return null;
   return null;
 

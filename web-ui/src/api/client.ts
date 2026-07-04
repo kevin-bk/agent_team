@@ -63,6 +63,7 @@ import {
   type RepoUpdateBody,
   type TaskRepoDir,
   type TaskRuntimeDTO,
+  type SandboxesOverviewDTO,
   type SearchHit,
   type TaskActivityDTO,
   type CommentAttachment,
@@ -787,6 +788,15 @@ export class ApiClient {
     return this.request<TaskRuntimeDTO>(`/api/tasks/${taskId}/runtime/${action}`, {
       method: "POST",
     });
+  }
+  listAdminSandboxes() {
+    return this.request<SandboxesOverviewDTO>("/api/admin/sandboxes");
+  }
+  adminSandboxAction(sandboxId: string, action: "pause" | "kill") {
+    return this.request<{ ok: boolean; routed: string }>(
+      `/api/admin/sandboxes/${sandboxId}/${action}`,
+      { method: "POST" },
+    );
   }
   resetTaskRepos(taskId: string) {
     return this.request<{ prepared: TaskRepoDir[] }>(

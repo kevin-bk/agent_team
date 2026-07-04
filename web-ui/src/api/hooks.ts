@@ -77,6 +77,7 @@ export const qk = {
   taskJournal: (taskId: string) => ["task-journal", taskId] as const,
   users: (q: string) => ["users", q] as const,
   repos: ["repos"] as const,
+  adminSandboxes: ["admin-sandboxes"] as const,
   boardRepos: (id: string) => ["board-repos", id] as const,
   taskRepos: (taskId: string) => ["task-repos", taskId] as const,
   taskRuntime: (taskId: string) => ["task-runtime", taskId] as const,
@@ -981,6 +982,29 @@ export function useRepoMutations() {
       onSuccess: invalidate,
     }),
   };
+}
+
+// ── admin sandboxes ────────────────────────────────────────────────
+
+export function useAdminSandboxes(enabled = true) {
+  const { client } = useApi();
+  return useQuery({
+    queryKey: qk.adminSandboxes,
+    queryFn: () => client.listAdminSandboxes(),
+    enabled,
+    refetchInterval: 15_000,
+  });
+}
+
+export function useAdminSandboxAction() {
+  const { client } = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { sandboxId: string; action: "pause" | "kill" }) =>
+      client.adminSandboxAction(vars.sandboxId, vars.action),
+    onSuccess: () =>
+      void qc.invalidateQueries({ queryKey: qk.adminSandboxes }),
+  });
 }
 
 export function useBoardRepos(boardId: string | undefined) {

@@ -1,4 +1,5 @@
 import {
+  Cpu,
   FolderGit2,
   LayoutGrid,
   MessagesSquare,
@@ -25,6 +26,7 @@ const ITEMS: NavItem[] = [
 const ADMIN_ITEMS: NavItem[] = [
   { id: "repos", label: "Repositories", icon: FolderGit2 },
   { id: "channels", label: "Channels", icon: Send },
+  { id: "sandboxes", label: "Sandboxes", icon: Cpu },
 ];
 
 /**

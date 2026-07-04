@@ -901,6 +901,46 @@ async def control_task_runtime(
     return sandbox_service.describe_runtime(task_id=task.id, board_id=task.board_id)
 
 
+# ---------------------------------------------------------------------------
+# Admin: sandboxes overview (manage + analytics)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/admin/sandboxes")
+async def admin_list_sandboxes(request: Request, db: Session = Depends(get_db)):
+    """Admin-only overview of every sandbox (tracked, persisted, orphans)."""
+    user, err = auth_or_401(db, request)
+    if err:
+        return err
+    if not _is_admin(user):
+        return JSONResponse(status_code=403, content={"detail": "Admin only"})
+    from agent_team.features.board.runtime.sandbox.admin import (
+        list_sandboxes_overview,
+    )
+
+    return await list_sandboxes_overview()
+
+
+@router.post("/admin/sandboxes/{sandbox_id}/{action}")
+async def admin_sandbox_action(
+    sandbox_id: str, action: str, request: Request, db: Session = Depends(get_db)
+):
+    """Admin-only ``pause``/``kill`` for any sandbox by id (incl. orphans)."""
+    if action not in ("pause", "kill"):
+        return JSONResponse(status_code=404, content={"detail": "unknown action"})
+    user, err = auth_or_401(db, request)
+    if err:
+        return err
+    if not _is_admin(user):
+        return JSONResponse(status_code=403, content={"detail": "Admin only"})
+    from agent_team.features.board.runtime.sandbox.admin import sandbox_admin_action
+
+    result = await sandbox_admin_action(sandbox_id, action)
+    if not result.get("ok"):
+        return JSONResponse(status_code=400, content={"detail": result.get("error")})
+    return result
+
+
 @router.post("/tasks/{task_id}/repos/prepare")
 async def prepare_task_repos_endpoint(
     task_id: str, request: Request, db: Session = Depends(get_db)
