@@ -1,6 +1,9 @@
 # =============================================================================
 # OpenSandbox server configuration for the agent_team isolated runtime.
 #
+# TEMPLATE — copy to config.toml (which is gitignored) and fill in secrets:
+#   cp opensandbox/config.toml.example opensandbox/config.toml
+#
 # Schema matches the upstream sample:
 #   https://github.com/alibaba/OpenSandbox/blob/main/server/docker-compose.example.yaml
 #
@@ -11,8 +14,9 @@
 [server]
 host = "0.0.0.0"
 port = 8090
-# api_key = "set-me-in-prod"   # set a random string in prod; must match
-                               # OPEN_SANDBOX_API_KEY in the agent-manager .env
+# SECRET — set a random string in prod; must match OPEN_SANDBOX_API_KEY in the
+# agent-manager .env. Leave commented for local dev bound to 127.0.0.1.
+# api_key = "REPLACE_WITH_A_RANDOM_SECRET"
 
 [log]
 level = "INFO"

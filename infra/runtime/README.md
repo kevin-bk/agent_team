@@ -17,7 +17,8 @@ infra/runtime/.env.example                    # runtime vars → copy into agent
 infra/runtime/docker-compose.opensandbox.yml  # run an OpenSandbox server on your host
 infra/runtime/docker-compose.postgres.yml     # run the app Postgres (reuses existing volume)
 infra/runtime/postgres/schema.sql             # first-boot DB init (fresh volume only)
-infra/runtime/opensandbox/config.toml         # server config mounted by the compose file
+infra/runtime/opensandbox/config.toml.example # server config template (copy → config.toml)
+infra/runtime/opensandbox/config.toml         # your server config (gitignored — holds api_key)
 scripts/build-runtime-images.sh               # build/push helper
 ```
 
@@ -33,9 +34,14 @@ On the host that should run the task sandboxes (can be the same box as the app):
 ```bash
 cd infra/runtime
 cp .env.example .env                                  # see the ⚠️ note below
+cp opensandbox/config.toml.example opensandbox/config.toml   # then set [server] api_key
 docker compose -f docker-compose.opensandbox.yml up -d
 curl http://localhost:8090/                           # readiness check
 ```
+
+> `opensandbox/config.toml` is **gitignored** because it holds the server
+> `api_key`. Keep secrets there (and in your local `.env`), never in the
+> committed `*.example` files.
 
 > ⚠️ **Two different `.env` files — don't confuse them.**
 > The `.env` you just created **here (`infra/runtime/.env`) is read only by
