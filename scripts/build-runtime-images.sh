@@ -39,7 +39,7 @@ IMG_DIR="${ROOT_DIR}/infra/runtime/images"
 VERSION="${IMAGE_VERSION:-v1}"
 REGISTRY="${REGISTRY:-agent-team}"
 BUILD_PLATFORM="${BUILD_PLATFORM:-linux/amd64}"
-``
+
 # Collect target list from argv or auto-discover all *.Dockerfile.
 targets=()
 if [[ $# -gt 0 ]]; then
