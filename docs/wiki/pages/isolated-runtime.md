@@ -104,6 +104,13 @@ State machine (per task; UI labels in parentheses):
    (GC, shutdown, explicit) fires the manager's `on_close` hook, which clears
    the task's persisted `sandbox_id` — a closed sandbox is deleted server-side,
    so keeping the id would only leave dead "Stale link" rows on the admin page.
+   **Busy turns never look idle**: an ACP turn's traffic flows host ↔ sidecar
+   over a WebSocket, which touches neither the manager's clock nor the
+   runtime's own idle tracking — so each sweep asks the service's busy counter
+   (`is_busy` hook) and treats in-flight tasks as just-used, heartbeating the
+   runtime too (`Sandbox.touch`). A turn longer than the TTL is therefore
+   safe, and the idle countdown starts at turn **end** (the post-turn pause
+   calls `mark_used`), not turn start.
 2. **Explicit kill** — `kill_task_sandbox(task_id)` tears it down and clears the
    persisted `sandbox_id`; next turn reprovisions from scratch.
    **CLI sessions survive this**: the ACP `conversation → session_id` map lives

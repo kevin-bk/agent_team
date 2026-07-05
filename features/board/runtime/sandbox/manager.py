@@ -71,6 +71,7 @@ class SandboxManager:
         idle_ttl_seconds: float = 0.0,
         gc_interval_seconds: float = 0.0,
         on_close: Callable[[str], None] | None = None,
+        is_busy: Callable[[str], bool] | None = None,
     ) -> None:
         """Args:
 
@@ -85,6 +86,13 @@ class SandboxManager:
             sandbox is closed (any path: explicit close, idle GC, shutdown).
             Used by the service layer to clear the task's persisted sandbox id,
             since a closed sandbox is deleted server-side and its id is useless.
+        is_busy: returns ``True`` while an agent turn is using the task's
+            sandbox. ``mark_used`` only fires at turn START, and an ACP turn's
+            traffic flows host ↔ sidecar over a WebSocket that never touches
+            this manager — so a turn longer than the idle TTL would look idle
+            and get reaped mid-flight. Each GC sweep treats busy tasks as
+            just-used (refreshes ``last_used_at`` + heartbeats the sandbox's
+            own idle tracking via :meth:`Sandbox.touch`).
         """
         self._profile = profile
         self._max_concurrent = max_concurrent
@@ -92,6 +100,7 @@ class SandboxManager:
         self._idle_ttl = idle_ttl_seconds
         self._gc_interval = gc_interval_seconds
         self._on_close = on_close
+        self._is_busy = is_busy
         self._records: dict[str, _SandboxRecord] = {}
         self._lock = asyncio.Lock()
         sem_capacity = max_concurrent or 999_999
@@ -382,11 +391,22 @@ class SandboxManager:
                 logger.exception("SandboxManager.gc: sweep failed (continuing)")
 
     async def _sweep_once(self) -> list[str]:
-        if self._idle_ttl <= 0:
-            return []
         now_mono = time.monotonic()
         now_epoch = time.time()
         async with self._lock:
+            # Busy tasks (agent turn in flight) count as just-used: refresh the
+            # manager clock AND heartbeat the sandbox's own idle tracking —
+            # ACP turns run over a sidecar WebSocket that touches neither.
+            if self._is_busy is not None:
+                for tid, rec in self._records.items():
+                    if self._is_busy(tid):
+                        rec.last_used_at = now_mono
+                        try:
+                            rec.sandbox.touch()
+                        except Exception:  # noqa: BLE001 — heartbeat is best-effort
+                            pass
+            if self._idle_ttl <= 0:
+                return []
             stale_ids = [
                 tid
                 for tid, rec in self._records.items()

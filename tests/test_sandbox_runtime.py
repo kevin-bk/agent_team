@@ -1401,6 +1401,9 @@ async def test_pause_is_refcounted_across_overlapping_turns(monkeypatch):
         def get(self, task_id):
             return self._sb
 
+        def mark_used(self, task_id):
+            pass
+
     sb = _SB()
     monkeypatch.setattr(svc, "_manager", _Mgr(sb))
     svc._busy_counts.clear()
@@ -1564,3 +1567,77 @@ async def test_admin_exec_routes_tracked_only(monkeypatch):
     res = await adm.sandbox_admin_exec("sb-unknown", "uname -a")
     assert res["ok"] is False and "tracked" in res["error"]
     await mgr.close("T-ADM")
+
+
+# ─── busy turns must not look idle (long ACP turn > idle TTL) ────────────────
+
+
+async def test_gc_sweep_spares_busy_tasks_and_heartbeats_runtime():
+    """An agent turn's ACP traffic never touches the manager, so a turn longer
+    than the idle TTL would be reaped mid-flight. The sweep must treat busy
+    tasks as just-used and heartbeat the sandbox's own idle tracking."""
+    import asyncio
+
+    busy: set[str] = set()
+    touched: list[str] = []
+
+    class _TouchSandbox(_ReattachableSandbox):
+        def touch(self) -> None:
+            touched.append(self.sandbox_id or "?")
+
+    mgr = SandboxManager(
+        profile=RuntimeProfile(provider="opensandbox"),
+        idle_ttl_seconds=0.01,
+        is_busy=lambda tid: tid in busy,
+    )
+    sb_busy, sb_idle = _TouchSandbox(), _TouchSandbox()
+    await sb_busy.resume_existing("sb-busy")
+    await sb_idle.resume_existing("sb-idle")
+    await mgr.adopt("T-BUSY", sb_busy)
+    await mgr.adopt("T-IDLE", sb_idle)
+    busy.add("T-BUSY")
+
+    await asyncio.sleep(0.02)  # both past the TTL on the clock
+    reaped = await mgr.sweep_idle()
+    assert reaped == ["T-IDLE"]  # busy one spared
+    assert touched == ["sb-busy"]  # …and heartbeat sent to its runtime
+    assert mgr.get("T-BUSY") is sb_busy
+
+    # Turn ends → no longer busy → next sweep (past TTL again) reaps it.
+    busy.clear()
+    await asyncio.sleep(0.02)
+    reaped = await mgr.sweep_idle()
+    assert reaped == ["T-BUSY"]
+
+
+async def test_pause_at_turn_end_resets_idle_clock(monkeypatch):
+    """The idle countdown must start at turn END: after a long turn, the
+    just-paused sandbox would otherwise be past the TTL immediately."""
+    from agent_team.features.board.runtime.sandbox import service as svc
+
+    class _SB:
+        state = "open"
+
+        async def pause(self):
+            self.state = "paused"
+
+    class _Mgr:
+        def __init__(self, sb):
+            self._sb = sb
+            self.marked: list[str] = []
+
+        def get(self, task_id):
+            return self._sb
+
+        def mark_used(self, task_id):
+            self.marked.append(task_id)
+
+    sb = _SB()
+    mgr = _Mgr(sb)
+    monkeypatch.setattr(svc, "_manager", mgr)
+    svc._busy_counts.clear()
+    svc._busy_counts["T-LONG"] = 1
+
+    await svc.pause_task_sandbox("T-LONG")
+    assert sb.state == "paused"
+    assert mgr.marked == ["T-LONG"]

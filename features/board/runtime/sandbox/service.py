@@ -115,6 +115,12 @@ def get_manager(profile: RuntimeProfile | None = None) -> SandboxManager:
         # this also covers the idle GC + shutdown) so the admin page doesn't
         # accumulate "stale link" rows after each idle reap.
         on_close=lambda task_id: _store_task_sandbox_id(task_id, None),
+        # An ACP turn talks to the sidecar over a WebSocket — neither the
+        # manager's clock nor the runtime's own idle tracking sees that
+        # traffic. Marking in-flight turns busy makes each GC sweep count
+        # them as active, so a turn longer than the idle TTL isn't reaped
+        # (or runtime-idle-closed) mid-flight.
+        is_busy=lambda task_id: _busy_counts.get(task_id, 0) > 0,
     )
     _manager_profile = prof
     return _manager
@@ -619,6 +625,10 @@ async def pause_task_sandbox(task_id: str) -> None:
     sb = _manager.get(task_id)
     if sb is None:
         return
+    # The idle countdown starts at turn END, not turn start: without this a
+    # turn longer than the TTL would leave last_used_at in the past and the
+    # just-paused sandbox would be reaped on the very next GC sweep.
+    _manager.mark_used(task_id)
     try:
         await sb.pause()
     except NotImplementedError:
@@ -688,6 +698,9 @@ async def exec_in_task_sandbox(
         }
     timeout = timeout_seconds or EXEC_DEFAULT_TIMEOUT_SECONDS
     timeout = max(1.0, min(float(timeout), EXEC_MAX_TIMEOUT_SECONDS))
+    # A human is actively poking at this sandbox — reset the manager's idle
+    # clock too (exec_shell already resets the runtime-level one).
+    _manager.mark_used(task_id)
     try:
         result = await sb.exec_shell(command, timeout_seconds=timeout)
     except Exception as e:  # noqa: BLE001

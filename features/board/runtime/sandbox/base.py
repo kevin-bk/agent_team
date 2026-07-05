@@ -171,6 +171,15 @@ class Sandbox(abc.ABC):
         """Return ``True`` while the runtime can still accept work."""
         return self.state == "open"
 
+    def touch(self) -> None:
+        """Record activity so runtime-level idle tracking doesn't fire.
+
+        No-op by default. Called by the manager's GC sweep as a heartbeat for
+        tasks with an agent turn in flight: ACP traffic flows host ↔ sidecar
+        over a WebSocket, bypassing :meth:`exec_shell`, so without this the
+        runtime would count a hard-working sandbox as idle.
+        """
+
     # ─── execution ──────────────────────────────────────────────────────
 
     @abc.abstractmethod

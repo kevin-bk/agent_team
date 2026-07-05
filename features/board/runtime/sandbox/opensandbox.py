@@ -453,6 +453,10 @@ class OpenSandboxRuntime(Sandbox):
     def _touch(self) -> None:
         self._last_activity = time.monotonic()
 
+    def touch(self) -> None:
+        """Public heartbeat (see :meth:`Sandbox.touch`) — resets idle tracking."""
+        self._touch()
+
     async def _keepalive_loop(self) -> None:
         """Renew the server-side TTL until idle past ``idle_timeout``.
 
