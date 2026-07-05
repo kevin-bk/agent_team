@@ -1,8 +1,21 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { toast } from "sonner";
-import { Circle, CircleDot, Cpu, Loader2, Moon, Trash2 } from "@/components/icons";
-import { useControlTaskRuntime, useTaskRuntime } from "@/api/hooks";
+import {
+  Circle,
+  CircleDot,
+  Cpu,
+  Loader2,
+  Moon,
+  TerminalSquare,
+  Trash2,
+} from "@/components/icons";
+import {
+  useControlTaskRuntime,
+  useExecTaskRuntime,
+  useTaskRuntime,
+} from "@/api/hooks";
 import { useConfirm } from "@/components/ConfirmDialog";
+import { SandboxConsoleDialog } from "@/features/sandboxes/SandboxConsoleDialog";
 import { cn } from "@/lib/utils";
 
 /**
@@ -27,7 +40,9 @@ export function TaskRuntimeCard({
 }) {
   const runtime = useTaskRuntime(taskId);
   const control = useControlTaskRuntime(taskId);
+  const execRuntime = useExecTaskRuntime(taskId);
   const confirm = useConfirm();
+  const [consoleOpen, setConsoleOpen] = useState(false);
   const rt = runtime.data;
   if (runtime.isLoading || !rt) return null;
 
@@ -101,6 +116,15 @@ export function TaskRuntimeCard({
           <div className="mt-2 flex items-center gap-2">
             {state === "running" && (
               <ControlButton
+                icon={<TerminalSquare className="h-3.5 w-3.5" />}
+                label="Console"
+                disabled={control.isPending}
+                title="Run a one-off command inside this task's sandbox"
+                onClick={() => setConsoleOpen(true)}
+              />
+            )}
+            {state === "running" && (
+              <ControlButton
                 icon={
                   control.isPending ? (
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -130,6 +154,13 @@ export function TaskRuntimeCard({
           </div>
         )}
       </div>
+      <SandboxConsoleDialog
+        open={consoleOpen}
+        onOpenChange={setConsoleOpen}
+        title="Sandbox console"
+        subtitle={rt.sandbox_id ?? undefined}
+        exec={(command) => execRuntime.mutateAsync({ command })}
+      />
     </div>
   );
 }

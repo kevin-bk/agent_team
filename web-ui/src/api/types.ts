@@ -1197,6 +1197,18 @@ export interface SandboxesOverviewDTO {
   sandboxes: SandboxAdminRow[];
 }
 
+/** Result of a one-off manual command run inside a sandbox (console). */
+export interface SandboxExecResultDTO {
+  ok: boolean;
+  exit_code: number;
+  stdout: string;
+  stderr: string;
+  duration_ms: number;
+  timed_out: boolean;
+  /** True when stdout/stderr were tail-truncated to the server cap. */
+  truncated: boolean;
+}
+
 export interface RepoStatusDTO {
   repo_id: string;
   is_git: boolean;

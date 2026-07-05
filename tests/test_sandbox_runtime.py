@@ -1452,3 +1452,115 @@ async def test_admin_action_unknown_action_rejected():
 
     res = await adm.sandbox_admin_action("whatever", "explode")
     assert res["ok"] is False
+
+
+# ─── manual console exec (UI "Run command in sandbox") ──────────────────────
+
+
+class _ExecSandbox(_ReattachableSandbox):
+    """Fake recording exec calls and returning canned output."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls: list[tuple[str, float | None]] = []
+
+    async def exec_shell(self, command, *, timeout_seconds=None, cwd=None, env=None,
+                         on_stdout=None, on_stderr=None) -> ExecResult:
+        self.calls.append((command, timeout_seconds))
+        return ExecResult(
+            stdout="hello\n", stderr="warn\n", exit_code=0, duration_ms=42
+        )
+
+
+async def test_exec_in_task_sandbox_runs_command(monkeypatch):
+    from agent_team.features.board.runtime.sandbox import service as svc
+
+    mgr = SandboxManager(profile=RuntimeProfile(provider="opensandbox"))
+    sb = _ExecSandbox()
+    await sb.resume_existing("sb-console")
+    await mgr.adopt("T-C", sb)
+    monkeypatch.setattr(svc, "_manager", mgr)
+
+    res = await svc.exec_in_task_sandbox("T-C", "  echo hi  ")
+    assert res["ok"] is True
+    assert res["exit_code"] == 0
+    assert res["stdout"] == "hello\n" and res["stderr"] == "warn\n"
+    assert res["truncated"] is False
+    # Command is trimmed; timeout falls back to the default and stays capped.
+    assert sb.calls == [("echo hi", float(svc.EXEC_DEFAULT_TIMEOUT_SECONDS))]
+
+    # An absurd timeout is clamped to the max.
+    await svc.exec_in_task_sandbox("T-C", "sleep 999", timeout_seconds=9999)
+    assert sb.calls[-1] == ("sleep 999", float(svc.EXEC_MAX_TIMEOUT_SECONDS))
+    await mgr.close("T-C")
+
+
+async def test_exec_in_task_sandbox_refuses_when_not_runnable(monkeypatch):
+    from agent_team.features.board.runtime.sandbox import service as svc
+
+    # Empty command.
+    res = await svc.exec_in_task_sandbox("T-C", "   ")
+    assert res["ok"] is False and "command" in res["error"]
+
+    # No manager at all (host/local provider).
+    monkeypatch.setattr(svc, "_manager", None)
+    res = await svc.exec_in_task_sandbox("T-C", "ls")
+    assert res["ok"] is False and "manager" in res["error"]
+
+    # Manager but nothing tracked for the task.
+    mgr = SandboxManager(profile=RuntimeProfile(provider="opensandbox"))
+    monkeypatch.setattr(svc, "_manager", mgr)
+    res = await svc.exec_in_task_sandbox("T-C", "ls")
+    assert res["ok"] is False and "no sandbox" in res["error"]
+
+    # Tracked but paused: exec must NOT resume it behind the manager's back.
+    sb = _ExecSandbox()
+    await sb.resume_existing("sb-paused")
+    sb.state = "paused"
+    await mgr.adopt("T-P", sb)
+    res = await svc.exec_in_task_sandbox("T-P", "ls")
+    assert res["ok"] is False and "not open" in res["error"]
+    assert sb.calls == []
+
+
+async def test_exec_in_task_sandbox_truncates_huge_output(monkeypatch):
+    from agent_team.features.board.runtime.sandbox import service as svc
+
+    class _NoisySandbox(_ReattachableSandbox):
+        async def exec_shell(self, command, *, timeout_seconds=None, cwd=None,
+                             env=None, on_stdout=None, on_stderr=None) -> ExecResult:
+            return ExecResult(stdout="x" * (svc.EXEC_MAX_OUTPUT_CHARS + 500),
+                              exit_code=0)
+
+    mgr = SandboxManager(profile=RuntimeProfile(provider="opensandbox"))
+    sb = _NoisySandbox()
+    await sb.resume_existing("sb-noisy")
+    await mgr.adopt("T-N", sb)
+    monkeypatch.setattr(svc, "_manager", mgr)
+
+    res = await svc.exec_in_task_sandbox("T-N", "yes")
+    assert res["ok"] is True
+    assert res["truncated"] is True
+    assert len(res["stdout"]) == svc.EXEC_MAX_OUTPUT_CHARS
+    await mgr.close("T-N")
+
+
+async def test_admin_exec_routes_tracked_only(monkeypatch):
+    """The Sandboxes-page console works via the tracked task handle; anything
+    untracked (orphan / stale link) is refused — there is no live handle."""
+    from agent_team.features.board.runtime.sandbox import admin as adm
+    from agent_team.features.board.runtime.sandbox import service as svc
+
+    mgr = SandboxManager(profile=RuntimeProfile(provider="opensandbox"))
+    sb = _ExecSandbox()
+    await sb.resume_existing("sb-adm")
+    await mgr.adopt("T-ADM", sb)
+    monkeypatch.setattr(svc, "_manager", mgr)
+
+    res = await adm.sandbox_admin_exec("sb-adm", "uname -a")
+    assert res["ok"] is True
+    assert sb.calls[0][0] == "uname -a"
+
+    res = await adm.sandbox_admin_exec("sb-unknown", "uname -a")
+    assert res["ok"] is False and "tracked" in res["error"]
+    await mgr.close("T-ADM")

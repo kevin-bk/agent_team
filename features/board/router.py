@@ -887,6 +887,39 @@ async def get_task_runtime(task_id: str, request: Request, db: Session = Depends
     return describe_runtime(task_id=task.id, board_id=task.board_id)
 
 
+# NOTE: registered BEFORE ``/runtime/{action}`` — FastAPI matches in
+# registration order, so the catch-all would otherwise swallow ``exec``.
+@router.post("/tasks/{task_id}/runtime/exec")
+async def exec_task_runtime(
+    task_id: str, request: Request, db: Session = Depends(get_db)
+):
+    """Run one shell command in the task's live sandbox (manual debugging).
+
+    Editor+; requires a warm sandbox (never opens one). This is a one-off
+    command runner, not an interactive shell.
+    """
+    ctx, err = authz.guard_task(db, request, task_id, min_role="editor")
+    if err:
+        return err
+    task = ctx.task
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    command = str(body.get("command") or "")
+    timeout = body.get("timeout_seconds")
+    from agent_team.features.board.runtime.sandbox import service as sandbox_service
+
+    result = await sandbox_service.exec_in_task_sandbox(
+        task.id,
+        command,
+        timeout_seconds=float(timeout) if timeout else None,
+    )
+    if not result.get("ok"):
+        return JSONResponse(status_code=400, content={"detail": result.get("error")})
+    return result
+
+
 @router.post("/tasks/{task_id}/runtime/{action}")
 async def control_task_runtime(
     task_id: str, action: str, request: Request, db: Session = Depends(get_db)
@@ -935,6 +968,33 @@ async def admin_list_sandboxes(request: Request, db: Session = Depends(get_db)):
     )
 
     return await list_sandboxes_overview()
+
+
+# Registered BEFORE ``/{action}`` so the catch-all doesn't swallow ``exec``.
+@router.post("/admin/sandboxes/{sandbox_id}/exec")
+async def admin_sandbox_exec(
+    sandbox_id: str, request: Request, db: Session = Depends(get_db)
+):
+    """Admin-only: run one shell command in a tracked, open sandbox by id."""
+    user, err = auth_or_401(db, request)
+    if err:
+        return err
+    if not _is_admin(user):
+        return JSONResponse(status_code=403, content={"detail": "Admin only"})
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    command = str(body.get("command") or "")
+    timeout = body.get("timeout_seconds")
+    from agent_team.features.board.runtime.sandbox.admin import sandbox_admin_exec
+
+    result = await sandbox_admin_exec(
+        sandbox_id, command, timeout_seconds=float(timeout) if timeout else None
+    )
+    if not result.get("ok"):
+        return JSONResponse(status_code=400, content={"detail": result.get("error")})
+    return result
 
 
 @router.post("/admin/sandboxes/{sandbox_id}/{action}")

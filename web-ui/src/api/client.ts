@@ -64,6 +64,7 @@ import {
   type TaskRepoDir,
   type TaskRuntimeDTO,
   type SandboxesOverviewDTO,
+  type SandboxExecResultDTO,
   type SearchHit,
   type TaskActivityDTO,
   type CommentAttachment,
@@ -796,6 +797,24 @@ export class ApiClient {
     return this.request<{ ok: boolean; routed: string }>(
       `/api/admin/sandboxes/${sandboxId}/${action}`,
       { method: "POST" },
+    );
+  }
+  adminSandboxExec(sandboxId: string, command: string, timeoutSeconds?: number) {
+    return this.request<SandboxExecResultDTO>(
+      `/api/admin/sandboxes/${sandboxId}/exec`,
+      {
+        method: "POST",
+        body: JSON.stringify({ command, timeout_seconds: timeoutSeconds }),
+      },
+    );
+  }
+  execTaskRuntime(taskId: string, command: string, timeoutSeconds?: number) {
+    return this.request<SandboxExecResultDTO>(
+      `/api/tasks/${taskId}/runtime/exec`,
+      {
+        method: "POST",
+        body: JSON.stringify({ command, timeout_seconds: timeoutSeconds }),
+      },
     );
   }
   resetTaskRepos(taskId: string) {

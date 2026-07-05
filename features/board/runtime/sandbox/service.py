@@ -643,3 +643,66 @@ async def kill_task_sandbox(task_id: str) -> None:
         await _manager.close(task_id)
     except Exception:  # noqa: BLE001
         logger.warning("agent_team runtime: kill failed for task=%s", task_id, exc_info=True)
+
+
+#: Caps for the manual (human-driven) exec endpoint. This is a debugging
+#: convenience — run a one-off command in a task's live sandbox from the UI —
+#: NOT an interactive shell: no stdin/PTY, output is captured then truncated.
+EXEC_MAX_TIMEOUT_SECONDS = 120
+EXEC_DEFAULT_TIMEOUT_SECONDS = 30
+EXEC_MAX_OUTPUT_CHARS = 100_000
+
+
+def _clamp_output(text: str) -> tuple[str, bool]:
+    if len(text) <= EXEC_MAX_OUTPUT_CHARS:
+        return text, False
+    return text[-EXEC_MAX_OUTPUT_CHARS:], True
+
+
+async def exec_in_task_sandbox(
+    task_id: str,
+    command: str,
+    *,
+    timeout_seconds: float | None = None,
+) -> dict:
+    """Run one shell command in a task's already-open sandbox and return its result.
+
+    For manual debugging from the UI (e.g. ``which playwright-mcp``). Requires a
+    warm, open sandbox — never opens or resumes one (that is the agent turn's
+    job). Returns ``{ok, exit_code, stdout, stderr, duration_ms, timed_out,
+    truncated}`` or ``{ok: False, error}`` when nothing runnable is tracked.
+    """
+    command = (command or "").strip()
+    if not command:
+        return {"ok": False, "error": "command is required"}
+    if _manager is None:
+        return {"ok": False, "error": "no sandbox manager (host/local provider?)"}
+    sb = _manager.get(task_id)
+    if sb is None:
+        return {"ok": False, "error": "no sandbox is tracked for this task"}
+    if getattr(sb, "state", None) != "open":
+        return {
+            "ok": False,
+            "error": f"sandbox is not open (state={getattr(sb, 'state', '?')}); "
+            "run a turn or resume it first",
+        }
+    timeout = timeout_seconds or EXEC_DEFAULT_TIMEOUT_SECONDS
+    timeout = max(1.0, min(float(timeout), EXEC_MAX_TIMEOUT_SECONDS))
+    try:
+        result = await sb.exec_shell(command, timeout_seconds=timeout)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "agent_team runtime: manual exec failed for task=%s", task_id, exc_info=True
+        )
+        return {"ok": False, "error": str(e)}
+    stdout, out_trunc = _clamp_output(getattr(result, "stdout", "") or "")
+    stderr, err_trunc = _clamp_output(getattr(result, "stderr", "") or "")
+    return {
+        "ok": True,
+        "exit_code": getattr(result, "exit_code", -1),
+        "stdout": stdout,
+        "stderr": stderr,
+        "duration_ms": getattr(result, "duration_ms", 0),
+        "timed_out": getattr(result, "timed_out", False),
+        "truncated": out_trunc or err_trunc,
+    }

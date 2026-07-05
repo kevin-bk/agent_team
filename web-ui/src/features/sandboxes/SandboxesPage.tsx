@@ -1,10 +1,11 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
-import { Cpu, Loader2, RefreshCw, Trash2 } from "@/components/icons";
+import { Cpu, Loader2, RefreshCw, TerminalSquare, Trash2 } from "@/components/icons";
 import {
   useAdminSandboxAction,
   useAdminSandboxes,
+  useAdminSandboxExec,
   useMe,
 } from "@/api/hooks";
 import type { SandboxAdminRow } from "@/api/types";
@@ -12,6 +13,7 @@ import { useConfirm } from "@/components/ConfirmDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
+import { SandboxConsoleDialog } from "./SandboxConsoleDialog";
 
 const STATE_BADGE: Record<
   string,
@@ -105,8 +107,10 @@ export function SandboxesPage() {
   const isAdmin = !!me.data?.is_admin;
   const overview = useAdminSandboxes(isAdmin);
   const action = useAdminSandboxAction();
+  const exec = useAdminSandboxExec();
   const confirm = useConfirm();
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [consoleRow, setConsoleRow] = useState<SandboxAdminRow | null>(null);
 
   if (me.data && !isAdmin) {
     return (
@@ -251,6 +255,9 @@ export function SandboxesPage() {
                       const source = SOURCE_BADGE[row.source];
                       const busy = busyId === row.sandbox_id;
                       const canPause = row.ui_state === "running";
+                      // Exec needs the live in-process handle: tracked + open only.
+                      const canConsole =
+                        row.source === "tracked" && row.ui_state === "running";
                       const dead = row.source === "stale_link";
                       return (
                         <tr key={row.sandbox_id} className="border-b last:border-0">
@@ -316,6 +323,18 @@ export function SandboxesPage() {
                           </td>
                           <td className="px-3 py-2">
                             <div className="flex justify-end gap-1.5">
+                              {canConsole ? (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  disabled={busy}
+                                  title="Run a one-off command inside this sandbox"
+                                  onClick={() => setConsoleRow(row)}
+                                >
+                                  <TerminalSquare className="h-3.5 w-3.5" />
+                                  Console
+                                </Button>
+                              ) : null}
                               {canPause ? (
                                 <Button
                                   variant="outline"
@@ -356,6 +375,24 @@ export function SandboxesPage() {
           </>
         ) : null}
       </div>
+      <SandboxConsoleDialog
+        open={consoleRow !== null}
+        onOpenChange={(open) => {
+          if (!open) setConsoleRow(null);
+        }}
+        title={
+          consoleRow?.task_key
+            ? `Sandbox console — ${consoleRow.task_key}`
+            : "Sandbox console"
+        }
+        subtitle={consoleRow?.sandbox_id}
+        exec={(command) =>
+          exec.mutateAsync({
+            sandboxId: consoleRow?.sandbox_id ?? "",
+            command,
+          })
+        }
+      />
     </div>
   );
 }

@@ -1007,6 +1007,25 @@ export function useAdminSandboxAction() {
   });
 }
 
+export function useAdminSandboxExec() {
+  const { client } = useApi();
+  return useMutation({
+    mutationFn: (vars: {
+      sandboxId: string;
+      command: string;
+      timeoutSeconds?: number;
+    }) => client.adminSandboxExec(vars.sandboxId, vars.command, vars.timeoutSeconds),
+  });
+}
+
+export function useExecTaskRuntime(taskId: string) {
+  const { client } = useApi();
+  return useMutation({
+    mutationFn: (vars: { command: string; timeoutSeconds?: number }) =>
+      client.execTaskRuntime(taskId, vars.command, vars.timeoutSeconds),
+  });
+}
+
 export function useBoardRepos(boardId: string | undefined) {
   const { client } = useApi();
   return useQuery({

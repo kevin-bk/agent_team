@@ -157,6 +157,25 @@ Overview cards: running / paused / orphan counts, tracked vs capacity
 in `opensandbox.py`). When the OpenSandbox server is unreachable the page
 degrades to the tracked view with a warning banner.
 
+## Manual console (run a command in a sandbox from the UI)
+
+Two entry points, same dialog:
+
+- **Task cockpit → Runtime card → Console** (editor+, sandbox must be
+  *running*) — `POST /api/tasks/{id}/runtime/exec`;
+- **Admin Sandboxes page → Console** (tracked + running rows only) —
+  `POST /api/admin/sandboxes/{id}/exec`, routed through the owning task's
+  live handle.
+
+This is a **one-off command runner, not an interactive shell**: no stdin/PTY,
+no cwd persistence between commands; each command runs via the sandbox exec
+API with a 30 s default / 120 s max timeout and output tail-truncated at
+100 k chars (`exec_in_task_sandbox` in `runtime/sandbox/service.py`). It never
+opens or resumes a sandbox — that stays the agent turn's job — so a paused or
+cold sandbox answers with an error instead of silently waking up. Typical use:
+`which playwright`, `env | sort`, `ls /workspace` while debugging an agent's
+environment (e.g. verifying an MCP binary exists in the image).
+
 ## Config (env; board can override via `runtime_profile_json`)
 
 ```bash

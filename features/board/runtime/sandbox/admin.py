@@ -249,3 +249,24 @@ async def sandbox_admin_action(sandbox_id: str, action: str) -> dict[str, Any]:
     if cleared_link:
         return {"ok": True, "routed": "stale_link"}
     return {"ok": False, "error": server_error}
+
+
+async def sandbox_admin_exec(
+    sandbox_id: str, command: str, timeout_seconds: float | None = None
+) -> dict[str, Any]:
+    """Run one shell command in a sandbox by id (Sandboxes page console).
+
+    Only tracked+open sandboxes are runnable: exec needs the live in-process
+    handle, which orphans/persisted/stale links don't have. Routed through the
+    task path so it shares the same handle the agent uses.
+    """
+    rec = _tracked_rows().get(sandbox_id)
+    if rec is None:
+        return {
+            "ok": False,
+            "error": "this sandbox isn't tracked by the app (orphan / stale link); "
+            "only a live, tracked sandbox can run commands",
+        }
+    return await sandbox_service.exec_in_task_sandbox(
+        str(rec["task_id"]), command, timeout_seconds=timeout_seconds
+    )
