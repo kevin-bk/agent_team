@@ -218,6 +218,14 @@ staffed agents**. See
   wheels), plus `ripgrep`/`git`/`gh`/`jq`. First-run `npx`/`uvx` package fetches
   need egress to the registry — fine under allow-all; under a network policy
   add the registry host (a per-MCP `allow_hosts` field is a planned follow-up).
+- **Browser testing baked in:** Playwright (global CLI) + Chromium (shared at
+  `PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright`, so a repo's own
+  `@playwright/test` reuses it instead of downloading ~150 MB per task) + `xvfb`.
+  Agents run UI tests **headed under a virtual display**
+  (`xvfb-run -a npx playwright test`) because headless trips bot detection on
+  hardened sites (e.g. the Shopify admin). Authenticated sessions come from the
+  chizy-toolkit `test_env_setup` tool (human-captured storageState), never from
+  automating a login page.
 
 Built by `scripts/build-runtime-images.sh` (operator runs on their server; the
 app never builds images at runtime). Build context = the plugin root. See

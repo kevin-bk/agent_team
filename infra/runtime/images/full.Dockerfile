@@ -85,6 +85,28 @@ RUN npm install -g \
     && claude --version \
     && codex --version
 
+# --- Playwright + Chromium + xvfb (agent-driven UI testing) -------------------
+# Agents run browser tests (e.g. embedded Shopify apps via test_env_setup)
+# HEADED under a virtual display — headless triggers bot detection (Cloudflare
+# blocks headless regardless of cookies). Browsers live in a shared,
+# world-readable path so whatever uid the runtime drops to (and any
+# @playwright/test version a repo installs) finds them instead of
+# re-downloading ~150 MB per task. @playwright/mcp is baked too, so a board's
+# stdio MCP entry (`xvfb-run -a npx @playwright/mcp …`) starts instantly
+# instead of hitting the npm registry at task start.
+#   usage: xvfb-run -a npx playwright test
+ARG PLAYWRIGHT_VERSION=1.61.1
+ARG PLAYWRIGHT_MCP_VERSION=latest
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+RUN npm install -g \
+        "playwright@${PLAYWRIGHT_VERSION}" \
+        "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}" \
+    && npm cache clean --force \
+    && playwright install --with-deps chromium \
+    && apt-get update && apt-get install -y --no-install-recommends xvfb xauth \
+    && rm -rf /var/lib/apt/lists/* \
+    && chmod -R a+rX "${PLAYWRIGHT_BROWSERS_PATH}"
+
 # --- Headless config for Claude Code -----------------------------------------
 # `--permission-mode bypassPermissions` still requires the acceptance flag on
 # disk, otherwise the CLI prints an interactive confirmation and blocks on
@@ -188,6 +210,8 @@ RUN claude --version \
     && python --version \
     && uv --version \
     && uvx --version \
+    && playwright --version \
+    && xvfb-run --help > /dev/null \
     && python3 -c "import agent_team.features.board.runtime.acp as a; \
 import agent_team.features.board.runtime.sandbox.sidecar_protocol as p; \
 print('acp engines:', sorted(a.ENGINES)); print('sidecar proto v', p.PROTOCOL_VERSION)"
