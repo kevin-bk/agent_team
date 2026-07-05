@@ -1,6 +1,6 @@
 # Planning workflow
 
-Last updated: 2026-06-30 · [↩ index](../index.md) · Source:
+Last updated: 2026-07-04 · [↩ index](../index.md) · Source:
 [`../../plans/planning-workflow-upgrade.md`](../../plans/planning-workflow-upgrade.md),
 [`../../plans/planning-workflow-implementation-decisions.md`](../../plans/planning-workflow-implementation-decisions.md),
 [`../../plans/loop-quality-and-self-improvement.md`](../../plans/loop-quality-and-self-improvement.md),
@@ -37,6 +37,7 @@ mode:
 | `EVIDENCE.json` | The evaluator's durable verification record (verdict, score, commands+exit codes, changed files, missing, risks). |
 | `PLAN_CHANGE_REQUEST.md` | An **active marker**: execution discovered the approved plan is wrong/unsafe and paused. |
 | `QUESTIONS.json` | Structured agent questions (see "Questions" below). |
+| `INTAKE.json` | The planner's risk intake (input type + 11 risk flags + reasons). **Advisory** — never required for approval; the backend derives the process *lane* from it (see "Lanes are enforced" below). |
 | `archive/` | Where resolved markers (e.g. change requests) are moved. |
 
 Helpers live in `runtime/loop/planning_artifacts.py` — they resolve paths
@@ -61,18 +62,73 @@ their *format* is owned:
   the planner prompt and the optional **`project-harness` skill** (see below),
   not by the backend.
 
-### Risk lanes — the `project-harness` skill
+### Risk lanes — the planning ("harness") skill
 
 `build_planning_prompt` no longer hardcodes the SPEC/PLAN section list. Instead it
-**defers to the `project-harness` skill** when present: the planner classifies the
-task's risk into a `quick` / `normal` / `risk` lane and structures `SPEC.md` /
-`PLAN.md` to the matching depth. A built-in fallback essence (cover goal, scope,
-acceptance, verification … in SPEC; approach, alternatives, data/API, rollback …
-in PLAN) keeps boards **without** the skill working. The skill lives as a sibling
-plugin (`community_plugins/project-harness/`); it rides on top of this contract
-and never invents new files. Lane *enforcement* in the backend (e.g. requiring a
+**defers to a planning skill** — by default `project-harness` — when present: the
+planner classifies the task's risk into a `quick` / `normal` / `risk` lane and
+structures `SPEC.md` / `PLAN.md` to the matching depth. A built-in fallback
+essence (cover goal, scope, acceptance, verification … in SPEC; approach,
+alternatives, data/API, rollback … in PLAN) keeps boards **without** the skill
+working. The default skill lives as a sibling plugin
+(`community_plugins/project-harness/`); it rides on top of this contract and
+never invents new files. Lane *enforcement* in the backend (e.g. requiring a
 confirming `QUESTIONS.json` for a hard-gate task) is intentionally deferred — see
 [`decisions.md`](../decisions.md) D14 and the [roadmap](../roadmap.md).
+
+### Lanes are enforced, not just prompted
+
+The planner writes `.agent-team/INTAKE.json` (required output #4 of the planner
+prompt; the project-harness skill teaches the same file). The backend
+**recomputes** the lane from the flags — it never trusts an agent-written
+`lane` field — using the exact rule of the skill's `classify.py` (mirrored in
+`planning_artifacts.classify_lane`, with a parity test): any hard-gate flag
+(auth / authorization / data_model / secrets_config / audit_security /
+external_systems) ⇒ `risk`; otherwise 0–1 flags ⇒ `quick`, 2–3 ⇒ `normal`,
+4+ ⇒ `risk`. A missing or malformed intake means *no lane* and the workflow
+behaves exactly as before lanes existed.
+
+What the lane changes:
+
+- **Journal + cockpit visibility**: an `intake`-phase journal entry records the
+  lane (warning severity for `risk`), and the cockpit's review panel shows a
+  lane badge with the hard gates on hover.
+- **`risk` without a reviewer** logs a warning journal entry — the rigor the
+  lane asks for is missing a leg; it surfaces rather than blocks.
+- **`quick` + board opt-in ⇒ auto-approval**: when the board enables
+  *Auto-approve quick-lane plans* (`planning_auto_approve_quick`, default off),
+  a first-draft quick-lane plan whose reviewer (if any) said `pass` is stamped
+  with a **system** approval (same artifact validation + etag pinning as a
+  human click, `approved_by = system:quick-lane`) and parks at
+  `plan_approved`. Re-drafts after a human requested changes or answered
+  blocking questions are **never** auto-approved — once a human engaged, they
+  get the final look. Execution start remains an explicit action.
+
+### Per-board tuning: conventions, planning skill, repo templates
+
+Each board can shape the **content** of the planning artifacts without forking
+backend prompts. The artifact contract itself (paths, JSON schemas, lifecycle)
+stays backend-owned and is never overridable.
+
+- **`planning_conventions`** (Board settings → *Planning* → *Team conventions*):
+  free-text house rules, injected into **every** strict phase — planner,
+  reviewer, generator (whole-objective *and* per-task), evaluator — via
+  `planning_prompts.conventions_block`. The block explicitly subordinates itself
+  to the artifact contract, so a convention can style SPEC sections or raise the
+  review bar but can never rename artifact files or change schemas.
+- **`planning_skill`** (Board settings → *Planning* → *Planning skill*): the
+  skill pack that owns the SPEC/PLAN structure guidance, replacing the default
+  `project-harness`. The router validates it against known packs on save, the
+  backend always materialises it into task workspaces (even when it isn't in the
+  board's regular `skill_ids`), and `build_planning_prompt` points the planner
+  at its workspace folder.
+- **Repo-native templates**: the planner prompt also tells the agent to prefer
+  conventions the repository itself ships (`CONTRIBUTING`, `docs/` spec/RFC/ADR
+  templates, `AGENTS.md`) for the *content* of `SPEC.md`/`PLAN.md`.
+
+Both board fields are loaded best-effort (`loop/service.py ::
+_board_planning_settings`) — a missing board or DB hiccup degrades to the
+defaults, never a failed run.
 
 ## The lifecycle (mapped onto `loop_state`)
 

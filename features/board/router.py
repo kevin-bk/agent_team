@@ -235,6 +235,22 @@ async def update_board(
         board.agent_mcp_json = json.dumps(cleaned)
     if payload.starter_prompt is not None:
         board.starter_prompt = payload.starter_prompt.strip()
+    if payload.planning_conventions is not None:
+        board.planning_conventions = payload.planning_conventions.strip()
+    if payload.planning_skill is not None:
+        from agent_team.features.board.runtime import skills as skills_rt
+
+        planning_skill = payload.planning_skill.strip()
+        if planning_skill:
+            known = {p["name"] for p in skills_rt.list_available_packs()}
+            if planning_skill not in known:
+                return JSONResponse(
+                    status_code=422,
+                    content={"detail": f"unknown planning skill pack: {planning_skill}"},
+                )
+        board.planning_skill = planning_skill
+    if payload.planning_auto_approve_quick is not None:
+        board.planning_auto_approve_quick = bool(payload.planning_auto_approve_quick)
     if payload.runtime_profile is not None:
         from agent_team.features.board.runtime.sandbox.config import validate_overlay
 
@@ -1707,6 +1723,9 @@ def _planning_info(task) -> PlanningInfoDTO:
                 content=content,
             )
         )
+    # Lane comes from the on-disk intake (source of truth, survives restarts);
+    # auto_approved from the approval metadata stamped at planning time.
+    lane_info = artifacts.intake_lane(task.workspace_path)
     return PlanningInfoDTO(
         task_id=task.id,
         loop_state=task.loop_state,
@@ -1717,6 +1736,9 @@ def _planning_info(task) -> PlanningInfoDTO:
         approved_by=meta.get("approved_by"),
         approved_at=meta.get("approved_at"),
         review_verdict=meta.get("review_verdict"),
+        lane=lane_info.lane,
+        lane_hard_gates=list(lane_info.hard_gates),
+        auto_approved=bool(meta.get("auto_approved")),
         last_error=meta.get("last_error"),
         artifacts=dtos,
         questions=[
@@ -1960,6 +1982,9 @@ async def request_task_planning_changes(
         planner_alias=planner_id,
         objective=objective,
         reviewer_alias=reviewer_id or None,
+        # The human explicitly asked for changes — they get the final look at
+        # the re-draft even on a quick-lane auto-approve board.
+        allow_auto_approve=False,
     )
     return {"ok": True, "task_id": task_id}
 

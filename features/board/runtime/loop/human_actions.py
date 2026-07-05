@@ -26,12 +26,23 @@ class ActionError(Exception):
     """A human action could not be performed (failed a validation/precondition)."""
 
 
-def approve_plan(db: Session, task: Any, user: Any) -> None:
+def approve_plan(
+    db: Session,
+    task: Any,
+    user: Any,
+    *,
+    actor_type: str = "human",
+    title: str = "Plan approved",
+) -> None:
     """Validate the drafted artifacts and stamp approval metadata.
 
     Parks the task at ``plan_approved`` — it does **not** start execution (that
     stays a web-only ``approve_and_run``). Raises :class:`ActionError` if the
     artifacts are missing or invalid.
+
+    ``actor_type``/``title`` let the lane-aware planning phase stamp a *system*
+    approval for quick-lane plans (board opt-in) without pretending a human
+    clicked the button — the journal keeps the two distinguishable.
     """
     from agent_team.features.board.runtime import task_journal
     from agent_team.features.board.runtime.loop import planning_artifacts as artifacts
@@ -68,9 +79,9 @@ def approve_plan(db: Session, task: Any, user: Any) -> None:
         task_id=task.id,
         phase="approval",
         type="approval",
-        title="Plan approved",
+        title=title,
         actor_id=getattr(user, "id", None),
-        actor_type="human",
+        actor_type=actor_type,
         refs=task_journal.refs(
             artifacts=[artifacts.SPEC_PATH, artifacts.PLAN_PATH, artifacts.TASKS_PATH]
         ),
@@ -188,5 +199,8 @@ def answer_questions(
         planner_alias=planner_id,
         objective=objective,
         reviewer_alias=meta.get("reviewer_id") or None,
+        # The planner needed a human decision, so this task is not trivial —
+        # the human reviews the re-draft even on a quick-lane auto-approve board.
+        allow_auto_approve=False,
     )
     return "planning"

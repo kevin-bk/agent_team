@@ -1,7 +1,7 @@
 import { ArrowDown, ArrowUp, Plus, Trash2 } from "@/components/icons";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { useUpdateBoard } from "@/api/hooks";
+import { useSkills, useUpdateBoard } from "@/api/hooks";
 import type { BoardColumn, BoardDTO, BoardRuntimeProfile } from "@/api/types";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { Button } from "@/components/ui/button";
@@ -107,10 +107,18 @@ export function BoardSettingsDialog({
 }) {
   const update = useUpdateBoard(board.id);
   const confirm = useConfirm();
+  const skills = useSkills();
   const [name, setName] = useState(board.name);
   const [description, setDescription] = useState(board.description ?? "");
   const [columns, setColumns] = useState<BoardColumn[]>(board.columns);
   const [starterPrompt, setStarterPrompt] = useState(board.starter_prompt ?? "");
+  const [planningConventions, setPlanningConventions] = useState(
+    board.planning_conventions ?? "",
+  );
+  const [planningSkill, setPlanningSkill] = useState(board.planning_skill ?? "");
+  const [autoApproveQuick, setAutoApproveQuick] = useState(
+    board.planning_auto_approve_quick ?? false,
+  );
   const [rt, setRt] = useState<RuntimeDraft>(() => toRuntimeDraft(board.runtime_profile));
 
   // Reset the draft whenever the dialog (re)opens for a board.
@@ -120,6 +128,9 @@ export function BoardSettingsDialog({
       setDescription(board.description ?? "");
       setColumns(board.columns);
       setStarterPrompt(board.starter_prompt ?? "");
+      setPlanningConventions(board.planning_conventions ?? "");
+      setPlanningSkill(board.planning_skill ?? "");
+      setAutoApproveQuick(board.planning_auto_approve_quick ?? false);
       setRt(toRuntimeDraft(board.runtime_profile));
     }
   }, [open, board]);
@@ -182,6 +193,9 @@ export function BoardSettingsDialog({
         description: description.trim() || null,
         columns: cleaned,
         starter_prompt: starterPrompt.trim(),
+        planning_conventions: planningConventions.trim(),
+        planning_skill: planningSkill.trim(),
+        planning_auto_approve_quick: autoApproveQuick,
         runtime_profile: fromRuntimeDraft(rt),
       });
       toast.success("Board updated");
@@ -257,6 +271,72 @@ export function BoardSettingsDialog({
               onChange={(e) => setStarterPrompt(e.target.value)}
             />
           </label>
+
+          <div className="grid gap-2 rounded-lg border border-border p-3">
+            <span className="text-[13px] font-medium text-muted-foreground">
+              Planning
+            </span>
+            <span className="text-[12.5px] text-muted-foreground/80">
+              Shape how this board's agents plan and implement. Conventions are
+              your team's house rules — they are injected into the planner,
+              reviewer, implementer and verifier prompts (they never change the
+              artifact files or schemas). The planning skill replaces the
+              default <code>project-harness</code> pack as the owner of the
+              SPEC/PLAN structure.
+            </span>
+            <label className="grid gap-1.5">
+              <span className="text-[12.5px] font-medium text-muted-foreground">
+                Team conventions
+              </span>
+              <Textarea
+                value={planningConventions}
+                placeholder={
+                  "e.g. SPEC.md must include a Security review section; plans " +
+                  "follow our ADR format; always add integration tests for API " +
+                  "changes…"
+                }
+                rows={5}
+                onChange={(e) => setPlanningConventions(e.target.value)}
+              />
+            </label>
+            <label className="grid gap-1.5">
+              <span className="text-[12.5px] font-medium text-muted-foreground">
+                Planning skill
+              </span>
+              <select
+                value={planningSkill}
+                onChange={(e) => setPlanningSkill(e.target.value)}
+                className="h-9 rounded-md border border-input bg-transparent px-2 text-[14px] text-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring"
+              >
+                <option value="">Default (project-harness)</option>
+                {(skills.data ?? []).map((s) => (
+                  <option key={s.name} value={s.name}>
+                    {s.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="flex items-start gap-2 pt-1">
+              <input
+                type="checkbox"
+                checked={autoApproveQuick}
+                onChange={(e) => setAutoApproveQuick(e.target.checked)}
+                className="mt-0.5 h-4 w-4 accent-primary"
+              />
+              <span className="grid gap-0.5">
+                <span className="text-[13px] font-medium text-foreground">
+                  Auto-approve quick-lane plans
+                </span>
+                <span className="text-[12.5px] text-muted-foreground/80">
+                  When the planner's risk intake classifies a task as quick
+                  (0–1 risk flags, no hard gates like auth or data migrations),
+                  the first plan draft is approved automatically instead of
+                  waiting for a human. Normal and risk lanes, and any re-draft
+                  after human feedback, always require human approval.
+                </span>
+              </span>
+            </label>
+          </div>
 
           <div className="grid gap-2 rounded-lg border border-border p-3">
             <span className="text-[13px] font-medium text-muted-foreground">

@@ -5,6 +5,12 @@ workspace and writes durable artifacts, an optional reviewer grades them, and
 the strict generator/evaluator both work from the approved artifacts rather than
 the raw objective. Keeping every prompt here (instead of scattered in service
 code) makes them easy to version and test.
+
+The artifact *contract* (paths, JSON schemas, phase rules) is fixed, but the
+*guidance* layer is per-board tunable: a board's ``planning_conventions`` text
+is injected into every phase via :func:`conventions_block`, and its
+``planning_skill`` replaces the default ``project-harness`` pack as the owner of
+the SPEC/PLAN section structure.
 """
 
 from __future__ import annotations
@@ -45,6 +51,45 @@ ASK_QUESTIONS_INSTRUCTION = (
     "answers materially change the implementation; prefer a stated assumption for "
     "low-impact gaps."
 )
+
+#: Skill pack the planner defers to for SPEC/PLAN structure when the board does
+#: not choose its own (see ``AgentTeamBoard.planning_skill``).
+DEFAULT_HARNESS_SKILL = "project-harness"
+
+
+def _skill_folder(name: str) -> str:
+    """Workspace folder for a skill pack name (mirrors ``skills._safe_dir_name``)."""
+    return name.replace("/", "-").replace("\\", "-").strip("-") or "skill"
+
+
+def conventions_block(conventions: str | None) -> str:
+    """Render a board's planning conventions as a prompt section (`""` = none).
+
+    This is the per-team escape hatch: humans write their own best practices
+    (section styles, review bars, house rules) once on the board and every
+    strict-planning phase sees them. The block explicitly subordinates itself to
+    the artifact contract so a convention can never rename the artifact files or
+    change the JSON schemas the backend parses.
+    """
+    text = (conventions or "").strip()
+    if not text:
+        return ""
+    return (
+        "## Team conventions (set by this board's humans)\n"
+        "Follow these conventions for HOW you write and structure your work — "
+        "they express this team's best practices and take precedence over "
+        "generic style guidance. They do NOT override the required artifact "
+        "file paths, JSON schemas, phase rules, or safety rules stated "
+        "elsewhere in this prompt.\n\n"
+        f"{text}"
+    )
+
+
+def _with_conventions(prompt: str, conventions: str | None) -> str:
+    """Append the conventions section to a prompt when the board set one."""
+    block = conventions_block(conventions)
+    return f"{prompt}\n\n{block}" if block else prompt
+
 
 #: Standing discipline: agents append meaningful moments to the journal inbox as
 #: they work. This is a durable record (it survives the agent's own context
@@ -115,6 +160,22 @@ _TASKS_SCHEMA = (
     "}"
 )
 
+#: Risk-intake shape the planner writes so the backend can derive the lane
+#: (mirrors ``planning_artifacts.RISK_FLAGS`` / the project-harness skill).
+_INTAKE_SCHEMA = (
+    "{\n"
+    '  "input_type": "feature|change|bugfix|maintenance|initiative",\n'
+    '  "flags": {\n'
+    '    "auth": false, "authorization": false, "data_model": false,\n'
+    '    "secrets_config": false, "audit_security": false,\n'
+    '    "external_systems": false, "public_contracts": false,\n'
+    '    "cross_platform": false, "existing_behavior": false,\n'
+    '    "weak_proof": false, "multi_domain": false\n'
+    "  },\n"
+    '  "reasons": {"<flag>": "one line why that flag is true"}\n'
+    "}"
+)
+
 
 def build_planning_prompt(
     objective: str,
@@ -122,9 +183,20 @@ def build_planning_prompt(
     task_id: str,
     workspace_path: str,
     repo: str | None = None,
+    conventions: str | None = None,
+    harness_skill: str | None = None,
 ) -> str:
-    """Compose the planner turn that writes SPEC.md, PLAN.md and TASKS.json."""
+    """Compose the planner turn that writes SPEC.md, PLAN.md and TASKS.json.
+
+    ``conventions`` (the board's planning house rules) and ``harness_skill``
+    (the board's structure-guidance pack, default ``project-harness``) let each
+    team shape the artifact *content* without changing the artifact contract.
+    """
     objective = (objective or "").strip() or "(no explicit objective given)"
+    skill = (harness_skill or "").strip() or DEFAULT_HARNESS_SKILL
+    folder = _skill_folder(skill)
+    conv = conventions_block(conventions)
+    conv_section = f"{conv}\n\n" if conv else ""
     return (
         f"{PHASE_PLAN}\n\n"
         f"{PLANNER_SYSTEM}\n\n"
@@ -139,14 +211,25 @@ def build_planning_prompt(
         f"2. `{A.PLAN_PATH}` — the engineering plan.\n"
         f"3. `{A.TASKS_PATH}` — a machine-readable task list (schema version 1):\n\n"
         f"{_TASKS_SCHEMA}\n\n"
-        "Use the `project-harness` skill in this workspace (see the skills "
-        "manifest / `.claude/skills/project-harness/`) to classify the task's risk "
+        f"4. `{A.INTAKE_PATH}` — an honest risk intake. Mark each flag true/false "
+        "with a one-line reason for every true flag:\n\n"
+        f"{_INTAKE_SCHEMA}\n\n"
+        "The backend derives the task's process lane (quick/normal/risk) from "
+        "these flags, so never understate risk to speed things up — flags like "
+        "auth, data_model or secrets_config force the careful lane by design.\n\n"
+        f"Use the `{skill}` skill in this workspace (see the skills "
+        f"manifest / `.claude/skills/{folder}/`) to classify the task's risk "
         "and structure `SPEC.md` and `PLAN.md` to the right depth and sections. If "
         f"that skill is unavailable, still cover {_SPEC_FALLBACK} in `SPEC.md` and "
         f"{_PLAN_FALLBACK} in `PLAN.md`.\n\n"
+        "If the repository itself ships engineering conventions or document "
+        "templates (e.g. `CONTRIBUTING`, `docs/` spec/RFC/ADR templates, an "
+        "`AGENTS.md` with house rules), prefer and follow those formats for the "
+        "CONTENT of `SPEC.md`/`PLAN.md` — the file paths above stay as required.\n\n"
         "Keep each task small and independently verifiable. Use repo-relative "
         "paths. Do not implement. When done, end your reply with a one-line "
         "confirmation that all three files were written.\n\n"
+        f"{conv_section}"
         f"## Journal\n{JOURNAL_DISCIPLINE}\n\n"
         f"## When you are blocked\n{ASK_QUESTIONS_INSTRUCTION}"
     )
@@ -161,11 +244,17 @@ REVIEWER_SYSTEM = (
 )
 
 
-def build_review_prompt() -> str:
-    """Compose the reviewer turn that grades the drafted artifacts to JSON."""
+def build_review_prompt(*, conventions: str | None = None) -> str:
+    """Compose the reviewer turn that grades the drafted artifacts to JSON.
+
+    ``conventions`` lets the reviewer grade against the board's own house rules
+    too (a plan that ignores the team's stated practices is a legitimate issue).
+    """
+    conv = conventions_block(conventions)
+    conv_section = f"\n\n{conv}" if conv else ""
     return (
         f"{PHASE_REVIEW}\n\n"
-        f"{REVIEWER_SYSTEM}\n\n"
+        f"{REVIEWER_SYSTEM}{conv_section}\n\n"
         "## Inputs\n"
         f"- `{A.SPEC_PATH}`\n- `{A.PLAN_PATH}`\n- `{A.TASKS_PATH}`\n\n"
         "## Look for\n"
@@ -206,6 +295,11 @@ GENERATOR_STRICT_PREAMBLE = (
     "writing the file — do not make further edits or run other steps in this "
     f"turn; wait for the human.\n\n{JOURNAL_DISCIPLINE}"
 )
+
+
+def strict_generator_preamble(*, conventions: str | None = None) -> str:
+    """The strict generator preamble, plus the board's conventions when set."""
+    return _with_conventions(GENERATOR_STRICT_PREAMBLE, conventions)
 
 
 #: Resume note injected into the generator preamble when execution restarts
@@ -263,6 +357,11 @@ TASK_GRAPH_PREAMBLE = (
 )
 
 
+def task_graph_preamble(*, conventions: str | None = None) -> str:
+    """The per-task generator preamble, plus the board's conventions when set."""
+    return _with_conventions(TASK_GRAPH_PREAMBLE, conventions)
+
+
 def _bullets(items: list[str]) -> str:
     """Render a list as markdown bullets, or a placeholder when empty."""
     cleaned = [i.strip() for i in items if i and i.strip()]
@@ -297,6 +396,7 @@ def build_task_evaluator_prompt(
     task: dict,
     generator_summary: str,
     verdict_path: str,
+    conventions: str | None = None,
 ) -> str:
     """Compose the evaluator turn that grades ONE task against its acceptance."""
     tid = str(task.get("id") or "task")
@@ -342,8 +442,15 @@ def build_task_evaluator_prompt(
         "`needs_human` only when a person must decide. Then end your reply with "
         'a single line of JSON as a fallback: {"verdict": "pass|fail|'
         'needs_human", "score": 0.0, "missing": "short note"}\n\n'
+        f"{_conv_section(conventions)}"
         f"## Journal\n{JOURNAL_DISCIPLINE}"
     )
+
+
+def _conv_section(conventions: str | None) -> str:
+    """The conventions block as a trailing prompt section (`""` when unset)."""
+    block = conventions_block(conventions)
+    return f"{block}\n\n" if block else ""
 
 
 def build_answers_addendum(answered: list[dict], note: str | None = None) -> str:
@@ -374,6 +481,7 @@ def build_strict_evaluator_prompt(
     objective: str,
     generator_summary: str,
     verdict_path: str,
+    conventions: str | None = None,
 ) -> str:
     """Compose the strict evaluator turn, grading against approved artifacts."""
     objective = (objective or "").strip() or "(no explicit objective given)"
@@ -415,5 +523,6 @@ def build_strict_evaluator_prompt(
         "Then end your reply with a single line of JSON as a fallback: "
         '{"verdict": "pass|fail|needs_human", "score": 0.0, '
         '"missing": "short note"}\n\n'
+        f"{_conv_section(conventions)}"
         f"## Journal\n{JOURNAL_DISCIPLINE}"
     )

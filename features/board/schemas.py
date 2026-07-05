@@ -37,6 +37,16 @@ class BoardUpdate(BaseModel):
     agent_mcp: dict | None = None
     #: Reusable starter chat message offered as a one-click first message.
     starter_prompt: str | None = None
+    #: Free-text planning house rules injected into the strict-planning prompts
+    #: (PLAN / REVIEW / IMPLEMENT / VERIFY). "" clears them. Capped so a runaway
+    #: paste can never blow up every loop prompt on the board.
+    planning_conventions: str | None = Field(default=None, max_length=20_000)
+    #: Skill pack that owns SPEC/PLAN structure guidance for strict planning.
+    #: "" = the bundled default (project-harness). Must be a known pack.
+    planning_skill: str | None = Field(default=None, max_length=128)
+    #: Auto-approve strict plans whose risk intake lands in the ``quick`` lane
+    #: (first draft only; normal/risk lanes always park for a human).
+    planning_auto_approve_quick: bool | None = None
     #: Isolated-runtime override for this board (see ``RuntimeProfile`` /
     #: ``config.OVERLAY_FIELDS``): provider/runtime_strategy/image/cpu/memory_mb/
     #: idle_timeout_minutes/strict_isolation/workspace_mode/... Empty = env default.
@@ -77,6 +87,12 @@ class BoardDTO(BaseModel):
     agent_mcp: dict = Field(default_factory=dict)
     #: Reusable starter chat message offered as a one-click first message.
     starter_prompt: str = ""
+    #: Planning house rules injected into strict-planning prompts ("" = none).
+    planning_conventions: str = ""
+    #: Skill pack owning SPEC/PLAN structure guidance ("" = bundled default).
+    planning_skill: str = ""
+    #: Auto-approve quick-lane plans on their first draft (default off).
+    planning_auto_approve_quick: bool = False
     #: Isolated-runtime override for this board (owner-only; may embed tuning that
     #: overlays the env defaults). Empty object = use the process env defaults.
     runtime_profile: dict = Field(default_factory=dict)
@@ -394,6 +410,14 @@ class PlanningInfoDTO(BaseModel):
     approved_at: str | None = None
     #: Last adversarial reviewer verdict (``pass``/``fail``/``needs_human``).
     review_verdict: str | None = None
+    #: Lane derived from the planner's risk intake (``quick``/``normal``/
+    #: ``risk``), or ``None`` when the planner wrote no usable ``INTAKE.json``.
+    #: Recomputed from disk, never trusted from the agent.
+    lane: str | None = None
+    #: Hard-gate flags that forced the ``risk`` lane (empty otherwise).
+    lane_hard_gates: list[str] = Field(default_factory=list)
+    #: Whether the backend auto-approved this plan (quick lane + board opt-in).
+    auto_approved: bool = False
     last_error: str | None = None
     artifacts: list[PlanningArtifactDTO] = Field(default_factory=list)
     #: Blocking questions an agent raised, shown as cards when waiting for answers.

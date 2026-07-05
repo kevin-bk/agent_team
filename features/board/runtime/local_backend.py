@@ -323,6 +323,16 @@ def _load_run_context(run_id: str) -> dict | None:
 
             board = boards_repo.get_board(db, task.board_id)
             skill_ids = board.skill_ids() if board is not None else []
+            # The board's planning-harness skill must always be present in the
+            # workspace (the strict planner prompt points at it), even when the
+            # owner forgot to also tick it in the board's skill list.
+            planning_skill = (
+                (getattr(board, "planning_skill", "") or "").strip()
+                if board is not None
+                else ""
+            )
+            if planning_skill and planning_skill not in skill_ids:
+                skill_ids = [*skill_ids, planning_skill]
             skills_manifest = skills_rt.materialize_skills(task.workspace_path, skill_ids)
         except Exception:
             logger.exception("agent_team: failed to materialise board skills for %s", task.id)

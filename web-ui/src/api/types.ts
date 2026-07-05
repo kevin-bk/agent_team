@@ -286,6 +286,12 @@ export interface BoardDTO {
   agent_mcp?: BoardAgentMcp;
   /** Reusable starter chat message offered as a one-click first message. */
   starter_prompt?: string;
+  /** Planning house rules injected into strict-planning prompts ("" = none). */
+  planning_conventions?: string;
+  /** Skill pack owning SPEC/PLAN structure guidance ("" = bundled default). */
+  planning_skill?: string;
+  /** Auto-approve quick-lane plans on their first draft (default off). */
+  planning_auto_approve_quick?: boolean;
   /** Isolated-runtime override (owner-only; empty = env defaults). */
   runtime_profile?: BoardRuntimeProfile;
   archived: boolean;
@@ -455,6 +461,12 @@ export interface PlanningInfoDTO {
   approved_by?: string | null;
   approved_at?: string | null;
   review_verdict?: string | null;
+  /** Lane from the planner's risk intake (quick/normal/risk); null = no intake. */
+  lane?: "quick" | "normal" | "risk" | null;
+  /** Hard-gate flags that forced the risk lane (empty otherwise). */
+  lane_hard_gates?: string[];
+  /** Whether the backend auto-approved this plan (quick lane + board opt-in). */
+  auto_approved?: boolean;
   last_error?: string | null;
   artifacts: PlanningArtifactDTO[];
   /** Blocking questions an agent raised, shown as cards when waiting for answers. */
@@ -570,6 +582,12 @@ export interface PatchBoardBody {
   agent_mcp?: BoardAgentMcp;
   /** Reusable starter chat message offered as a one-click first message. */
   starter_prompt?: string;
+  /** Planning house rules for strict-planning prompts; "" clears them. */
+  planning_conventions?: string;
+  /** Skill pack owning SPEC/PLAN structure guidance; "" = bundled default. */
+  planning_skill?: string;
+  /** Auto-approve quick-lane plans on their first draft. */
+  planning_auto_approve_quick?: boolean;
   /** Isolated-runtime override; empty object = use the env defaults. */
   runtime_profile?: BoardRuntimeProfile;
   archived?: boolean;

@@ -25,6 +25,7 @@ from agent_team.features.board.runtime.events import RUN_DONE
 from agent_team.features.board.runtime.loop import planning_artifacts as artifacts
 from agent_team.features.board.runtime.loop import planning_prompts
 from agent_team.features.board.runtime.loop.service import (
+    _board_planning_settings,
     _create_loop_run,
     _drive_to_completion,
     _task_workspace_and_board,
@@ -100,16 +101,29 @@ async def run_planning_job(
     planner_alias: str,
     objective: str,
     reviewer_alias: str | None = None,
+    allow_auto_approve: bool = True,
 ) -> LoopState:
     """Run the planner (and optional reviewer), then park for human approval.
 
     Returns the terminal :class:`LoopState`. The job never waits for the human;
     it persists ``waiting_plan_approval`` (or ``failed`` when the planner could
     not produce the required artifacts) and returns.
+
+    Lane-aware exception: when the planner's risk intake lands in the ``quick``
+    lane, the board opted in (``planning_auto_approve_quick``) and
+    ``allow_auto_approve`` is True, the job stamps a *system* approval and parks
+    at ``plan_approved`` instead. Re-drafts after human feedback (request
+    changes / answered questions) pass ``allow_auto_approve=False`` so a human
+    who engaged always gets the final look.
     """
     workspace_path, board_id = await asyncio.to_thread(
         _task_workspace_and_board, task_id
     )
+    # Per-board guidance knobs: house rules injected into every phase prompt,
+    # the board's own harness skill (SPEC/PLAN structure owner) and the
+    # quick-lane auto-approval opt-in.
+    settings = await asyncio.to_thread(_board_planning_settings, board_id)
+    conventions, harness_skill = settings.conventions, settings.planning_skill
     _persist_planning(
         task_id,
         state=LoopState.PLANNING,
@@ -118,7 +132,11 @@ async def run_planning_job(
     )
 
     prompt = planning_prompts.build_planning_prompt(
-        objective, task_id=task_id, workspace_path=workspace_path
+        objective,
+        task_id=task_id,
+        workspace_path=workspace_path,
+        conventions=conventions,
+        harness_skill=harness_skill,
     )
     run_id = await asyncio.to_thread(
         _create_loop_run,
@@ -195,12 +213,61 @@ async def run_planning_job(
         )
         return LoopState.FAILED
 
+    # ── Risk intake → lane ────────────────────────────────────────────────
+    # The backend recomputes the lane from the planner's INTAKE.json flags
+    # (never trusting an agent-written "lane" field). No/invalid intake ⇒
+    # lane None ⇒ the workflow behaves exactly as before lanes existed.
+    lane_info = await asyncio.to_thread(artifacts.intake_lane, workspace_path)
+    lane_meta = {
+        "lane": lane_info.lane,
+        "lane_flags": list(lane_info.flags),
+        "lane_hard_gates": list(lane_info.hard_gates),
+        "lane_input_type": lane_info.input_type,
+    }
+    if lane_info.lane is not None:
+        gates = (
+            f" — hard gates: {', '.join(lane_info.hard_gates)}"
+            if lane_info.hard_gates
+            else ""
+        )
+        task_journal.record(
+            task_id=task_id,
+            phase="intake",
+            type="state_change",
+            title=f"Risk intake: {lane_info.lane} lane{gates}",
+            body=(
+                f"Input type: {lane_info.input_type or 'unspecified'}; "
+                f"flags set: {', '.join(lane_info.flags) or '(none)'}"
+            ),
+            actor_type="agent",
+            actor_id=planner_alias,
+            severity="warning" if lane_info.lane == artifacts.LANE_RISK else "info",
+            refs=task_journal.refs(run_id=run_id, artifacts=[artifacts.INTAKE_PATH]),
+            metadata=lane_meta,
+        )
+    if lane_info.lane == artifacts.LANE_RISK and not reviewer_alias:
+        # The rigor the lane asks for is missing a leg — surface it, don't block.
+        task_journal.record(
+            task_id=task_id,
+            phase="review",
+            type="risk",
+            title="Risk-lane plan has no adversarial reviewer",
+            body=(
+                "The intake classified this task as risk lane but planning was "
+                "started without a reviewer. Consider re-planning with one, or "
+                "review the artifacts extra carefully before approving."
+            ),
+            actor_type="system",
+            severity="warning",
+        )
+
     review_verdict: str | None = None
     if reviewer_alias:
         review_verdict = await _run_reviewer(
             task_id=task_id,
             reviewer_alias=reviewer_alias,
             workspace_path=workspace_path,
+            conventions=conventions,
         )
         task_journal.record(
             task_id=task_id,
@@ -211,6 +278,37 @@ async def run_planning_job(
             actor_id=reviewer_alias,
             severity="warning" if review_verdict not in (None, "pass") else "info",
             refs=task_journal.refs(artifacts=[artifacts.PLAN_REVIEW_PATH]),
+        )
+
+    # ── Quick-lane auto-approval (board opt-in, first draft only) ─────────
+    # A failed stamp (e.g. TASKS.json went invalid) falls through to the
+    # normal human-approval park — auto-approval must never *lose* a plan.
+    if _should_auto_approve(
+        allow=allow_auto_approve,
+        board_opt_in=settings.auto_approve_quick,
+        lane=lane_info.lane,
+        review_verdict=review_verdict,
+    ):
+        auto_error = await asyncio.to_thread(_auto_approve_plan, task_id)
+        if auto_error is None:
+            _persist_planning(
+                task_id,
+                state=LoopState.PLAN_APPROVED,
+                meta_updates={
+                    **lane_meta,
+                    "auto_approved": True,
+                    "review_verdict": review_verdict,
+                    "last_error": None,
+                    "planner_id": planner_alias,
+                    "reviewer_id": reviewer_alias,
+                },
+                board_id=board_id,
+            )
+            return LoopState.PLAN_APPROVED
+        logger.warning(
+            "planning: quick-lane auto-approve failed for task %s: %s",
+            task_id,
+            auto_error,
         )
 
     task_journal.record(
@@ -230,6 +328,8 @@ async def run_planning_job(
         task_id,
         state=LoopState.WAITING_PLAN_APPROVAL,
         meta_updates={
+            **lane_meta,
+            "auto_approved": False,
             "approved": False,
             "review_verdict": review_verdict,
             "last_error": None,
@@ -242,15 +342,73 @@ async def run_planning_job(
     return LoopState.WAITING_PLAN_APPROVAL
 
 
+def _should_auto_approve(
+    *,
+    allow: bool,
+    board_opt_in: bool,
+    lane: str | None,
+    review_verdict: str | None,
+) -> bool:
+    """Whether a freshly drafted plan may skip human approval.
+
+    Every guard must hold: the caller allows it (i.e. NOT a re-draft after a
+    human requested changes or answered questions), the board opted in, the
+    planner's intake genuinely classified the task as ``quick`` (a missing
+    intake is never quick), and the adversarial reviewer — when one ran — did
+    not object. Normal/risk lanes always park for a human.
+    """
+    return (
+        allow
+        and board_opt_in
+        and lane == artifacts.LANE_QUICK
+        and review_verdict in (None, "pass")
+    )
+
+
+def _auto_approve_plan(task_id: str) -> str | None:
+    """Stamp a *system* approval on the drafted quick-lane plan.
+
+    Reuses the same validation + etag pinning as a human approval
+    (:func:`human_actions.approve_plan`), so an auto-approved plan is held to
+    the identical artifact contract. Returns an error string when the stamp
+    was refused (caller falls back to human approval), ``None`` on success.
+    """
+    from types import SimpleNamespace
+
+    from agent_team.features.board.runtime.loop import human_actions
+
+    db = SessionLocal()
+    try:
+        task = db.get(AgentTeamTask, task_id)
+        if task is None:
+            return "task not found"
+        human_actions.approve_plan(
+            db,
+            task,
+            SimpleNamespace(id="system:quick-lane"),
+            actor_type="system",
+            title="Plan auto-approved (quick lane)",
+        )
+        return None
+    except human_actions.ActionError as e:
+        return str(e)
+    finally:
+        db.close()
+
+
 async def _run_reviewer(
-    *, task_id: str, reviewer_alias: str, workspace_path: str
+    *,
+    task_id: str,
+    reviewer_alias: str,
+    workspace_path: str,
+    conventions: str = "",
 ) -> str | None:
     """Run the optional adversarial plan reviewer; return its verdict string."""
     run_id = await asyncio.to_thread(
         _create_loop_run,
         task_id=task_id,
         agent_alias=reviewer_alias,
-        prompt=planning_prompts.build_review_prompt(),
+        prompt=planning_prompts.build_review_prompt(conventions=conventions),
         role=RUN_ROLE_PLANNER,
         attempt_id=None,
     )
@@ -277,8 +435,14 @@ def start_planning_job(
     planner_alias: str,
     objective: str,
     reviewer_alias: str | None = None,
+    allow_auto_approve: bool = True,
 ) -> asyncio.Task:
-    """Launch the planning job as a background task; a double-start is a no-op."""
+    """Launch the planning job as a background task; a double-start is a no-op.
+
+    Pass ``allow_auto_approve=False`` on re-drafts triggered by human feedback
+    (request-changes, answered questions): once a human engaged, they always
+    get the final approval even on a quick-lane board.
+    """
     existing = _RUNNING_PLANS.get(task_id)
     if existing is not None and not existing.task.done():
         return existing.task
@@ -290,6 +454,7 @@ def start_planning_job(
                 planner_alias=planner_alias,
                 objective=objective,
                 reviewer_alias=reviewer_alias,
+                allow_auto_approve=allow_auto_approve,
             )
         except Exception:  # noqa: BLE001 — never let planning crash the event loop
             logger.exception("planning job failed for task %s", task_id)

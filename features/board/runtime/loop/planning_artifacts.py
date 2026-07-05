@@ -33,6 +33,12 @@ PLAN_CHANGE_REQUEST_PATH = f"{ARTIFACT_DIR}/PLAN_CHANGE_REQUEST.md"
 #: blocking, unanswered question gates the planning/execution phase until the
 #: human answers it via the cockpit.
 QUESTIONS_PATH = f"{ARTIFACT_DIR}/QUESTIONS.json"
+#: Risk-intake record the planner writes before drafting (input type + the 11
+#: risk flags + reasons). Advisory: never required for approval — a missing or
+#: malformed intake simply means "no lane" and the workflow behaves as before.
+#: The backend recomputes the lane from the flags (it never trusts an
+#: agent-written ``lane`` field).
+INTAKE_PATH = f"{ARTIFACT_DIR}/INTAKE.json"
 #: Append-only inbox where an agent suggests journal entries (one JSON object
 #: per line, JSONL). The backend ingests these into the durable task journal
 #: after each turn and then archives the file, so a write here is a *suggestion*
@@ -556,6 +562,112 @@ def archive_questions(workspace_path: str) -> str | None:
     except OSError:
         pass
     return rel_dest
+
+
+# ---------------------------------------------------------------------------
+# Risk intake → lane (``INTAKE.json``)
+# ---------------------------------------------------------------------------
+#
+# The planner fills a small risk checklist before drafting; the backend derives
+# a *lane* from it and graduates process rigor accordingly (quick plans may
+# auto-approve when the board opts in; risk plans get extra guardrails). The
+# rule below MUST stay in lockstep with the ``project-harness`` skill's
+# ``scripts/classify.py`` — that script is what the agent runs in the workspace,
+# this is what the backend trusts.
+
+#: The 11 recognised risk flags (same set as project-harness classify.py).
+RISK_FLAGS: tuple[str, ...] = (
+    "auth",
+    "authorization",
+    "data_model",
+    "secrets_config",
+    "audit_security",
+    "external_systems",
+    "public_contracts",
+    "cross_platform",
+    "existing_behavior",
+    "weak_proof",
+    "multi_domain",
+)
+
+#: Any one of these forces the ``risk`` lane regardless of the flag count.
+HARD_GATE_FLAGS: frozenset[str] = frozenset(
+    {
+        "auth",
+        "authorization",
+        "data_model",
+        "secrets_config",
+        "audit_security",
+        "external_systems",
+    }
+)
+
+LANE_QUICK = "quick"
+LANE_NORMAL = "normal"
+LANE_RISK = "risk"
+LANES: frozenset[str] = frozenset({LANE_QUICK, LANE_NORMAL, LANE_RISK})
+
+
+@dataclass(frozen=True)
+class IntakeLane:
+    """The lane derived from a task's risk intake (``lane=None`` ⇒ no intake).
+
+    ``flags`` are the recognised flags the planner marked true; ``hard_gates``
+    the subset that forces the ``risk`` lane. ``input_type`` is the planner's
+    work classification (feature/change/bugfix/…), kept for display only.
+    """
+
+    lane: str | None
+    flags: tuple[str, ...] = ()
+    hard_gates: tuple[str, ...] = ()
+    input_type: str = ""
+
+
+def classify_lane(flags: dict) -> str:
+    """``quick`` | ``normal`` | ``risk`` for a flag mapping (classify.py rule).
+
+    Only the 11 recognised flags count; unknown keys are ignored. A truthy
+    hard-gate flag forces ``risk`` regardless of the total count; otherwise
+    0–1 flags ⇒ quick, 2–3 ⇒ normal, 4+ ⇒ risk.
+    """
+    active = [name for name in RISK_FLAGS if bool(flags.get(name))]
+    if any(name in HARD_GATE_FLAGS for name in active):
+        return LANE_RISK
+    if len(active) <= 1:
+        return LANE_QUICK
+    if len(active) <= 3:
+        return LANE_NORMAL
+    return LANE_RISK
+
+
+def read_intake(workspace_path: str) -> dict | None:
+    """The parsed ``INTAKE.json`` object, or ``None`` when missing/invalid."""
+    data = read_json(workspace_path, INTAKE_PATH)
+    if not isinstance(data, dict):
+        return None
+    flags = data.get("flags")
+    return data if isinstance(flags, dict) else None
+
+
+def intake_lane(workspace_path: str) -> IntakeLane:
+    """Derive the task's lane from its on-disk intake (never trusts ``lane``).
+
+    Returns ``IntakeLane(lane=None)`` when there is no usable intake, which
+    callers must treat as "behave exactly as before lanes existed" — the intake
+    is advisory and its absence is never an error.
+    """
+    data = read_intake(workspace_path)
+    if data is None:
+        return IntakeLane(lane=None)
+    flags = data["flags"]
+    active = tuple(name for name in RISK_FLAGS if bool(flags.get(name)))
+    gates = tuple(name for name in active if name in HARD_GATE_FLAGS)
+    return IntakeLane(
+        lane=classify_lane(flags),
+        flags=active,
+        hard_gates=gates,
+        input_type=str(data.get("input_type") or "").strip(),
+    )
 
 
 # ---------------------------------------------------------------------------

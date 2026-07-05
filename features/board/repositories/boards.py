@@ -96,6 +96,11 @@ def serialize_board(
         # it in board settings); everyone else sees an empty map.
         agent_mcp=board.agent_mcp() if my_role == "owner" else {},
         starter_prompt=board.starter_prompt or "",
+        planning_conventions=getattr(board, "planning_conventions", "") or "",
+        planning_skill=getattr(board, "planning_skill", "") or "",
+        planning_auto_approve_quick=bool(
+            getattr(board, "planning_auto_approve_quick", False)
+        ),
         # Runtime profile may carry infra tuning; expose only to owners who edit
         # it in board settings (mirrors agent_mcp handling).
         runtime_profile=board.runtime_profile() if my_role == "owner" else {},

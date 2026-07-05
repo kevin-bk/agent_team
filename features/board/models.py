@@ -193,6 +193,23 @@ class AgentTeamBoard(Base):
     #: chat shows a one-click button to send it as the first message of a new
     #: conversation (handy for direct-CLI tasks that all start the same way).
     starter_prompt: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    #: Free-text planning house rules for this board, injected into the strict
+    #: planning prompts (PLAN / REVIEW / IMPLEMENT / VERIFY). Governs artifact
+    #: CONTENT/STRUCTURE (a team's best practices) — never the artifact paths,
+    #: JSON schemas or lifecycle, which stay backend-owned. Empty = none.
+    planning_conventions: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    #: Skill pack that owns the SPEC/PLAN structure guidance ("harness") for this
+    #: board's strict planning. Empty = the bundled default (``project-harness``).
+    #: The pack is materialised into task workspaces alongside the board's other
+    #: skills and referenced by the planner prompt.
+    planning_skill: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    #: When True, a strict plan whose risk intake classifies as the ``quick``
+    #: lane (0–1 flags, no hard gates) is auto-approved on its first draft
+    #: instead of parking for a human. Normal/risk lanes and re-drafts after
+    #: human feedback always require human approval. Default off.
+    planning_auto_approve_quick: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
     # ── Jira sync (per-board, Phase 1: one-way pull) ──────────────────────
     #: Master switch — when False the board ignores all Jira config.
     jira_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

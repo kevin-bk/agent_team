@@ -378,6 +378,30 @@ export function ReviewStage({
         <span className="text-[14px] font-semibold text-foreground">
           Review the plan
         </span>
+        {info.lane && (
+          <span
+            className={cn(
+              "ml-1 rounded px-1.5 py-0.5 text-[11px] font-medium",
+              info.lane === "quick"
+                ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300"
+                : info.lane === "risk"
+                  ? "bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-300"
+                  : "bg-sky-100 text-sky-700 dark:bg-sky-500/15 dark:text-sky-300",
+            )}
+            title={
+              info.lane_hard_gates?.length
+                ? `Hard gates: ${info.lane_hard_gates.join(", ")}`
+                : "Lane from the planner's risk intake"
+            }
+          >
+            Lane: {info.lane}
+          </span>
+        )}
+        {info.auto_approved && (
+          <span className="ml-1 rounded bg-emerald-100 px-1.5 py-0.5 text-[11px] font-medium text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300">
+            Auto-approved
+          </span>
+        )}
         {info.review_verdict && (
           <span
             className={cn(

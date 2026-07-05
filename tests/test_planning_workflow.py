@@ -157,6 +157,177 @@ def test_generator_strict_preamble_mentions_change_request():
     assert A.SPEC_PATH in P.GENERATOR_STRICT_PREAMBLE
 
 
+# ── risk intake → lane (INTAKE.json) ─────────────────────────────────────────
+def test_classify_lane_counts_and_hard_gates():
+    # 0–1 non-gate flags → quick
+    assert A.classify_lane({}) == "quick"
+    assert A.classify_lane({"weak_proof": True}) == "quick"
+    # 2–3 non-gate flags → normal
+    assert A.classify_lane({"weak_proof": True, "cross_platform": True}) == "normal"
+    assert (
+        A.classify_lane(
+            {"weak_proof": True, "cross_platform": True, "multi_domain": True}
+        )
+        == "normal"
+    )
+    # 4+ non-gate flags → risk
+    assert (
+        A.classify_lane(
+            {
+                "weak_proof": True,
+                "cross_platform": True,
+                "multi_domain": True,
+                "existing_behavior": True,
+            }
+        )
+        == "risk"
+    )
+    # Any hard gate forces risk regardless of count
+    assert A.classify_lane({"auth": True}) == "risk"
+    assert A.classify_lane({"data_model": True}) == "risk"
+    # Unknown flags are ignored
+    assert A.classify_lane({"made_up_flag": True}) == "quick"
+
+
+def test_intake_lane_reads_disk_and_never_trusts_agent_lane(tmp_path):
+    ws = str(tmp_path)
+    # No intake → lane None (workflow behaves as before lanes existed)
+    assert A.intake_lane(ws).lane is None
+    # Malformed intake → lane None
+    A.write_text(ws, A.INTAKE_PATH, "not json")
+    assert A.intake_lane(ws).lane is None
+    A.write_text(ws, A.INTAKE_PATH, json.dumps({"flags": "nope"}))
+    assert A.intake_lane(ws).lane is None
+    # An agent-written "lane" field is ignored — the backend recomputes from
+    # the flags, so an understated lane cannot skip rigor.
+    A.write_text(
+        ws,
+        A.INTAKE_PATH,
+        json.dumps(
+            {"lane": "quick", "input_type": "change", "flags": {"auth": True}}
+        ),
+    )
+    info = A.intake_lane(ws)
+    assert info.lane == "risk"
+    assert info.hard_gates == ("auth",)
+    assert info.input_type == "change"
+
+
+def test_planning_prompt_requires_risk_intake():
+    prompt = P.build_planning_prompt("Add X", task_id="t1", workspace_path="/ws")
+    assert A.INTAKE_PATH in prompt
+    assert '"data_model"' in prompt  # the flag checklist is spelled out
+
+
+def test_should_auto_approve_guards():
+    from agent_team.features.board.runtime.loop.planning import _should_auto_approve
+
+    ok = dict(allow=True, board_opt_in=True, lane="quick", review_verdict=None)
+    assert _should_auto_approve(**ok)
+    assert _should_auto_approve(**{**ok, "review_verdict": "pass"})
+    # Any missing guard falls back to human approval:
+    assert not _should_auto_approve(**{**ok, "allow": False})  # re-draft
+    assert not _should_auto_approve(**{**ok, "board_opt_in": False})
+    assert not _should_auto_approve(**{**ok, "lane": None})  # no intake
+    assert not _should_auto_approve(**{**ok, "lane": "normal"})
+    assert not _should_auto_approve(**{**ok, "lane": "risk"})
+    assert not _should_auto_approve(**{**ok, "review_verdict": "fail"})
+    assert not _should_auto_approve(**{**ok, "review_verdict": "needs_human"})
+
+
+def test_backend_lane_rule_matches_project_harness_classifier():
+    """The backend mirror and the skill's classify.py must never drift."""
+    import importlib.util
+    from pathlib import Path
+
+    script = (
+        Path(__file__).resolve().parents[2]
+        / "project-harness"
+        / "scripts"
+        / "classify.py"
+    )
+    if not script.is_file():
+        pytest.skip("project-harness skill not present in this checkout")
+    spec = importlib.util.spec_from_file_location("ph_classify", script)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    assert tuple(mod.RISK_FLAGS) == A.RISK_FLAGS
+    assert frozenset(mod.HARD_GATES) == A.HARD_GATE_FLAGS
+    # Exhaustive-ish parity: every single flag plus a few combinations.
+    cases = [{f: True} for f in A.RISK_FLAGS]
+    cases += [
+        {},
+        {"weak_proof": True, "cross_platform": True},
+        {"weak_proof": True, "cross_platform": True, "multi_domain": True},
+        {
+            "weak_proof": True,
+            "cross_platform": True,
+            "multi_domain": True,
+            "existing_behavior": True,
+        },
+        {"auth": True, "weak_proof": True},
+    ]
+    for flags in cases:
+        assert A.classify_lane(flags) == mod.classify_lane(flags), flags
+
+
+# ── per-board planning conventions + harness skill ───────────────────────────
+def test_conventions_block_empty_and_set():
+    assert P.conventions_block(None) == ""
+    assert P.conventions_block("   ") == ""
+    block = P.conventions_block("SPEC needs a Security section")
+    assert "Team conventions" in block
+    assert "SPEC needs a Security section" in block
+    # A convention must never be able to rename the artifact contract.
+    assert "do NOT override" in block
+
+
+def test_planning_prompt_defaults_to_bundled_harness_skill():
+    prompt = P.build_planning_prompt("Add X", task_id="t1", workspace_path="/ws")
+    assert P.DEFAULT_HARNESS_SKILL in prompt
+    assert "Team conventions" not in prompt  # none set
+
+
+def test_planning_prompt_uses_board_harness_skill_and_conventions():
+    prompt = P.build_planning_prompt(
+        "Add X",
+        task_id="t1",
+        workspace_path="/ws",
+        conventions="Plans follow our ADR template.",
+        harness_skill="acme/planning-standards",
+    )
+    assert "acme/planning-standards" in prompt
+    assert ".claude/skills/acme-planning-standards/" in prompt
+    assert P.DEFAULT_HARNESS_SKILL not in prompt
+    assert "Plans follow our ADR template." in prompt
+    # The artifact contract stays required regardless of skill/conventions.
+    assert A.SPEC_PATH in prompt and A.PLAN_PATH in prompt and A.TASKS_PATH in prompt
+
+
+def test_planning_prompt_prefers_repo_shipped_templates():
+    prompt = P.build_planning_prompt("Add X", task_id="t1", workspace_path="/ws")
+    assert "CONTRIBUTING" in prompt  # P3: honour repo-native conventions
+
+
+def test_conventions_injected_into_every_phase_prompt():
+    conv = "Always add integration tests."
+    assert conv in P.strict_generator_preamble(conventions=conv)
+    assert conv in P.task_graph_preamble(conventions=conv)
+    assert conv in P.build_review_prompt(conventions=conv)
+    assert conv in P.build_strict_evaluator_prompt(
+        objective="obj", generator_summary="s", verdict_path=A.EVIDENCE_PATH,
+        conventions=conv,
+    )
+    assert conv in P.build_task_evaluator_prompt(
+        task={"id": "T1"}, generator_summary="s", verdict_path=A.EVIDENCE_PATH,
+        conventions=conv,
+    )
+    # Unset conventions leave the prompts unchanged.
+    assert P.strict_generator_preamble() == P.GENERATOR_STRICT_PREAMBLE
+    assert P.task_graph_preamble() == P.TASK_GRAPH_PREAMBLE
+
+
 # ── controller strict preamble ───────────────────────────────────────────────
 def test_controller_preamble_replaces_plan_ref_in_opening():
     c = LoopController("obj", plan_path=A.PLAN_PATH, preamble=P.GENERATOR_STRICT_PREAMBLE)

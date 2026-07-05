@@ -14,6 +14,7 @@ import logging
 import os
 import uuid
 from dataclasses import dataclass
+from typing import NamedTuple
 
 from agent_team.features.board.board_events import get_board_bus
 from agent_team.features.board.models import (
@@ -315,6 +316,7 @@ class WorkerEvaluator:
         evaluator_alias: str,
         strict: bool = False,
         graph_task: dict | None = None,
+        conventions: str = "",
     ) -> None:
         self._task_id = task_id
         self._evaluator_alias = evaluator_alias
@@ -322,6 +324,9 @@ class WorkerEvaluator:
         #: When set (task-graph execution), grade only this single plan task
         #: rather than the whole SPEC.
         self._graph_task = graph_task
+        #: The board's planning conventions; folded into strict evaluator
+        #: prompts so a human-stated house rule is graded as scope, not noise.
+        self._conventions = conventions
 
     async def evaluate(
         self,
@@ -336,12 +341,14 @@ class WorkerEvaluator:
                 task=self._graph_task,
                 generator_summary=generator_summary,
                 verdict_path=artifacts.EVIDENCE_PATH,
+                conventions=self._conventions,
             )
         elif self._strict:
             prompt = planning_prompts.build_strict_evaluator_prompt(
                 objective=objective,
                 generator_summary=generator_summary,
                 verdict_path=artifacts.EVIDENCE_PATH,
+                conventions=self._conventions,
             )
         else:
             # Unique per evaluation so a leftover file from a prior attempt can
@@ -406,6 +413,48 @@ def _task_workspace_and_board(task_id: str) -> tuple[str, str | None]:
         return task.workspace_path, task.board_id
     finally:
         db.close()
+
+
+class BoardPlanningSettings(NamedTuple):
+    """Per-board planning knobs the loop/planning phases read (all optional)."""
+
+    #: Free-text house rules injected into every strict-phase prompt.
+    conventions: str
+    #: Skill pack owning SPEC/PLAN structure guidance ("" = bundled default).
+    planning_skill: str
+    #: Auto-approve quick-lane plans on their first draft (default off).
+    auto_approve_quick: bool
+
+
+_DEFAULT_PLANNING_SETTINGS = BoardPlanningSettings("", "", False)
+
+
+def _board_planning_settings(board_id: str | None) -> BoardPlanningSettings:
+    """The board's planning settings — all-defaults when unset.
+
+    Best-effort: a missing board or a DB hiccup degrades to the defaults (no
+    conventions, the bundled harness skill, no auto-approval), never a failed
+    planning/loop run.
+    """
+    if not board_id:
+        return _DEFAULT_PLANNING_SETTINGS
+    try:
+        from agent_team.features.board.repositories import boards as boards_repo
+
+        with SessionLocal() as db:
+            board = boards_repo.get_board(db, board_id)
+            if board is None:
+                return _DEFAULT_PLANNING_SETTINGS
+            return BoardPlanningSettings(
+                conventions=(getattr(board, "planning_conventions", "") or "").strip(),
+                planning_skill=(getattr(board, "planning_skill", "") or "").strip(),
+                auto_approve_quick=bool(
+                    getattr(board, "planning_auto_approve_quick", False)
+                ),
+            )
+    except Exception:  # noqa: BLE001 — these are knobs, never fatal
+        logger.debug("loop: board planning settings load failed", exc_info=True)
+        return _DEFAULT_PLANNING_SETTINGS
 
 
 def _persist_loop_state(task_id: str, state: str) -> None:
@@ -481,6 +530,12 @@ async def run_autonomous_loop(
     workspace_path, board_id = await asyncio.to_thread(
         _task_workspace_and_board, task_id
     )
+    # The board's planning house rules ride into every strict phase prompt
+    # (generator preamble + evaluator) so a team's stated best practices govern
+    # execution too, not just the plan draft.
+    conventions = (
+        await asyncio.to_thread(_board_planning_settings, board_id)
+    ).conventions
     generator = BackendGenerator(
         task_id=task_id, agent_alias=agent_alias, workspace_path=workspace_path
     )
@@ -506,7 +561,15 @@ async def run_autonomous_loop(
                 evaluator_alias=evaluator_alias,
                 strict=True,
                 graph_task=graph_task,
+                conventions=conventions,
             )
+
+        # Conventions + (on resume) the human's answers ride in the per-task
+        # extra preamble, appended after TASK_GRAPH_PREAMBLE by the orchestrator.
+        extra_parts = [planning_prompts.conventions_block(conventions)]
+        if resume_note and resume_note.strip():
+            extra_parts.append(resume_note.strip())
+        extra = "\n\n".join(p for p in extra_parts if p) or None
 
         return await run_task_graph(
             task_id=task_id,
@@ -521,13 +584,17 @@ async def run_autonomous_loop(
             final_verify=True,
             replan_requested=replan,
             questions_pending=questions,
-            extra_preamble=resume_note,
+            extra_preamble=extra,
             max_zero_streak=max_zero_streak,
         )
 
     # On resume after a question pause, fold the human's answers into the
     # generator preamble so the continuing thread proceeds with them.
-    generator_preamble = planning_prompts.GENERATOR_STRICT_PREAMBLE if strict else None
+    generator_preamble = (
+        planning_prompts.strict_generator_preamble(conventions=conventions)
+        if strict
+        else None
+    )
     if resume_note and resume_note.strip():
         generator_preamble = (
             f"{generator_preamble}\n\n{resume_note.strip()}"
@@ -541,7 +608,10 @@ async def run_autonomous_loop(
         workspace_path=workspace_path,
         run_generator=generator,
         evaluator=WorkerEvaluator(
-            task_id=task_id, evaluator_alias=evaluator_alias, strict=strict
+            task_id=task_id,
+            evaluator_alias=evaluator_alias,
+            strict=strict,
+            conventions=conventions,
         ),
         max_attempts=max_attempts,
         budget=budget,
