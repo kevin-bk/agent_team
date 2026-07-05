@@ -85,16 +85,23 @@ RUN npm install -g \
     && claude --version \
     && codex --version
 
-# --- Playwright + Chromium + xvfb (agent-driven UI testing) -------------------
+# --- Playwright + Chrome/Chromium + xvfb (agent-driven UI testing) ------------
 # Agents run browser tests (e.g. embedded Shopify apps via test_env_setup)
 # HEADED under a virtual display — headless triggers bot detection (Cloudflare
 # blocks headless regardless of cookies). Browsers live in a shared,
 # world-readable path so whatever uid the runtime drops to (and any
 # @playwright/test version a repo installs) finds them instead of
-# re-downloading ~150 MB per task. @playwright/mcp is baked too, so a board's
-# stdio MCP entry (`xvfb-run -a npx @playwright/mcp …`) starts instantly
-# instead of hitting the npm registry at task start.
-#   usage: xvfb-run -a npx playwright test
+# re-downloading ~150 MB per task. @playwright/mcp is baked too (binary:
+# `playwright-mcp`), so a board's stdio MCP entry starts instantly instead of
+# hitting the npm registry at task start.
+#
+# Branded Google Chrome is installed IN ADDITION to Chromium because
+# (a) `playwright-mcp` defaults to the "chrome" channel — without it every
+#     board would have to remember `--executable-path`, and agents "fix" the
+#     gap with ad-hoc symlinks; and
+# (b) branded Chrome fares better against bot detection than Chromium, which
+#     is the whole point of headed testing on hardened sites.
+#   usage: xvfb-run -a npx playwright test   |   xvfb-run -a playwright-mcp …
 ARG PLAYWRIGHT_VERSION=1.61.1
 ARG PLAYWRIGHT_MCP_VERSION=latest
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
@@ -103,6 +110,7 @@ RUN npm install -g \
         "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}" \
     && npm cache clean --force \
     && playwright install --with-deps chromium \
+    && playwright install chrome \
     && apt-get update && apt-get install -y --no-install-recommends xvfb xauth \
     && rm -rf /var/lib/apt/lists/* \
     && chmod -R a+rX "${PLAYWRIGHT_BROWSERS_PATH}"
@@ -211,6 +219,8 @@ RUN claude --version \
     && uv --version \
     && uvx --version \
     && playwright --version \
+    && playwright-mcp --version \
+    && google-chrome --version \
     && xvfb-run --help > /dev/null \
     && python3 -c "import agent_team.features.board.runtime.acp as a; \
 import agent_team.features.board.runtime.sandbox.sidecar_protocol as p; \

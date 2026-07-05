@@ -244,14 +244,49 @@ staffed agents**. See
   wheels), plus `ripgrep`/`git`/`gh`/`jq`. First-run `npx`/`uvx` package fetches
   need egress to the registry — fine under allow-all; under a network policy
   add the registry host (a per-MCP `allow_hosts` field is a planned follow-up).
-- **Browser testing baked in:** Playwright (global CLI) + Chromium (shared at
-  `PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright`, so a repo's own
-  `@playwright/test` reuses it instead of downloading ~150 MB per task) + `xvfb`.
-  Agents run UI tests **headed under a virtual display**
-  (`xvfb-run -a npx playwright test`) because headless trips bot detection on
-  hardened sites (e.g. the Shopify admin). Authenticated sessions come from the
-  chizy-toolkit `test_env_setup` tool (human-captured storageState), never from
-  automating a login page.
+- **Browser testing baked in:** Playwright (global CLI) + Chromium + branded
+  Google Chrome (shared at `PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright`, so a
+  repo's own `@playwright/test` reuses it instead of downloading ~150 MB per
+  task) + `@playwright/mcp` (binary: **`playwright-mcp`**) + `xvfb`. Branded
+  Chrome matters twice: `playwright-mcp` defaults to the `chrome` channel, and
+  it fares better against bot detection than Chromium. Agents run UI tests
+  **headed under a virtual display** (`xvfb-run -a npx playwright test`)
+  because headless trips bot detection on hardened sites (e.g. the Shopify
+  admin). Authenticated sessions come from the chizy-toolkit `test_env_setup`
+  tool (human-captured storageState), never from automating a login page.
+
+  Recommended board MCP entry (`agent_mcp_json`) for the interactive browser —
+  the wrapper seeds an **empty** storageState when none exists yet, so general
+  web tasks work logged-out instead of failing at startup, while
+  `test_env_setup` overwrites the same file for authenticated Shopify testing:
+
+  ```json
+  "browser": {
+    "command": "bash",
+    "args": [
+      "-lc",
+      "mkdir -p .auth && [ -s .auth/admin.json ] || printf '{\"cookies\":[],\"origins\":[]}' > .auth/admin.json; exec xvfb-run -a -s '-screen 0 1920x1080x24' playwright-mcp --viewport-size 1280x720 --storage-state .auth/admin.json"
+    ]
+  }
+  ```
+
+  The explicit sizes matter: `xvfb-run`'s default virtual screen is tiny and
+  near-square (640×480 / 1280×1024 depending on distro), and the headed
+  browser window inherits it — which is why screenshots come out square
+  instead of device-shaped. `-screen 0 1920x1080x24` gives the window a
+  real monitor to live on and `--viewport-size 1280x720` pins the page
+  viewport to a standard 16:9 desktop size regardless of window chrome.
+
+  Note `playwright-mcp` reads the storage-state file when the browser context
+  is first created — so on Shopify tasks the agent must call `test_env_setup`
+  **before** the first browser tool, per the chizy-deploy-test skill.
+
+  Secrets hygiene: anything in a stdio MCP entry's `args` (bearer tokens, API
+  keys in URLs) shows up in `ps aux` inside the sandbox. Same-uid processes can
+  read each other's env too, so this is hygiene rather than a hard boundary —
+  but prefer `env` over `args` for secrets (less likely to be quoted into agent
+  output/logs), and prefer plain `url` + `headers` entries for HTTP MCPs (e.g.
+  Tavily) over `npx mcp-remote <url?apiKey=…>` shims.
 
 Built by `scripts/build-runtime-images.sh` (operator runs on their server; the
 app never builds images at runtime). Build context = the plugin root. See
