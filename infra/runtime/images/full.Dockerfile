@@ -110,10 +110,23 @@ RUN npm install -g \
         "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}" \
     && npm cache clean --force \
     && playwright install --with-deps chromium \
-    && playwright install chrome \
     && apt-get update && apt-get install -y --no-install-recommends xvfb xauth \
     && rm -rf /var/lib/apt/lists/* \
     && chmod -R a+rX "${PLAYWRIGHT_BROWSERS_PATH}"
+
+# Branded Chrome via the official deb directly (NOT `playwright install chrome`:
+# its installer has produced partial installs in this base — package files
+# present but /opt/google/chrome/chrome itself missing). Installed in its own
+# layer with explicit post-conditions so a broken install fails the BUILD, not
+# the first browser task.
+RUN apt-get update \
+    && curl -fsSL -o /tmp/chrome.deb \
+        https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \
+    && apt-get install -y --no-install-recommends /tmp/chrome.deb \
+    && rm -f /tmp/chrome.deb \
+    && rm -rf /var/lib/apt/lists/* \
+    && test -x /opt/google/chrome/chrome \
+    && google-chrome --version
 
 # --- Headless config for Claude Code -----------------------------------------
 # `--permission-mode bypassPermissions` still requires the acceptance flag on
