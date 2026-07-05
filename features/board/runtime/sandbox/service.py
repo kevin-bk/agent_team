@@ -110,6 +110,11 @@ def get_manager(profile: RuntimeProfile | None = None) -> SandboxManager:
         # itself also idle-closes, this is the manager-level backstop.
         idle_ttl_seconds=max(0, prof.idle_timeout_minutes) * 60,
         gc_interval_seconds=_env_int("AGENT_TEAM_RUNTIME_GC_INTERVAL", 60),
+        # A closed sandbox is deleted server-side, so its persisted id is dead
+        # weight: clear it on EVERY close path (explicit kill already clears,
+        # this also covers the idle GC + shutdown) so the admin page doesn't
+        # accumulate "stale link" rows after each idle reap.
+        on_close=lambda task_id: _store_task_sandbox_id(task_id, None),
     )
     _manager_profile = prof
     return _manager

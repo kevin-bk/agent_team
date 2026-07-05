@@ -100,7 +100,10 @@ State machine (per task; UI labels in parentheses):
 
 1. **Idle GC (app)** — untouched longer than `idle_timeout_minutes` (default
    30 m; board-overridable) → `SandboxManager` closes it. Sweep every 60 s;
-   `pin_until` can hold one warm (e.g. awaiting human review).
+   `pin_until` can hold one warm (e.g. awaiting human review). Every close path
+   (GC, shutdown, explicit) fires the manager's `on_close` hook, which clears
+   the task's persisted `sandbox_id` — a closed sandbox is deleted server-side,
+   so keeping the id would only leave dead "Stale link" rows on the admin page.
 2. **Explicit kill** — `kill_task_sandbox(task_id)` tears it down and clears the
    persisted `sandbox_id`; next turn reprovisions from scratch.
    **CLI sessions survive this**: the ACP `conversation → session_id` map lives
@@ -144,7 +147,7 @@ every 15 s:
 | **Tracked** | in this process's manager registry (live state, idle time, CPU/RAM metrics for open ones) | Pause / Kill (routed through the task path so bookkeeping + persisted id stay consistent) |
 | **Persisted** | a task row links it (`task.sandbox_id`) but the process doesn't track it (e.g. after restart, before reattach) | Kill (server-direct; also clears the task link) |
 | **Orphan** | only the OpenSandbox server knows it — nothing references it | Kill early instead of waiting out the TTL |
-| **Stale link** | a task points at an id the server no longer has (self-heals on next run) | — |
+| **Stale link** | a task points at an id the server no longer has (rare now that every close clears the id; self-heals on next run) | Clean up (clears the task's dead link immediately) |
 
 Overview cards: running / paused / orphan counts, tracked vs capacity
 (`AGENT_TEAM_RUNTIME_MAX_CONCURRENT`), idle TTL. Backend:

@@ -24,6 +24,7 @@ import asyncio
 import logging
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -69,6 +70,7 @@ class SandboxManager:
         acquire_timeout_seconds: float = 0.0,
         idle_ttl_seconds: float = 0.0,
         gc_interval_seconds: float = 0.0,
+        on_close: Callable[[str], None] | None = None,
     ) -> None:
         """Args:
 
@@ -79,12 +81,17 @@ class SandboxManager:
         idle_ttl_seconds: reap a sandbox untouched for longer than this (``0`` ⇒
             never reap; rely on the runtime's own idle-close).
         gc_interval_seconds: GC sweep cadence (``0`` ⇒ no background loop).
+        on_close: best-effort callback invoked with the ``task_id`` after a
+            sandbox is closed (any path: explicit close, idle GC, shutdown).
+            Used by the service layer to clear the task's persisted sandbox id,
+            since a closed sandbox is deleted server-side and its id is useless.
         """
         self._profile = profile
         self._max_concurrent = max_concurrent
         self._acquire_timeout = acquire_timeout_seconds
         self._idle_ttl = idle_ttl_seconds
         self._gc_interval = gc_interval_seconds
+        self._on_close = on_close
         self._records: dict[str, _SandboxRecord] = {}
         self._lock = asyncio.Lock()
         sem_capacity = max_concurrent or 999_999
@@ -299,6 +306,15 @@ class SandboxManager:
             logger.exception(
                 "SandboxManager: error closing sandbox for task=%s (continuing)", task_id
             )
+        if self._on_close is not None:
+            try:
+                self._on_close(task_id)
+            except Exception:  # noqa: BLE001 — bookkeeping only, never fatal
+                logger.debug(
+                    "SandboxManager: on_close hook failed for task=%s",
+                    task_id,
+                    exc_info=True,
+                )
         return True
 
     async def aclose(self) -> None:

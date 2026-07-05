@@ -212,6 +212,8 @@ async def sandbox_admin_action(sandbox_id: str, action: str) -> dict[str, Any]:
     profile = sandbox_service.resolve_profile()
     if profile.provider != "opensandbox":
         return {"ok": False, "error": "sandbox is not tracked and provider is local"}
+
+    server_error: str | None = None
     try:
         import os
 
@@ -229,12 +231,21 @@ async def sandbox_admin_action(sandbox_id: str, action: str) -> dict[str, Any]:
             api_key=api_key,
         )
     except Exception as e:  # noqa: BLE001
-        return {"ok": False, "error": str(e)}
+        server_error = str(e)
 
-    # If a task row still points at this sandbox, clear the stale link so the
-    # task's next run doesn't try to reattach a corpse.
+    # If a task row still points at this sandbox, clear the link so the task's
+    # next run doesn't try to reattach a corpse. Done regardless of whether the
+    # server still had the sandbox — killing a **stale link** (server already
+    # deleted it, e.g. after the idle TTL) is exactly this cleanup.
+    cleared_link = False
     if action == "kill":
         for sid, info in _task_rows().items():
             if sid == sandbox_id:
                 sandbox_service._store_task_sandbox_id(str(info["task_id"]), None)  # noqa: SLF001
-    return {"ok": True, "routed": "server"}
+                cleared_link = True
+
+    if server_error is None:
+        return {"ok": True, "routed": "server"}
+    if cleared_link:
+        return {"ok": True, "routed": "stale_link"}
+    return {"ok": False, "error": server_error}

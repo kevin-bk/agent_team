@@ -282,6 +282,13 @@ export function SandboxesPage() {
                           <td className="px-3 py-2">
                             {state ? (
                               <Badge variant={state.variant}>{state.label}</Badge>
+                            ) : dead ? (
+                              <Badge
+                                variant="outline"
+                                title="The server no longer has this sandbox (e.g. reaped after the idle TTL)"
+                              >
+                                Deleted
+                              </Badge>
                             ) : (
                               <Badge variant="outline">
                                 {row.server_state ?? "unknown"}
@@ -308,33 +315,36 @@ export function SandboxesPage() {
                             {inTime(row.expires_at)}
                           </td>
                           <td className="px-3 py-2">
-                            {dead ? null : (
-                              <div className="flex justify-end gap-1.5">
-                                {canPause ? (
-                                  <Button
-                                    variant="outline"
-                                    size="sm"
-                                    disabled={busy}
-                                    onClick={() => void run(row, "pause")}
-                                  >
-                                    Pause
-                                  </Button>
-                                ) : null}
+                            <div className="flex justify-end gap-1.5">
+                              {canPause ? (
                                 <Button
-                                  variant="destructive"
+                                  variant="outline"
                                   size="sm"
                                   disabled={busy}
-                                  onClick={() => void run(row, "kill")}
+                                  onClick={() => void run(row, "pause")}
                                 >
-                                  {busy ? (
-                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                  ) : (
-                                    <Trash2 className="h-3.5 w-3.5" />
-                                  )}
-                                  Kill
+                                  Pause
                                 </Button>
-                              </div>
-                            )}
+                              ) : null}
+                              <Button
+                                variant={dead ? "outline" : "destructive"}
+                                size="sm"
+                                disabled={busy}
+                                title={
+                                  dead
+                                    ? "The sandbox is already gone — remove the task's stale link to it"
+                                    : undefined
+                                }
+                                onClick={() => void run(row, "kill")}
+                              >
+                                {busy ? (
+                                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                ) : (
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                )}
+                                {dead ? "Clean up" : "Kill"}
+                              </Button>
+                            </div>
                           </td>
                         </tr>
                       );

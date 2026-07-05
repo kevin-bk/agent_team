@@ -1284,6 +1284,66 @@ async def test_admin_overview_merges_tracked_persisted_and_orphans(monkeypatch):
     await mgr.close("T-A")
 
 
+async def test_manager_close_clears_persisted_id_via_hook():
+    """Every close path (explicit close, idle GC) must fire on_close so the
+    task's persisted sandbox id is cleared — a closed sandbox is deleted
+    server-side, and keeping the id just breeds "stale link" rows in admin."""
+    cleared: list[str] = []
+    mgr = SandboxManager(
+        profile=RuntimeProfile(provider="opensandbox"),
+        idle_ttl_seconds=0.01,
+        on_close=cleared.append,
+    )
+    sb = _ReattachableSandbox()
+    await sb.resume_existing("sb-1")
+    await mgr.adopt("T-1", sb)
+    await mgr.close("T-1")
+    assert cleared == ["T-1"]
+
+    # Idle GC sweep goes through the same close → same hook.
+    sb2 = _ReattachableSandbox()
+    await sb2.resume_existing("sb-2")
+    await mgr.adopt("T-2", sb2)
+    import asyncio
+
+    await asyncio.sleep(0.02)
+    reaped = await mgr.sweep_idle()
+    assert reaped == ["T-2"] and cleared == ["T-1", "T-2"]
+
+
+async def test_admin_kill_stale_link_clears_task_row(monkeypatch):
+    """Killing a sandbox the server already deleted (stale link) still clears
+    the task's persisted id instead of failing."""
+    from agent_team.features.board.runtime.sandbox import admin as adm
+    from agent_team.features.board.runtime.sandbox import service as svc
+
+    monkeypatch.setattr(adm, "_tracked_rows", lambda: {})
+    monkeypatch.setattr(
+        adm, "_task_rows",
+        lambda: {"sb-gone": {"task_id": "T-G", "task_key": "K-9", "task_title": "G",
+                              "board_id": "B", "board_name": "Board"}},
+    )
+    monkeypatch.setattr(
+        svc, "resolve_profile",
+        lambda *a, **k: RuntimeProfile(provider="opensandbox"),
+    )
+    cleared: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(
+        svc, "_store_task_sandbox_id", lambda tid, sid: cleared.append((tid, sid))
+    )
+
+    async def _boom(*a, **k):
+        raise RuntimeError("sandbox not found")
+
+    import agent_team.features.board.runtime.sandbox.opensandbox as osb
+
+    monkeypatch.setattr(osb, "server_sandbox_action", _boom)
+
+    res = await adm.sandbox_admin_action("sb-gone", "kill")
+    assert res == {"ok": True, "routed": "stale_link"}
+    assert cleared == [("T-G", None)]
+
+
 async def test_admin_overview_server_state_wins_over_stale_record(monkeypatch):
     """A tracked record stuck on "paused" while the server says RUNNING must
     show as running — the server is the ground truth (the record self-heals on
