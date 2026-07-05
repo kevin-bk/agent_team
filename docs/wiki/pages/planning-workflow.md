@@ -1,6 +1,6 @@
 # Planning workflow
 
-Last updated: 2026-07-04 · [↩ index](../index.md) · Source:
+Last updated: 2026-07-05 · [↩ index](../index.md) · Source:
 [`../../plans/planning-workflow-upgrade.md`](../../plans/planning-workflow-upgrade.md),
 [`../../plans/planning-workflow-implementation-decisions.md`](../../plans/planning-workflow-implementation-decisions.md),
 [`../../plans/loop-quality-and-self-improvement.md`](../../plans/loop-quality-and-self-improvement.md),
@@ -129,6 +129,33 @@ stays backend-owned and is never overridable.
 Both board fields are loaded best-effort (`loop/service.py ::
 _board_planning_settings`) — a missing board or DB hiccup degrades to the
 defaults, never a failed run.
+
+### How the planning skill actually reaches the agent
+
+Two separate layers, easy to conflate:
+
+1. **The prompt only *references* the skill** — `build_planning_prompt` writes
+   "use the `<skill>` skill in this workspace (see `.claude/skills/<folder>/`)"
+   plus a fallback essence. The skill's content is **never inlined** into the
+   prompt.
+2. **The files arrive via skill-pack materialisation**, not via the board's
+   repository. Every run, `local_backend` calls `materialize_skills()`, which
+   copies packs from the **skill_packs plugin catalog** (`<repo>-skill-packs/
+   shared/` + git sources added in the UI) into the workspace's
+   `.claude/skills/` and `.cursor/skills/`. A pack is copied when the board
+   ticks it in *Skills* — or, for the planning skill, always (forced by
+   `planning_skill`, P2).
+
+Consequence: `community_plugins/project-harness/` is only the pack's **source
+code** living in this repo — it is *not* automatically in the catalog. An
+operator must import it as a skill pack (copy into the packs root or add as a
+git source); until then, planners silently run on the fallback essence and the
+workspace has no `.claude/skills/` folder. Lane enforcement (INTAKE.json) still
+works either way because the planner prompt asks for the intake directly.
+
+The board's *repository* plays no part in skill delivery — it is checked out
+into the workspace for the agent to work on, and the planner is merely told to
+prefer repo-native templates (P3 above) for artifact content.
 
 ## The lifecycle (mapped onto `loop_state`)
 

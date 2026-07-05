@@ -1284,6 +1284,87 @@ async def test_admin_overview_merges_tracked_persisted_and_orphans(monkeypatch):
     await mgr.close("T-A")
 
 
+async def test_admin_overview_server_state_wins_over_stale_record(monkeypatch):
+    """A tracked record stuck on "paused" while the server says RUNNING must
+    show as running — the server is the ground truth (the record self-heals on
+    the task's next prepare)."""
+    from agent_team.features.board.runtime.sandbox import admin as adm
+    from agent_team.features.board.runtime.sandbox import service as svc
+
+    mgr = SandboxManager(profile=RuntimeProfile(provider="opensandbox", image="img:v1"))
+    sb = _ReattachableSandbox()
+    await sb.resume_existing("sb-stale")
+    sb.state = "paused"  # local bookkeeping went stale
+    await mgr.adopt("T-S", sb)
+    monkeypatch.setattr(svc, "_manager", mgr)
+    monkeypatch.setattr(
+        svc, "resolve_profile",
+        lambda *a, **k: RuntimeProfile(provider="opensandbox", image="img:v1"),
+    )
+    monkeypatch.setattr(adm, "_task_rows", lambda: {})
+
+    async def _server(profile):
+        return (
+            [{"sandbox_id": "sb-stale", "server_state": "RUNNING",
+              "created_at": "2026-07-05T10:00:00", "expires_at": None,
+              "image": "img:v1", "metadata": {}}],
+            None,
+        )
+
+    monkeypatch.setattr(adm, "_server_rows", _server)
+
+    out = await adm.list_sandboxes_overview()
+    row = out["sandboxes"][0]
+    assert row["ui_state"] == "running"
+    assert row["state_mismatch"] is True
+    assert out["counts"]["running"] == 1
+    await mgr.close("T-S")
+
+
+async def test_pause_is_refcounted_across_overlapping_turns(monkeypatch):
+    """Two overlapping turns: the first turn's post-turn pause must be skipped
+    (another turn still uses the sandbox); only the last one actually pauses."""
+    from agent_team.features.board.runtime.sandbox import service as svc
+
+    class _SB:
+        state = "open"
+        pauses = 0
+
+        async def pause(self):
+            self.pauses += 1
+            self.state = "paused"
+
+    class _Mgr:
+        def __init__(self, sb):
+            self._sb = sb
+
+        def get(self, task_id):
+            return self._sb
+
+    sb = _SB()
+    monkeypatch.setattr(svc, "_manager", _Mgr(sb))
+    svc._busy_counts.clear()
+    svc._busy_counts["T-X"] = 2  # two prepares happened
+
+    await svc.pause_task_sandbox("T-X")  # first turn ends → skip
+    assert sb.pauses == 0 and sb.state == "open"
+    await svc.pause_task_sandbox("T-X")  # last turn ends → pause for real
+    assert sb.pauses == 1 and sb.state == "paused"
+    assert "T-X" not in svc._busy_counts
+
+    # A caller that never went through prepare (count absent) pauses immediately.
+    sb2 = _SB()
+    monkeypatch.setattr(svc, "_manager", _Mgr(sb2))
+    await svc.pause_task_sandbox("T-Y")
+    assert sb2.pauses == 1
+
+    # kill clears any leftover count.
+    svc._busy_counts["T-Z"] = 3
+    monkeypatch.setattr(svc, "_manager", None)
+    await svc.kill_task_sandbox("T-Z")
+    assert "T-Z" not in svc._busy_counts
+
+
 async def test_admin_action_routes_tracked_to_task_kill(monkeypatch):
     from agent_team.features.board.runtime.sandbox import admin as adm
     from agent_team.features.board.runtime.sandbox import service as svc

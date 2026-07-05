@@ -141,18 +141,24 @@ async def list_sandboxes_overview() -> dict[str, Any]:
     for base in merged.values():
         server_state = str(base.get("server_state") or "").upper()
         state = base.get("state")
-        ui_state = (
-            {"open": "running", "opening": "running", "paused": "paused"}.get(
-                str(state), None
-            )
+        local_ui = (
+            {"open": "running", "opening": "running", "paused": "paused"}.get(str(state))
             if state
-            else {
-                "RUNNING": "running",
-                "READY": "running",
-                "PAUSED": "paused",
-                "PENDING": "running",
-            }.get(server_state)
+            else None
         )
+        server_ui = {
+            "RUNNING": "running",
+            "READY": "running",
+            "PAUSED": "paused",
+            "PENDING": "running",
+        }.get(server_state)
+        # The server is the ground truth: when this process's record disagrees
+        # (e.g. a stale "paused" record while the container actually runs), show
+        # the server's view — the local record self-heals on the task's next
+        # prepare. The local view only fills in when the server didn't answer.
+        ui_state = server_ui or local_ui
+        if local_ui is not None and server_ui is not None and local_ui != server_ui:
+            base["state_mismatch"] = True
         is_dead = server_state in _DEAD_SERVER_STATES and base.get("source") == "server"
         orphan = base.get("source") == "server" and not is_dead
         if orphan:

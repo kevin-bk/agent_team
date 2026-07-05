@@ -333,6 +333,19 @@ def _state_mount(host_workspace_path: str) -> VolumeMount | None:
     )
 
 
+#: Turns currently using each task's sandbox. Every successful
+#: :func:`prepare_task_sandbox` increments; :func:`pause_task_sandbox`
+#: decrements and only *actually* pauses when no other turn is still active.
+#: Without this, two overlapping turns race: turn A's post-turn pause lands
+#: after turn B re-acquired the sandbox, freezing it mid-turn and leaving the
+#: tracked record stuck on "paused" while the container keeps running.
+_busy_counts: dict[str, int] = {}
+
+
+def _mark_busy(task_id: str) -> None:
+    _busy_counts[task_id] = _busy_counts.get(task_id, 0) + 1
+
+
 async def prepare_task_sandbox(
     *,
     task_id: str,
@@ -360,12 +373,14 @@ async def prepare_task_sandbox(
     if sb is not None:
         if sb.state == "open":
             manager.mark_used(task_id)
+            _mark_busy(task_id)
             return sb
         if sb.state == "paused":
             logger.info("agent_team runtime: resuming paused sandbox for task=%s", task_id)
             try:
                 await sb.resume()
                 manager.mark_used(task_id)
+                _mark_busy(task_id)
                 return sb
             except SandboxError:
                 logger.warning(
@@ -389,6 +404,7 @@ async def prepare_task_sandbox(
         reattached = await _try_reattach_sandbox(manager, task_id, profile)
         if reattached is not None:
             manager.mark_used(task_id)
+            _mark_busy(task_id)
             return reattached
 
     # Credential injection, driven by the board's staffed coding agents +
@@ -455,6 +471,7 @@ async def prepare_task_sandbox(
             await manager.close(task_id)
             _store_task_sandbox_id(task_id, None)
             raise
+    _mark_busy(task_id)
     return sb
 
 
@@ -576,7 +593,22 @@ async def pause_task_sandbox(task_id: str) -> None:
     """Pause a task's sandbox after a turn so an idle task costs no resources.
 
     Best-effort: providers that cannot pause (e.g. local) are left running.
+    Reference-counted against :func:`prepare_task_sandbox`: when two turns
+    overlap (e.g. a quick follow-up chat message), the first turn's post-turn
+    pause is skipped instead of freezing the sandbox under the still-running
+    second turn.
     """
+    remaining = _busy_counts.get(task_id, 1) - 1
+    if remaining > 0:
+        _busy_counts[task_id] = remaining
+        logger.info(
+            "agent_team runtime: skipping pause for task=%s — %d other turn(s) "
+            "still using the sandbox",
+            task_id,
+            remaining,
+        )
+        return
+    _busy_counts.pop(task_id, None)
     if _manager is None:
         return
     sb = _manager.get(task_id)
@@ -596,6 +628,7 @@ async def kill_task_sandbox(task_id: str) -> None:
     Unlike :func:`pause_task_sandbox` this discards the environment; the next turn
     reprovisions from scratch. No-op when nothing is tracked for the task.
     """
+    _busy_counts.pop(task_id, None)
     _store_task_sandbox_id(task_id, None)
     if _manager is None:
         return
