@@ -30,6 +30,7 @@ from agent_team.features.board.runtime.loop.service import (
     _drive_to_completion,
     _task_workspace_and_board,
 )
+from agent_team.features.board.runtime.sandbox.service import fix_workspace_ownership
 from agent_team.features.board.runtime.loop.status import LoopState
 from agent_team.features.board.runtime.loop.verdict import parse_verdict
 from core.database.base import SessionLocal
@@ -190,6 +191,8 @@ async def run_planning_job(
         attempt_id=None,
     )
     result = await _drive_to_completion(run_id)
+
+    await fix_workspace_ownership(task_id)
 
     # Fold any journal notes the planner left in its inbox into the durable
     # journal (best-effort) before parking for approval/questions.
@@ -456,6 +459,7 @@ async def _run_reviewer(
         attempt_id=None,
     )
     result = await _drive_to_completion(run_id)
+    await fix_workspace_ownership(task_id)
     await asyncio.to_thread(
         task_journal.ingest_agent_notes,
         task_id=task_id,

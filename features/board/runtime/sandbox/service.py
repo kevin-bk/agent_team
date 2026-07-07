@@ -648,6 +648,38 @@ async def pause_task_sandbox(task_id: str) -> None:
         logger.warning("agent_team runtime: pause failed for task=%s", task_id, exc_info=True)
 
 
+async def fix_workspace_ownership(task_id: str, workspace_mount_path: str = "/workspace") -> None:
+    """``chown -R`` the ``.agent-team/`` tree inside the sandbox to the host uid/gid.
+
+    Sandbox containers typically run as root, so files they create on bind-mounted
+    volumes are owned by root.  The host process (which runs as a normal user) then
+    cannot modify them.  Running ``chown`` *inside* the sandbox (as root) transfers
+    ownership to the host uid, resolving the mismatch.
+
+    Best-effort: silently ignored when no sandbox is open for the task.
+    """
+    if _manager is None:
+        return
+    sb = _manager.get(task_id)
+    if sb is None or getattr(sb, "state", None) != "open":
+        return
+
+    host_uid = os.getuid()
+    host_gid = os.getgid()
+    target = f"{workspace_mount_path}/.agent-team"
+    try:
+        await sb.exec_shell(
+            f"chown -R {host_uid}:{host_gid} {target} 2>/dev/null || true",
+            timeout_seconds=15,
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "fix_workspace_ownership: chown failed for task=%s (non-fatal)",
+            task_id,
+            exc_info=True,
+        )
+
+
 async def kill_task_sandbox(task_id: str) -> None:
     """Tear a task's sandbox down entirely, freeing its resources.
 

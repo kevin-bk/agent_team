@@ -17,7 +17,6 @@ import hashlib
 import json
 import logging
 import os
-import stat
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -121,44 +120,9 @@ def write_text(workspace_path: str, rel_path: str, content: str) -> str:
     """Write an artifact (creating parent dirs) and return its new etag."""
     abs_path = _safe_abs(workspace_path, rel_path)
     os.makedirs(os.path.dirname(abs_path), exist_ok=True)
-    try:
-        with open(abs_path, "w", encoding="utf-8") as fh:
-            fh.write(content)
-    except PermissionError:
-        # The file may have been created by the sandbox (different uid).
-        # Make it writable and retry.
-        try:
-            os.chmod(abs_path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH | stat.S_IWOTH)
-        except OSError:
-            pass
-        with open(abs_path, "w", encoding="utf-8") as fh:
-            fh.write(content)
+    with open(abs_path, "w", encoding="utf-8") as fh:
+        fh.write(content)
     return etag(content)
-
-
-def fix_artifact_permissions(workspace_path: str) -> None:
-    """Make ``.agent-team/`` files writable by the host process.
-
-    Artifacts may have been created by a sandbox process running as a different
-    uid (bind-mounted workspace). This walks the artifact directory and ensures
-    every file and directory is world-read/writable so the host-side loop
-    (``set_task_status``, ``write_text``) can update them without
-    ``PermissionError``.  Best-effort: failures are logged but never fatal.
-    """
-    art_dir = os.path.join(os.path.realpath(workspace_path), ARTIFACT_DIR)
-    if not os.path.isdir(art_dir):
-        return
-    for dirpath, dirnames, filenames in os.walk(art_dir):
-        try:
-            os.chmod(dirpath, 0o777)
-        except OSError:
-            logger.debug("fix_artifact_permissions: chmod dir failed: %s", dirpath)
-        for fname in filenames:
-            fpath = os.path.join(dirpath, fname)
-            try:
-                os.chmod(fpath, 0o666)
-            except OSError:
-                logger.debug("fix_artifact_permissions: chmod file failed: %s", fpath)
 
 
 def exists(workspace_path: str, rel_path: str) -> bool:

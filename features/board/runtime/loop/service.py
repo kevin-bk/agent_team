@@ -51,6 +51,7 @@ from agent_team.features.board.runtime.loop.verdict import (
     has_verification_evidence,
     parse_verdict,
 )
+from agent_team.features.board.runtime.sandbox.service import fix_workspace_ownership
 from core.database.base import SessionLocal
 
 logger = logging.getLogger(__name__)
@@ -190,6 +191,7 @@ class BackendGenerator:
             attempt_id=attempt_id,
         )
         result = await _drive_to_completion(run_id)
+        await fix_workspace_ownership(self._task_id)
         # Fold any journal notes the generator left in its inbox into the durable
         # journal (best-effort) before the loop inspects markers / grades.
         await asyncio.to_thread(
@@ -368,6 +370,7 @@ class WorkerEvaluator:
             attempt_id=attempt_id,
         )
         result = await _drive_to_completion(run_id)
+        await fix_workspace_ownership(self._task_id)
         # The evaluator can also leave journal notes (risks it spotted, etc.).
         await asyncio.to_thread(
             task_journal.ingest_agent_notes,
@@ -554,11 +557,6 @@ async def run_autonomous_loop(
 
     if strict and task_graph and artifacts.task_list(workspace_path):
         from agent_team.features.board.runtime.loop.task_graph import run_task_graph
-
-        # Artifacts written by the planner inside a sandbox may be owned by a
-        # different uid (bind-mount). Fix permissions before the host-side task
-        # graph writes to TASKS.json.
-        await asyncio.to_thread(artifacts.fix_artifact_permissions, workspace_path)
 
         def make_evaluator(graph_task: dict | None) -> WorkerEvaluator:
             return WorkerEvaluator(
