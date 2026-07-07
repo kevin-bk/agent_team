@@ -1215,8 +1215,10 @@ async def test_prepare_local_provider_keeps_app_db_store(monkeypatch, tmp_path):
 
     names = [m.name for m in (mgr.captured["extra_mounts"] or [])]
     assert "task-state" not in names
-    # No env override — the host ACP path must keep using the app database.
-    assert mgr.captured["extra_env"] is None
+    # The only env should be the git safe.directory vars (no ACP store override).
+    env = mgr.captured["extra_env"] or {}
+    assert "_ACP_SESSION_STORE" not in str(env)
+    assert env.get("GIT_CONFIG_VALUE_0") == "*"
 
 
 # ─── admin sandboxes overview ───────────────────────────────────────────────

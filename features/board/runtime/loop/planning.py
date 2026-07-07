@@ -53,6 +53,38 @@ def is_planning_running(task_id: str) -> bool:
     return plan is not None and not plan.task.done()
 
 
+def _agent_visible_workspace(host_workspace_path: str, board_id: str) -> str:
+    """Return the workspace path as the agent sees it inside its sandbox.
+
+    For OpenSandbox the host path is bind-mounted at the profile's
+    ``workspace_mount_path`` (default ``/workspace``). For the local provider
+    the host path is used directly.
+    """
+    try:
+        from agent_team.features.board.runtime.sandbox.service import resolve_profile
+
+        profile = resolve_profile(board_id=board_id)
+        if profile.provider != "local":
+            return profile.workspace_mount_path
+    except Exception:
+        logger.debug("_agent_visible_workspace: could not resolve profile", exc_info=True)
+    return host_workspace_path
+
+
+def _board_repo_names(board_id: str) -> list[str]:
+    """Return the display names of repos assigned to the board (best-effort)."""
+    if not board_id:
+        return []
+    try:
+        from agent_team.features.repos.repositories import repos_for_board
+
+        with SessionLocal() as db:
+            return [repo.name for repo, _branch, _push, _wiki in repos_for_board(db, board_id)]
+    except Exception:
+        logger.debug("_board_repo_names: could not load repos", exc_info=True)
+        return []
+
+
 def _persist_planning(
     task_id: str,
     *,
@@ -124,6 +156,16 @@ async def run_planning_job(
     # quick-lane auto-approval opt-in.
     settings = await asyncio.to_thread(_board_planning_settings, board_id)
     conventions, harness_skill = settings.conventions, settings.planning_skill
+
+    # The prompt must show the workspace path as the agent will see it inside
+    # the sandbox, not the host-side absolute path.
+    agent_workspace_path = await asyncio.to_thread(
+        _agent_visible_workspace, workspace_path, board_id
+    )
+
+    # Resolve the board's assigned repos for the "Repository" prompt field.
+    repo_names = await asyncio.to_thread(_board_repo_names, board_id)
+
     _persist_planning(
         task_id,
         state=LoopState.PLANNING,
@@ -134,7 +176,8 @@ async def run_planning_job(
     prompt = planning_prompts.build_planning_prompt(
         objective,
         task_id=task_id,
-        workspace_path=workspace_path,
+        workspace_path=agent_workspace_path,
+        repo=", ".join(repo_names) if repo_names else None,
         conventions=conventions,
         harness_skill=harness_skill,
     )
