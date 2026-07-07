@@ -453,6 +453,17 @@ async def prepare_task_sandbox(
                 _ACP_STORE_ENV: f"{_STATE_MOUNT_PATH}/acp-sessions.db",
             }
 
+    # The workspace is bind-mounted from the host, so repo dirs are owned by the
+    # host uid while the sandbox process runs as a different uid.  Git ≥ 2.35.2
+    # refuses to operate on repos with mismatched ownership ("dubious ownership").
+    # Tell git to trust every directory so cloned repos work inside the sandbox.
+    merged_env = {
+        **(merged_env or {}),
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "safe.directory",
+        "GIT_CONFIG_VALUE_0": "*",
+    }
+
     network_policy = _resolve_network_policy(profile, plan)
     credential_proxy = bool(plan is not None and plan.needs_credential_proxy)
 

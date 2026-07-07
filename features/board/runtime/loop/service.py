@@ -45,7 +45,7 @@ from agent_team.features.board.runtime.loop.evaluator import (
     Verdict,
     build_evaluator_prompt,
 )
-from agent_team.features.board.runtime.loop.status import LoopStatus
+from agent_team.features.board.runtime.loop.status import LoopState, LoopStatus
 from agent_team.features.board.runtime.loop.verdict import (
     LoopVerdict,
     has_verification_evidence,
@@ -555,6 +555,11 @@ async def run_autonomous_loop(
     if strict and task_graph and artifacts.task_list(workspace_path):
         from agent_team.features.board.runtime.loop.task_graph import run_task_graph
 
+        # Artifacts written by the planner inside a sandbox may be owned by a
+        # different uid (bind-mount). Fix permissions before the host-side task
+        # graph writes to TASKS.json.
+        await asyncio.to_thread(artifacts.fix_artifact_permissions, workspace_path)
+
         def make_evaluator(graph_task: dict | None) -> WorkerEvaluator:
             return WorkerEvaluator(
                 task_id=task_id,
@@ -670,6 +675,10 @@ def start_autonomous_loop(
             )
         except Exception:  # noqa: BLE001 — never let the loop crash the event loop
             logger.exception("autonomous loop failed for task %s", task_id)
+            try:
+                _persist_loop_state(task_id, LoopState.FAILED.value)
+            except Exception:  # noqa: BLE001
+                logger.warning("could not persist FAILED state for task %s", task_id)
         finally:
             current = _RUNNING_LOOPS.get(task_id)
             if current is not None and current.cancel is cancel:
