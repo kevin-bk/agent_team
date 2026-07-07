@@ -89,11 +89,14 @@ export function NoteEditor({
 
   // Hydrate from external value changes (clear after post, programmatic set)
   // without re-emitting an update (would loop with onChange).
+  // The markdown serializer may normalize whitespace/newlines differently than
+  // the raw value, so compare trimmed forms to avoid false positives.
   useEffect(() => {
     if (!editor) return;
-    const current = editor.storage.markdown.getMarkdown();
-    if (value !== current) {
-      editor.commands.setContent(value, false);
+    const current = (editor.storage.markdown.getMarkdown() ?? "").trim();
+    const next = (value ?? "").trim();
+    if (next !== current) {
+      editor.commands.setContent(value || "", false);
     }
   }, [value, editor]);
 

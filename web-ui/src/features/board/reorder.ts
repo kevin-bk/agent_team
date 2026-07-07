@@ -1,4 +1,17 @@
-import type { TaskDTO } from "@/api/types";
+import type { TaskDTO, TaskPriority } from "@/api/types";
+
+const PRIORITY_RANK: Record<string, number> = {
+  highest: 0,
+  high: 1,
+  medium: 2,
+  low: 3,
+  lowest: 4,
+};
+const NO_PRIORITY = 5;
+
+function priorityRank(p: TaskPriority | null | undefined): number {
+  return p ? (PRIORITY_RANK[p] ?? NO_PRIORITY) : NO_PRIORITY;
+}
 
 /**
  * Fractional positioning (plan 16 §04.1). Given the tasks already in the
@@ -27,9 +40,17 @@ export function computePosition(
   return (before + after) / 2;
 }
 
-/** Tasks of one column, sorted ascending by position (stable on ties). */
+/**
+ * Tasks of one column, sorted by priority (highest first), then by position
+ * within the same priority tier. Tasks without a priority sort last.
+ */
 export function tasksInColumn(tasks: TaskDTO[], status: string): TaskDTO[] {
   return tasks
     .filter((t) => t.status === status)
-    .sort((a, b) => a.position - b.position || a.created_at.localeCompare(b.created_at));
+    .sort((a, b) => {
+      const pa = priorityRank(a.priority);
+      const pb = priorityRank(b.priority);
+      if (pa !== pb) return pa - pb;
+      return a.position - b.position || a.created_at.localeCompare(b.created_at);
+    });
 }

@@ -8,6 +8,7 @@ import {
   useBoardMembers,
   useCliTargets,
   useCreateTask,
+  useMe,
   usePatchTask,
 } from "@/api/hooks";
 import type {
@@ -51,7 +52,11 @@ interface FormState {
   jira_url: string;
 }
 
-function toForm(task: TaskDTO | null, fallbackStatus: string): FormState {
+function toForm(
+  task: TaskDTO | null,
+  fallbackStatus: string,
+  fallbackAssignee: string = "",
+): FormState {
   return {
     title: task?.title ?? "",
     description: task?.description ?? "",
@@ -59,7 +64,7 @@ function toForm(task: TaskDTO | null, fallbackStatus: string): FormState {
     status: task?.status ?? fallbackStatus,
     priority: task?.priority ?? "",
     labels: (task?.labels ?? []).join(", "),
-    assignee_id: task?.assignee_id ?? "",
+    assignee_id: task?.assignee_id ?? (task ? "" : fallbackAssignee),
     agent_assignee: task?.agent_assignee ?? "",
     jira_key: task?.jira_key ?? "",
     jira_url: task?.jira_url ?? "",
@@ -89,7 +94,11 @@ export function TaskDialog({
   onClose: () => void;
 }) {
   const isEdit = task !== null;
-  const [form, setForm] = useState<FormState>(() => toForm(task, defaultStatus));
+  const me = useMe();
+  const myUserId = me.data?.user_id ?? "";
+  const [form, setForm] = useState<FormState>(() =>
+    toForm(task, defaultStatus, myUserId),
+  );
   const confirm = useConfirm();
 
   const create = useCreateTask(boardId);
@@ -139,8 +148,8 @@ export function TaskDialog({
 
   // Re-seed the form whenever the dialog opens for a different task/column.
   useEffect(() => {
-    if (open) setForm(toForm(task, defaultStatus));
-  }, [open, task, defaultStatus]);
+    if (open) setForm(toForm(task, defaultStatus, myUserId));
+  }, [open, task, defaultStatus, myUserId]);
 
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setForm((f) => ({ ...f, [key]: value }));
