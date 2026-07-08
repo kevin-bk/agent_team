@@ -443,7 +443,8 @@ function AssistantText({ text }: { text: string }): ReactNode {
         ) : seg.content.trim() ? (
           <div
             key={i}
-            className="prose-chat max-w-none text-[13px] leading-relaxed text-foreground"
+            className="prose-chat max-w-none text-[13px] text-foreground"
+            style={{ lineHeight: 1.6 }}
           >
             <Markdown>{seg.content}</Markdown>
           </div>

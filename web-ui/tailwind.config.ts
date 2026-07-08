@@ -111,8 +111,6 @@ const config: Config = {
           "sans-serif",
         ],
         serif: [
-          '"Tiempos Text"',
-          '"Galaxie Copernicus"',
           '"Source Serif 4 Variable"',
           "Georgia",
           "serif",

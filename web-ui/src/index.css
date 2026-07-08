@@ -237,21 +237,25 @@
   }
 }
 
-/* Markdown prose — assistant reading body in serif (Claude/Tiempos feel). */
+/* Markdown prose — assistant reading body in serif (Source Serif 4, editorial).
+   Line-height 1.65 keeps long AI output comfortable to read (Anthropic
+   recommendation). Headings switch to the UI sans (Atlassian Sans) so AI prose
+   and chrome stay clearly separated. */
 .prose-chat {
-  @apply font-serif text-[0.95rem] leading-7;
+  @apply font-serif text-[15px];
+  line-height: 1.65;
 }
 .prose-chat p {
-  @apply my-3;
+  @apply my-2.5;
 }
 .prose-chat ul {
-  @apply my-3 list-disc pl-5;
+  @apply my-2.5 list-disc pl-5;
 }
 .prose-chat ol {
-  @apply my-3 list-decimal pl-5;
+  @apply my-2.5 list-decimal pl-5;
 }
 .prose-chat li {
-  @apply my-1.5;
+  @apply my-1;
 }
 .prose-chat h1,
 .prose-chat h2,

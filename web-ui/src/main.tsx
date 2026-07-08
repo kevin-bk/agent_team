@@ -12,14 +12,13 @@ import { Toaster } from "sonner";
 import { ApiProvider } from "@/api/ApiProvider";
 import { AUTH_MODE, ROUTER_BASE } from "@/api/config";
 import { App } from "@/App";
-// Self-hosted free fallbacks for Claude's commercial type (Styrene B /
-// Tiempos / Copernicus). The real names are listed first in the font
-// stack (tailwind.config.ts) so a licensed install wins automatically.
+// Self-hosted variable fonts for the hybrid type system:
+//   Sans:  Atlassian Sans (self-hosted woff2) → Inter (fallback)
+//   Serif: Source Serif 4 (agent chat prose, editorial feel)
+//   Mono:  Atlassian Mono → JetBrains Mono (code blocks)
 import "@fontsource-variable/hanken-grotesk";
 import "@fontsource-variable/source-serif-4";
 import "@fontsource-variable/jetbrains-mono";
-// Inter — the canonical Swiss/Linear product-UI face. Scoped to the board
-// trial via the `.font-ui` utility (index.css) before rolling out app-wide.
 import "@fontsource-variable/inter";
 import "@/index.css";
 
