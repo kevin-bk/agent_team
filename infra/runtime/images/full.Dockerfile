@@ -155,6 +155,21 @@ RUN mkdir -p "${CLAUDE_CONFIG_DIR}" /home/sandbox /root \
        done \
     && chmod -R a+rX "${CLAUDE_CONFIG_DIR}" /root/.claude.json /home/sandbox/.claude.json
 
+# --- Headless config for Codex CLI --------------------------------------------
+# Codex CLI uses bubblewrap (bwrap) for its internal sandbox on Linux. Inside an
+# OpenSandbox container that is already the security boundary, the inner bwrap
+# fails ("No permissions to create new namespace"). Disable Codex's own sandbox
+# via config.toml and set approval_policy=never for unattended runs. Write to
+# every plausible CODEX_HOME so it's picked up whatever uid the runtime uses.
+RUN for home_dir in /root /home/sandbox; do \
+        mkdir -p "${home_dir}/.codex" \
+        && printf '%s\n' \
+            'sandbox_mode = "danger-full-access"' \
+            'approval_policy = "never"' \
+           > "${home_dir}/.codex/config.toml"; \
+    done \
+    && chmod -R a+rX /root/.codex /home/sandbox/.codex
+
 # --- Python toolchain the agent often reaches for -----------------------------
 # `python`→`python3` so scripts that call bare `python` work. `uv`/`uvx` is the
 # standard runner for Python-based stdio MCP servers (e.g. `uvx mcp-server-git`)
