@@ -46,8 +46,10 @@ USER root
 # can shift between releases and our parsers (cli_exec.py) track a known shape.
 #   npm view @anthropic-ai/claude-code version
 #   npm view @openai/codex version
+#   npm view @agentclientprotocol/codex-acp version
 ARG CLAUDE_CODE_VERSION=2.1.146
 ARG CODEX_VERSION=latest
+ARG CODEX_ACP_VERSION=1.1.0
 
 # Claude Code reads its config from CLAUDE_CONFIG_DIR when set; pinning it
 # removes HOME-detection guesswork when the runtime exec's with an empty HOME.
@@ -81,9 +83,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN npm install -g \
         "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
         "@openai/codex@${CODEX_VERSION}" \
+        "@agentclientprotocol/codex-acp@${CODEX_ACP_VERSION}" \
     && npm cache clean --force \
     && claude --version \
-    && codex --version
+    && codex --version \
+    && command -v codex-acp > /dev/null
 
 # --- Playwright + Chrome/Chromium + xvfb (agent-driven UI testing) ------------
 # Agents run browser tests (e.g. embedded Shopify apps via test_env_setup)
@@ -200,6 +204,7 @@ RUN curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" \
 ENV PYTHONPATH=/opt/agent-team
 ENV PYTHONUNBUFFERED=1
 ENV AGENT_TEAM_ACP_STORE_DB=/var/lib/agent-team/acp-sessions.db
+ENV AI_CODE_CODEX_ACP_ARGS="-y @agentclientprotocol/codex-acp -c 'sandbox_mode=\"danger-full-access\"' -c 'approval_policy=\"never\"'"
 
 COPY infra/runtime/server/sidecar-requirements.txt /tmp/sidecar-requirements.txt
 RUN uv pip install --system --break-system-packages -r /tmp/sidecar-requirements.txt
@@ -240,6 +245,7 @@ WORKDIR /workspace
 # package) or if the sidecar's import graph is broken — not on the first task.
 RUN claude --version \
     && codex --version \
+    && command -v codex-acp > /dev/null \
     && rg --version \
     && git --version \
     && node --version \

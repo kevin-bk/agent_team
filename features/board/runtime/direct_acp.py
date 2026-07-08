@@ -74,7 +74,14 @@ _ENGINES: dict[str, _EngineSpec] = {
         "claude", "Claude", "npx", "-y @agentclientprotocol/claude-agent-acp"
     ),
     "cursor": _EngineSpec("cursor", "Cursor", "cursor-agent", "acp"),
-    "codex": _EngineSpec("codex", "Codex", "npx", "-y @zed-industries/codex-acp"),
+    "codex": _EngineSpec(
+        "codex",
+        "Codex",
+        "npx",
+        "-y @agentclientprotocol/codex-acp "
+        "-c 'sandbox_mode=\"danger-full-access\"' "
+        "-c 'approval_policy=\"never\"'",
+    ),
 }
 
 

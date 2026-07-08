@@ -4426,6 +4426,30 @@ def test_engine_runtime_reads_env(monkeypatch):
     assert rt.label == "Claude ACP"
 
 
+def test_codex_acp_defaults_use_current_package_and_disable_inner_sandbox(
+    monkeypatch,
+):
+    from agent_team.features.board.runtime import direct_acp as dacp
+    from agent_team.features.board.runtime.acp.engines import engine_runtime
+
+    monkeypatch.delenv("AI_CODE_CODEX_ACP_ARGS", raising=False)
+    monkeypatch.delenv("AI_CODE_CODEX_ACP_COMMAND", raising=False)
+
+    sidecar_rt = engine_runtime("codex")
+    assert sidecar_rt.command == "npx"
+    assert "@agentclientprotocol/codex-acp" in sidecar_rt.args
+    assert "-c" in sidecar_rt.args
+    assert 'sandbox_mode="danger-full-access"' in sidecar_rt.args
+    assert 'approval_policy="never"' in sidecar_rt.args
+
+    direct_rt = dacp._engine_runtime("codex")
+    assert direct_rt.command == "npx"
+    assert "@agentclientprotocol/codex-acp" in direct_rt.args
+    assert "-c" in direct_rt.args
+    assert 'sandbox_mode="danger-full-access"' in direct_rt.args
+    assert 'approval_policy="never"' in direct_rt.args
+
+
 def test_direct_acp_translator_maps_progress_thinking_and_tools():
     """Assistant text → text_delta, reasoning → thinking, tool calls → cards."""
     from agent_team.features.board.runtime import events as ev

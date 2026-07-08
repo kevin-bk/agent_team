@@ -28,6 +28,15 @@ _DEFAULT_CREATE_TIMEOUT_SECONDS = 120
 #: the per-run idle timeout stops a genuinely wedged turn far sooner.
 TURN_TIMEOUT_SECONDS = 3 * 60 * 60
 
+# Codex runs inside the task's OpenSandbox container in acp_sidecar mode. The
+# container is the isolation boundary, so Codex CLI must not create a nested
+# bubblewrap sandbox; many container hosts disable the required user namespace.
+CODEX_ACP_DEFAULT_ARGS = (
+    "-y @agentclientprotocol/codex-acp "
+    "-c 'sandbox_mode=\"danger-full-access\"' "
+    "-c 'approval_policy=\"never\"'"
+)
+
 
 @dataclass(frozen=True)
 class EngineSpec:
@@ -47,7 +56,7 @@ ENGINES: dict[str, EngineSpec] = {
         "claude", "Claude", "npx", "-y @agentclientprotocol/claude-agent-acp"
     ),
     "cursor": EngineSpec("cursor", "Cursor", "cursor-agent", "acp"),
-    "codex": EngineSpec("codex", "Codex", "npx", "-y @zed-industries/codex-acp"),
+    "codex": EngineSpec("codex", "Codex", "npx", CODEX_ACP_DEFAULT_ARGS),
 }
 
 

@@ -1201,6 +1201,60 @@ async def test_prepare_mounts_persistent_state_and_repoints_store(
     )
 
 
+async def test_prepare_sidecar_injects_codex_acp_args(monkeypatch, tmp_path):
+    from agent_team.features.board.runtime.sandbox import service as svc
+
+    mgr = _CapturingManager()
+    monkeypatch.setattr(svc, "get_manager", lambda profile=None: mgr)
+
+    async def _no_reattach(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(svc, "_try_reattach_sandbox", _no_reattach)
+    monkeypatch.setattr(svc, "_store_task_sandbox_id", lambda *_a: None)
+    monkeypatch.delenv("AI_CODE_CODEX_ACP_ARGS", raising=False)
+    monkeypatch.delenv("AI_CODE_CODEX_ACP_COMMAND", raising=False)
+
+    await svc.prepare_task_sandbox(
+        task_id="T-9",
+        host_workspace_path=str(tmp_path / "T-9"),
+        profile=RuntimeProfile(provider="opensandbox", runtime_strategy="acp_sidecar"),
+    )
+
+    env = mgr.captured["extra_env"]
+    assert "@agentclientprotocol/codex-acp" in env["AI_CODE_CODEX_ACP_ARGS"]
+    assert 'sandbox_mode="danger-full-access"' in env["AI_CODE_CODEX_ACP_ARGS"]
+    assert 'approval_policy="never"' in env["AI_CODE_CODEX_ACP_ARGS"]
+    assert "AI_CODE_CODEX_ACP_COMMAND" not in env
+
+
+async def test_prepare_sidecar_forwards_host_codex_acp_override(
+    monkeypatch, tmp_path
+):
+    from agent_team.features.board.runtime.sandbox import service as svc
+
+    mgr = _CapturingManager()
+    monkeypatch.setattr(svc, "get_manager", lambda profile=None: mgr)
+
+    async def _no_reattach(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(svc, "_try_reattach_sandbox", _no_reattach)
+    monkeypatch.setattr(svc, "_store_task_sandbox_id", lambda *_a: None)
+    monkeypatch.setenv("AI_CODE_CODEX_ACP_ARGS", "--custom-codex-acp")
+    monkeypatch.setenv("AI_CODE_CODEX_ACP_COMMAND", "/opt/codex-acp")
+
+    await svc.prepare_task_sandbox(
+        task_id="T-10",
+        host_workspace_path=str(tmp_path / "T-10"),
+        profile=RuntimeProfile(provider="opensandbox", runtime_strategy="acp_sidecar"),
+    )
+
+    env = mgr.captured["extra_env"]
+    assert env["AI_CODE_CODEX_ACP_ARGS"] == "--custom-codex-acp"
+    assert env["AI_CODE_CODEX_ACP_COMMAND"] == "/opt/codex-acp"
+
+
 async def test_prepare_local_provider_keeps_app_db_store(monkeypatch, tmp_path):
     from agent_team.features.board.runtime.sandbox import service as svc
 

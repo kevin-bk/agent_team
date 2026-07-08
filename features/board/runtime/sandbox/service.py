@@ -17,6 +17,7 @@ import logging
 import os
 from typing import Any
 
+from agent_team.features.board.runtime.acp.engines import CODEX_ACP_DEFAULT_ARGS
 from agent_team.features.board.runtime.sandbox.base import Sandbox, SandboxError
 from agent_team.features.board.runtime.sandbox.config import (
     RuntimeProfile,
@@ -39,6 +40,16 @@ def _env_int(key: str, default: int) -> int:
         return int(raw)
     except ValueError:
         return default
+
+
+def _codex_acp_sidecar_env() -> dict[str, str]:
+    """Env overrides needed when Codex ACP runs inside OpenSandbox."""
+    args = (os.environ.get("AI_CODE_CODEX_ACP_ARGS") or "").strip()
+    env = {"AI_CODE_CODEX_ACP_ARGS": args or CODEX_ACP_DEFAULT_ARGS}
+    command = (os.environ.get("AI_CODE_CODEX_ACP_COMMAND") or "").strip()
+    if command:
+        env["AI_CODE_CODEX_ACP_COMMAND"] = command
+    return env
 
 
 def resolve_profile(task_id: str = "", board_id: str = "") -> RuntimeProfile:
@@ -452,6 +463,12 @@ async def prepare_task_sandbox(
                 **(merged_env or {}),
                 _ACP_STORE_ENV: f"{_STATE_MOUNT_PATH}/acp-sessions.db",
             }
+
+    if profile.is_acp_sidecar:
+        merged_env = {
+            **_codex_acp_sidecar_env(),
+            **(merged_env or {}),
+        }
 
     # The workspace is bind-mounted from the host, so repo dirs are owned by the
     # host uid while the sandbox process runs as a different uid.  Git ≥ 2.35.2
