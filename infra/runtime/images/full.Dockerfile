@@ -205,6 +205,18 @@ ENV PYTHONPATH=/opt/agent-team
 ENV PYTHONUNBUFFERED=1
 ENV AGENT_TEAM_ACP_STORE_DB=/var/lib/agent-team/acp-sessions.db
 ENV AI_CODE_CODEX_ACP_ARGS="-y @agentclientprotocol/codex-acp -c 'sandbox_mode=\"danger-full-access\"' -c 'approval_policy=\"never\"'"
+ENV INITIAL_AGENT_MODE=agent-full-access
+ENV CODEX_CONFIG="{\"sandbox_mode\":\"danger-full-access\",\"approval_policy\":\"never\"}"
+
+# Codex runs as root in the OpenSandbox container, so its effective config is
+# /root/.codex/config.toml. Keep /home/sandbox too for images/commands that set
+# HOME differently, but do not rely on it for the sidecar path.
+RUN mkdir -p /root/.codex /home/sandbox/.codex \
+    && printf '%s\n' \
+        'sandbox_mode = "danger-full-access"' \
+        'approval_policy = "never"' \
+        > /root/.codex/config.toml \
+    && cp /root/.codex/config.toml /home/sandbox/.codex/config.toml
 
 COPY infra/runtime/server/sidecar-requirements.txt /tmp/sidecar-requirements.txt
 RUN uv pip install --system --break-system-packages -r /tmp/sidecar-requirements.txt

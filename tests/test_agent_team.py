@@ -4450,6 +4450,34 @@ def test_codex_acp_defaults_use_current_package_and_disable_inner_sandbox(
     assert 'approval_policy="never"' in direct_rt.args
 
 
+async def test_codex_direct_cli_run_sets_full_access_session_mode(monkeypatch):
+    import asyncio
+
+    from agent_team.features.board.runtime.acp import run as acp_run
+
+    captured: dict = {}
+
+    async def _fake_manager_run_ok(**kwargs):
+        captured.update(kwargs)
+        return "ok", True
+
+    monkeypatch.setattr(acp_run, "manager_run_ok", _fake_manager_run_ok)
+
+    direct = acp_run.DirectCliRun(
+        engine="codex",
+        prompt="hello",
+        cwd="/workspace",
+        thread_id="thread-mode-test",
+    )
+
+    async for _frame in direct.stream_frames(asyncio.Event()):
+        pass
+
+    assert captured["initial_session_mode"] == "agent-full-access"
+    assert direct.ok is True
+    assert direct.final_text == "ok"
+
+
 def test_direct_acp_translator_maps_progress_thinking_and_tools():
     """Assistant text → text_delta, reasoning → thinking, tool calls → cards."""
     from agent_team.features.board.runtime import events as ev

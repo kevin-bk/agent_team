@@ -1214,6 +1214,8 @@ async def test_prepare_sidecar_injects_codex_acp_args(monkeypatch, tmp_path):
     monkeypatch.setattr(svc, "_store_task_sandbox_id", lambda *_a: None)
     monkeypatch.delenv("AI_CODE_CODEX_ACP_ARGS", raising=False)
     monkeypatch.delenv("AI_CODE_CODEX_ACP_COMMAND", raising=False)
+    monkeypatch.delenv("CODEX_CONFIG", raising=False)
+    monkeypatch.delenv("INITIAL_AGENT_MODE", raising=False)
 
     await svc.prepare_task_sandbox(
         task_id="T-9",
@@ -1225,6 +1227,12 @@ async def test_prepare_sidecar_injects_codex_acp_args(monkeypatch, tmp_path):
     assert "@agentclientprotocol/codex-acp" in env["AI_CODE_CODEX_ACP_ARGS"]
     assert 'sandbox_mode="danger-full-access"' in env["AI_CODE_CODEX_ACP_ARGS"]
     assert 'approval_policy="never"' in env["AI_CODE_CODEX_ACP_ARGS"]
+    assert env["INITIAL_AGENT_MODE"] == "agent-full-access"
+    import json
+
+    codex_config = json.loads(env["CODEX_CONFIG"])
+    assert codex_config["sandbox_mode"] == "danger-full-access"
+    assert codex_config["approval_policy"] == "never"
     assert "AI_CODE_CODEX_ACP_COMMAND" not in env
 
 
@@ -1243,6 +1251,10 @@ async def test_prepare_sidecar_forwards_host_codex_acp_override(
     monkeypatch.setattr(svc, "_store_task_sandbox_id", lambda *_a: None)
     monkeypatch.setenv("AI_CODE_CODEX_ACP_ARGS", "--custom-codex-acp")
     monkeypatch.setenv("AI_CODE_CODEX_ACP_COMMAND", "/opt/codex-acp")
+    monkeypatch.setenv(
+        "CODEX_CONFIG", '{"model":"gpt-test","approval_policy":"on-request"}'
+    )
+    monkeypatch.setenv("INITIAL_AGENT_MODE", "agent-full-access")
 
     await svc.prepare_task_sandbox(
         task_id="T-10",
@@ -1253,6 +1265,12 @@ async def test_prepare_sidecar_forwards_host_codex_acp_override(
     env = mgr.captured["extra_env"]
     assert env["AI_CODE_CODEX_ACP_ARGS"] == "--custom-codex-acp"
     assert env["AI_CODE_CODEX_ACP_COMMAND"] == "/opt/codex-acp"
+    import json
+
+    codex_config = json.loads(env["CODEX_CONFIG"])
+    assert codex_config["model"] == "gpt-test"
+    assert codex_config["sandbox_mode"] == "danger-full-access"
+    assert codex_config["approval_policy"] == "never"
 
 
 async def test_prepare_local_provider_keeps_app_db_store(monkeypatch, tmp_path):

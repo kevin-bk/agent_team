@@ -387,6 +387,7 @@ class AcpSessionManager:
         args: list[str],
         env_overrides: dict[str, str],
         auto_approve: bool,
+        initial_session_mode: str | None = None,
         mask: Callable[[str], str] | None = None,
         mcp_config: dict[str, Any] | None = None,
         resume_session_id: str | None = None,
@@ -453,6 +454,14 @@ class AcpSessionManager:
         if session_id is not None:
             self._by_session_id[session_id] = handle
         return handle, resumed
+
+    async def _set_session_mode(self, handle: _SessionHandle, mode_id: str) -> None:
+        if not mode_id or handle.conn is None or handle.session_id is None:
+            return
+        await handle.conn.set_session_mode(
+            session_id=handle.session_id,
+            mode_id=mode_id,
+        )
 
     async def _do_prompt(
         self, handle: _SessionHandle, prompt: str, timeout_seconds: int
@@ -575,6 +584,7 @@ class AcpSessionManager:
         auto_approve: bool,
         timeout_seconds: int,
         create_timeout: int,
+        initial_session_mode: str | None = None,
         progress_q: queue.Queue | None = None,
         cancel_id: str = "",
         mask: Callable[[str], str] | None = None,
@@ -587,6 +597,7 @@ class AcpSessionManager:
             "args": args,
             "env_overrides": env_overrides,
             "auto_approve": auto_approve,
+            "initial_session_mode": initial_session_mode,
             "mask": mask,
             "mcp_config": mcp_config,
         }
@@ -612,6 +623,8 @@ class AcpSessionManager:
                         cwd,
                     )
                 self._enforce_capacity(exclude=key)
+            if initial_session_mode:
+                await self._set_session_mode(handle, initial_session_mode)
             handle.busy = True
             handle.cancelled = False
             handle.last_used = time.monotonic()
@@ -735,6 +748,7 @@ async def manager_run_ok(
     auto_approve: bool,
     timeout_seconds: int,
     create_timeout: int,
+    initial_session_mode: str | None = None,
     progress_q: queue.Queue | None = None,
     cancel_id: str = "",
     mask: Callable[[str], str] | None = None,
@@ -754,6 +768,7 @@ async def manager_run_ok(
             auto_approve=auto_approve,
             timeout_seconds=timeout_seconds,
             create_timeout=create_timeout,
+            initial_session_mode=initial_session_mode,
             progress_q=progress_q,
             cancel_id=cancel_id,
             mask=mask,

@@ -13,6 +13,7 @@ only this function.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from typing import Any
@@ -30,6 +31,10 @@ logger = logging.getLogger(__name__)
 
 _manager: SandboxManager | None = None
 _manager_profile: RuntimeProfile | None = None
+_CODEX_ACP_REQUIRED_CONFIG = {
+    "sandbox_mode": "danger-full-access",
+    "approval_policy": "never",
+}
 
 
 def _env_int(key: str, default: int) -> int:
@@ -45,11 +50,38 @@ def _env_int(key: str, default: int) -> int:
 def _codex_acp_sidecar_env() -> dict[str, str]:
     """Env overrides needed when Codex ACP runs inside OpenSandbox."""
     args = (os.environ.get("AI_CODE_CODEX_ACP_ARGS") or "").strip()
-    env = {"AI_CODE_CODEX_ACP_ARGS": args or CODEX_ACP_DEFAULT_ARGS}
+    env = {
+        "AI_CODE_CODEX_ACP_ARGS": args or CODEX_ACP_DEFAULT_ARGS,
+        # codex-acp uses AgentMode for turn sandboxing. Its default "agent" mode
+        # is workspace-write, which makes Codex try nested bubblewrap inside the
+        # OpenSandbox container. In this runtime, OpenSandbox is already the
+        # isolation boundary, so force the ACP adapter's full-access mode.
+        "INITIAL_AGENT_MODE": (
+            os.environ.get("INITIAL_AGENT_MODE") or "agent-full-access"
+        ),
+        # codex-acp does not consume Codex CLI "-c" args; it reads CODEX_CONFIG.
+        # Preserve any operator config but pin the sandbox knobs required for
+        # nested-container execution.
+        "CODEX_CONFIG": _codex_acp_config_json(),
+    }
     command = (os.environ.get("AI_CODE_CODEX_ACP_COMMAND") or "").strip()
     if command:
         env["AI_CODE_CODEX_ACP_COMMAND"] = command
     return env
+
+
+def _codex_acp_config_json() -> str:
+    raw = (os.environ.get("CODEX_CONFIG") or "").strip()
+    config: dict[str, Any] = {}
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                config.update(parsed)
+        except json.JSONDecodeError:
+            logger.warning("agent_team runtime: ignoring invalid CODEX_CONFIG JSON")
+    config.update(_CODEX_ACP_REQUIRED_CONFIG)
+    return json.dumps(config, separators=(",", ":"))
 
 
 def resolve_profile(task_id: str = "", board_id: str = "") -> RuntimeProfile:

@@ -250,6 +250,9 @@ class DirectCliRun:
                 auto_approve=self.auto_approve,
                 timeout_seconds=runtime.timeout_seconds,
                 create_timeout=runtime.create_timeout_seconds,
+                initial_session_mode=(
+                    "agent-full-access" if self.engine == "codex" else None
+                ),
                 progress_q=progress_q,
                 cancel_id=self.thread_id,
                 mask=masker if masker.active else None,
