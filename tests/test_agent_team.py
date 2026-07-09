@@ -133,6 +133,24 @@ def test_plugin_meta_models_and_menu():
     assert menu[0].url == f"{SPA_MOUNT_PATH}/"
 
 
+def test_planning_change_request_body_does_not_require_planner_id():
+    from agent_team.features.board.schemas import (
+        PlanningChangeRequestCreate,
+        PlanningStartCreate,
+    )
+    from pydantic import ValidationError
+
+    payload = PlanningChangeRequestCreate.model_validate(
+        {"objective": "Please split the migration into a separate task."}
+    )
+    assert payload.objective == "Please split the migration into a separate task."
+    assert payload.planner_id is None
+    assert payload.reviewer_id is None
+
+    with pytest.raises(ValidationError):
+        PlanningStartCreate.model_validate({"objective": "Still needs planner_id."})
+
+
 def test_build_injection_for_board_merges_pool_and_mcp(db, monkeypatch):
     """A board's staffed CLI agents + remote MCP produce one merged plan.
 

@@ -324,6 +324,19 @@ class PlanningStartCreate(BaseModel):
     objective: str | None = Field(default=None, max_length=20000)
 
 
+class PlanningChangeRequestCreate(BaseModel):
+    """Human feedback asking the planner to re-draft an existing plan.
+
+    Unlike starting planning, the planner/reviewer are optional here because the
+    task already remembers them in ``planning_meta`` from the previous planning
+    job. The UI normally sends only ``objective`` (the feedback text).
+    """
+
+    planner_id: str | None = Field(default=None, max_length=255)
+    reviewer_id: str | None = Field(default=None, max_length=255)
+    objective: str | None = Field(default=None, max_length=20000)
+
+
 class PlanningRunCreate(BaseModel):
     """Approve the drafted plan and start strict execution against it."""
 

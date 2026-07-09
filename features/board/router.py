@@ -60,6 +60,7 @@ from agent_team.features.board.schemas import (
     PlanningAnswerCreate,
     PlanningArtifactDTO,
     PlanningArtifactEdit,
+    PlanningChangeRequestCreate,
     PlanningInfoDTO,
     PlanningQuestionDTO,
     PlanningRunCreate,
@@ -1995,7 +1996,7 @@ async def approve_task_planning(task_id: str, request: Request, db: Session = De
 async def request_task_planning_changes(
     task_id: str,
     request: Request,
-    payload: PlanningStartCreate | None = Body(default=None),
+    payload: PlanningChangeRequestCreate | None = Body(default=None),
     db: Session = Depends(get_db),
 ):
     """Clear approval and re-draft the plan with the remembered planner.
