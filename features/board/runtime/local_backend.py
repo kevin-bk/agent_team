@@ -277,6 +277,31 @@ def _previous_run(db, run: AgentTeamRun) -> AgentTeamRun | None:
     return prev
 
 
+def _agent_visible_workspace_path(task, agent_alias: str) -> str:
+    """Return the workspace path that should be shown to the agent.
+
+    The backend still uses ``task.workspace_path`` for host-side operations
+    (mounting, diffing, writing artifacts). Direct CLI agents running inside
+    OpenSandbox see that same workspace mounted at ``profile.workspace_mount_path``
+    instead, so task-facing docs should speak in the agent's filesystem dialect.
+    """
+    if not is_direct_cli_alias(agent_alias):
+        return task.workspace_path
+    try:
+        from agent_team.features.board.runtime.sandbox.service import resolve_profile
+
+        profile = resolve_profile(task.id, task.board_id)
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "agent_team: failed to resolve agent-visible workspace path",
+            exc_info=True,
+        )
+        return task.workspace_path
+    if profile.is_sandboxed:
+        return profile.workspace_mount_path
+    return task.workspace_path
+
+
 def _load_run_context(run_id: str) -> dict | None:
     """Load the run + task, ensure the workspace, and build the agent input."""
     db = SessionLocal()
@@ -330,7 +355,7 @@ def _load_run_context(run_id: str) -> dict | None:
                 (getattr(board, "planning_skill", "") or "").strip()
                 if board is not None
                 else ""
-            )
+            ) or "project-harness"
             if planning_skill and planning_skill not in skill_ids:
                 skill_ids = [*skill_ids, planning_skill]
             skills_manifest = skills_rt.materialize_skills(task.workspace_path, skill_ids)
@@ -354,6 +379,10 @@ def _load_run_context(run_id: str) -> dict | None:
                 )
         mcp_config: dict | None = None
         secrets: list[str] = []
+        visible_workspace = _agent_visible_workspace_path(task, run.agent_alias)
+        workspace_display_path = (
+            visible_workspace if visible_workspace != task.workspace_path else None
+        )
         if is_direct_cli_alias(run.agent_alias):
             # The CLI reads its context from files in the workspace
             # (``.agent-team/TASK.md`` via the CLAUDE.md / AGENTS.md / cursor-rule
@@ -363,10 +392,18 @@ def _load_run_context(run_id: str) -> dict | None:
             # (``notes`` already holds just that delta).
             all_notes = _load_task_notes(db, run.task_id, since=None)
             cli_context.write_context_files(
-                task.workspace_path, task, all_notes, repos, skills_manifest
+                task.workspace_path,
+                task,
+                all_notes,
+                repos,
+                skills_manifest,
+                workspace_display_path=workspace_display_path,
             )
             input_text = cli_context.build_prompt(
-                run.prompt or "", first_turn=full, has_new_notes=bool(notes)
+                run.prompt or "",
+                first_turn=full,
+                has_new_notes=bool(notes),
+                workspace_display_path=workspace_display_path,
             )
             # Per-agent MCP config: this CLI alias may have its own MCP servers
             # configured on the board. The owned ACP engine forwards them to the
@@ -391,6 +428,7 @@ def _load_run_context(run_id: str) -> dict | None:
                 full=full,
                 include_description=include_description,
                 repos=repos,
+                workspace_display_path=workspace_display_path,
             )
         return {
             "agent_alias": run.agent_alias,

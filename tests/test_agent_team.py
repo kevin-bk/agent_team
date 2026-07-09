@@ -3474,6 +3474,36 @@ def test_build_task_context_injects_notes_and_file_pointers():
     )
 
 
+def test_build_task_context_uses_agent_visible_workspace_paths():
+    from agent_team.features.board.runtime.context import build_task_context
+
+    notes = [
+        {
+            "author": "bob",
+            "created_at": "2026-06-09 22:35 UTC",
+            "body": "Sample data is here:",
+            "attachments": [
+                {"path": "_notes/abc/data.csv", "filename": "data.csv"},
+            ],
+        },
+    ]
+    repos = [{"path": "svc", "branch": "agent/T-7", "is_wiki": True}]
+
+    text = build_task_context(
+        _fake_task(),
+        "Start now.",
+        notes=notes,
+        repos=repos,
+        workspace_display_path="/workspace",
+    )
+
+    assert "Shared workspace folder: /workspace" in text
+    assert "`/workspace/_notes/abc/data.csv` (data.csv)" in text
+    assert "`/workspace/svc/` (branch agent/T-7)" in text
+    assert "`/workspace/svc/index.md`" in text
+    assert "/ws/agent_team/board/T-7" not in text
+
+
 def test_build_task_context_without_notes_has_no_notes_block():
     from agent_team.features.board.runtime.context import build_task_context
 
@@ -4641,7 +4671,14 @@ def test_cli_context_render_brief_and_repos_block():
     """The brief carries description + notes + repos, without the git_push tool."""
     from agent_team.features.board.runtime import cli_context
 
-    repos = [{"path": "svc", "branch": "agent/T-7", "can_push": True}]
+    repos = [
+        {
+            "path": "svc",
+            "branch": "agent/T-7",
+            "can_push": True,
+            "is_wiki": True,
+        },
+    ]
     notes = [
         {"author": "alice", "created_at": "2026-06-09 22:30 UTC",
          "body": "Use staging.", "attachments": []},
@@ -4653,6 +4690,58 @@ def test_cli_context_render_brief_and_repos_block():
     assert "Use staging." in brief
     # Direct CLI has no git_push tool — the block must not mention it.
     assert "git_push" not in brief
+
+
+def test_cli_context_render_brief_uses_agent_visible_workspace_paths():
+    """Sandboxed CLI briefs should use paths the agent can open."""
+    from agent_team.features.board.runtime import cli_context
+
+    repos = [
+        {
+            "path": "svc",
+            "branch": "agent/T-7",
+            "can_push": True,
+            "is_wiki": True,
+        },
+    ]
+    notes = [
+        {
+            "author": "alice",
+            "created_at": "2026-06-09 22:30 UTC",
+            "body": "Screenshot attached.",
+            "attachments": [
+                {"path": "_notes/abc/shot.png", "filename": "shot.png"},
+            ],
+        },
+    ]
+    skills = [
+        {
+            "name": "project-harness",
+            "description": "Apply the matching process.",
+            "path": ".claude/skills/project-harness/SKILL.md",
+        },
+        {
+            "name": "board-wiki",
+            "description": "How to update the board knowledge base.",
+            "path": ".claude/skills/board-wiki/SKILL.md",
+        },
+    ]
+
+    brief = cli_context.render_brief(
+        _fake_task(),
+        notes,
+        repos,
+        skills,
+        workspace_display_path="/workspace",
+    )
+
+    assert "Shared workspace folder: `/workspace`" in brief
+    assert "`/workspace/svc/` (branch `agent/T-7`)" in brief
+    assert "`/workspace/svc/index.md`" in brief
+    assert "`/workspace/.claude/skills/project-harness/SKILL.md`" in brief
+    assert "`/workspace/.claude/skills/board-wiki/SKILL.md`" in brief
+    assert "`/workspace/_notes/abc/shot.png` (shot.png)" in brief
+    assert "/ws/agent_team/board/T-7" not in brief
 
 
 def test_cli_context_write_files_creates_brief_and_pointers(tmp_path):
@@ -4672,6 +4761,31 @@ def test_cli_context_write_files_creates_brief_and_pointers(tmp_path):
     rule = ws / ".cursor" / "rules" / "agent-team-task.mdc"
     assert "alwaysApply: true" in rule.read_text()
     assert ".agent-team/TASK.md" in rule.read_text()
+
+
+def test_cli_context_write_files_uses_visible_task_path_in_sandbox(tmp_path):
+    from agent_team.features.board.runtime import cli_context
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    task = _fake_task()
+    task.workspace_path = str(ws)
+
+    cli_context.write_context_files(
+        str(ws),
+        task,
+        notes=None,
+        repos=None,
+        workspace_display_path="/workspace",
+    )
+
+    brief = (ws / ".agent-team" / "TASK.md").read_text()
+    assert "Shared workspace folder: `/workspace`" in brief
+    for pointer in ("CLAUDE.md", "AGENTS.md"):
+        body = (ws / pointer).read_text()
+        assert "`/workspace/.agent-team/TASK.md`" in body
+    rule = ws / ".cursor" / "rules" / "agent-team-task.mdc"
+    assert "`/workspace/.agent-team/TASK.md`" in rule.read_text()
 
 
 def test_cli_context_build_prompt_nudges_first_turn_and_new_notes():
@@ -4697,6 +4811,19 @@ def test_cli_context_build_prompt_nudges_first_turn_and_new_notes():
 
     # An empty first message still carries the nudge so the agent is grounded.
     assert ".agent-team/TASK.md" in cli_context.build_prompt("", first_turn=True)
+
+    sandbox_first = cli_context.build_prompt(
+        "Fix the bug", first_turn=True, workspace_display_path="/workspace"
+    )
+    assert "`/workspace/.agent-team/TASK.md`" in sandbox_first
+
+    sandbox_notes = cli_context.build_prompt(
+        "Keep going",
+        first_turn=False,
+        has_new_notes=True,
+        workspace_display_path="/workspace",
+    )
+    assert "`/workspace/.agent-team/TASK.md`" in sandbox_notes
 
 
 # ---------------------------------------------------------------------------

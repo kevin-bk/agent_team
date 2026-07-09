@@ -4,8 +4,8 @@ The input is a task header (key, title, description, shared workspace path)
 followed by any human notes left on the task, then the user's prompt. Notes give
 the agent the context users captured on the task; each note is attributed to its
 author so the agent knows who said what, and notes that carry attachments are
-surfaced as workspace-relative file pointers so the agent can open and study
-those files itself with its file tools.
+surfaced as agent-visible file pointers so the agent can open and study those
+files itself with its file tools.
 """
 
 from __future__ import annotations
@@ -16,7 +16,20 @@ from agent_team.features.board.models import AgentTeamTask
 from agent_team.features.board.workspace import ensure_task_workspace
 
 
-def _format_notes(notes: Sequence[dict] | None, *, new_only: bool = False) -> str:
+def workspace_visible_path(workspace_path: str | None, path: str) -> str:
+    """Return ``path`` as the agent should open it inside its visible workspace."""
+    path = (path or "").strip()
+    if not workspace_path or not path or path.startswith("/"):
+        return path
+    return f"{workspace_path.rstrip('/')}/{path.lstrip('/')}"
+
+
+def _format_notes(
+    notes: Sequence[dict] | None,
+    *,
+    new_only: bool = False,
+    workspace_display_path: str | None = None,
+) -> str:
     """Render task notes as a context block, or "" when there is nothing to add.
 
     Notes are expected oldest-first. Each note may carry an ``author`` display
@@ -52,40 +65,54 @@ def _format_notes(notes: Sequence[dict] | None, *, new_only: bool = False) -> st
             out.append(f"  {body}")
         for att in files:
             name = att.get("filename")
-            label = f"`{att['path']}`" + (f" ({name})" if name else "")
+            visible_path = workspace_visible_path(workspace_display_path, att["path"])
+            label = f"`{visible_path}`" + (f" ({name})" if name else "")
             out.append(f"  Attached file: {label}")
     # Only the header was added (notes had neither body nor usable attachments).
     return "\n".join(out) if len(out) > 1 else ""
 
 
-def _format_repos(repos: Sequence[dict] | None) -> str:
+def _format_repos(
+    repos: Sequence[dict] | None, *, workspace_display_path: str | None = None
+) -> str:
     """Render the task's checked-out code repos as a context block, or ""."""
     items = [r for r in (repos or []) if r.get("path")]
     if not items:
         return ""
     out = [
         "Code repositories checked out in this workspace (each is an independent "
-        "git clone you can read, edit, build, and commit in — paths are relative "
-        "to the shared workspace folder). Each is already on its own task branch; "
+        "git clone you can read, edit, build, and commit in). Each is already on "
+        "its own task branch; "
         "commit your work there, do not switch to the default branch:"
     ]
     pushable = False
     has_wiki = False
+    wiki_index_paths: list[str] = []
     for repo in items:
         branch = (repo.get("branch") or "").strip()
         suffix = f" (branch {branch})" if branch else ""
         if repo.get("is_wiki"):
             suffix += " — board wiki (knowledge base)"
             has_wiki = True
+            wiki_index_paths.append(
+                workspace_visible_path(workspace_display_path, f"{repo['path']}/index.md")
+            )
         if repo.get("can_push"):
             suffix += " — push enabled"
             pushable = True
-        out.append(f"- `{repo['path']}/`{suffix}")
+        repo_path = workspace_visible_path(workspace_display_path, f"{repo['path']}/")
+        out.append(f"- `{repo_path}`{suffix}")
     if has_wiki:
+        wiki_start = ""
+        if len(wiki_index_paths) == 1:
+            wiki_start = f" Start from `{wiki_index_paths[0]}`."
+        elif wiki_index_paths:
+            paths = ", ".join(f"`{path}`" for path in wiki_index_paths)
+            wiki_start = f" Start from one of: {paths}."
         out.append(
-            "A repo marked **board wiki** is this board's knowledge base. Read its "
-            "`index.md` before working and follow the wiki's own conventions (and "
-            "the `board-wiki` skill). When you learn something worth keeping, "
+            "A repo marked **board wiki** is this board's knowledge base."
+            f"{wiki_start} Follow the wiki's own conventions (and the `board-wiki` "
+            "skill). When you learn something worth keeping, "
             "add/update pages in the wiki's existing structure and commit them on "
             "your task branch — they are reviewed and merged like any other change."
         )
@@ -106,6 +133,7 @@ def build_task_context(
     full: bool = True,
     include_description: bool = True,
     repos: Sequence[dict] | None = None,
+    workspace_display_path: str | None = None,
 ) -> str:
     """Return the user-message text for one run (turn).
 
@@ -129,8 +157,11 @@ def build_task_context(
             header.append("")
             header.append(task.description.strip())
         header.append("")
-        header.append(f"Shared workspace folder: {task.workspace_path}")
-        repo_block = _format_repos(repos)
+        visible_workspace = workspace_display_path or task.workspace_path
+        header.append(f"Shared workspace folder: {visible_workspace}")
+        repo_block = _format_repos(
+            repos, workspace_display_path=workspace_display_path
+        )
         if repo_block:
             header.append("")
             header.append(repo_block)
@@ -138,7 +169,9 @@ def build_task_context(
     elif include_description and task.description:
         sections.append("The task description was updated:\n\n" + task.description.strip())
 
-    note_block = _format_notes(notes, new_only=not full)
+    note_block = _format_notes(
+        notes, new_only=not full, workspace_display_path=workspace_display_path
+    )
     if note_block:
         # Wrap notes in a machine-readable <task_notes> block so the agent has a
         # hard boundary between background notes and the user's actual message

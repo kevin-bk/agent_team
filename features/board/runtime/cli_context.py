@@ -30,35 +30,44 @@ import os
 from collections.abc import Sequence
 
 from agent_team.features.board.models import AgentTeamTask
-from agent_team.features.board.runtime.context import _format_notes
+from agent_team.features.board.runtime.context import _format_notes, workspace_visible_path
 
 logger = logging.getLogger(__name__)
 
 #: Workspace-relative path of the generated task brief.
 BRIEF_REL_PATH = os.path.join(".agent-team", "TASK.md")
 
-_POINTER_BODY = (
-    "Task context for this session — the task description, user notes, and the "
-    "code repositories checked out here — lives in `.agent-team/TASK.md`. "
-    "Read that file before working so you understand the task."
-)
 
-#: First-turn nudge appended to the user's message so the agent always knows
-#: where the brief is, even if its native context files were not auto-loaded.
-_FIRST_TURN_NUDGE = (
-    "(Read `.agent-team/TASK.md` for the full context of this task.)"
-)
+def _brief_display_path(workspace_display_path: str | None = None) -> str:
+    """Return the task brief path in the filesystem the agent can see."""
+    return workspace_visible_path(workspace_display_path, BRIEF_REL_PATH)
 
-#: Follow-up nudge used when the user added task notes since the previous turn.
-#: The brief file is already refreshed with them; this just tells the agent to
-#: re-read it (its session history does not include the new notes).
-_NEW_NOTES_NUDGE = (
-    "(New notes were added to this task — re-read `.agent-team/TASK.md`.)"
-)
+
+def _pointer_body(workspace_display_path: str | None = None) -> str:
+    brief_path = _brief_display_path(workspace_display_path)
+    return (
+        "Task context for this session — the task description, user notes, and "
+        "the code repositories checked out here — lives in "
+        f"`{brief_path}`. Read that file before working so you understand the task."
+    )
+
+
+def _first_turn_nudge(workspace_display_path: str | None = None) -> str:
+    brief_path = _brief_display_path(workspace_display_path)
+    return f"(Read `{brief_path}` for the full context of this task.)"
+
+
+def _new_notes_nudge(workspace_display_path: str | None = None) -> str:
+    brief_path = _brief_display_path(workspace_display_path)
+    return f"(New notes were added to this task — re-read `{brief_path}`.)"
 
 
 def build_prompt(
-    user_text: str, *, first_turn: bool, has_new_notes: bool = False
+    user_text: str,
+    *,
+    first_turn: bool,
+    has_new_notes: bool = False,
+    workspace_display_path: str | None = None,
 ) -> str:
     """Build the per-turn CLI prompt.
 
@@ -70,9 +79,9 @@ def build_prompt(
     """
     text = (user_text or "").strip()
     if first_turn:
-        nudge: str | None = _FIRST_TURN_NUDGE
+        nudge: str | None = _first_turn_nudge(workspace_display_path)
     elif has_new_notes:
-        nudge = _NEW_NOTES_NUDGE
+        nudge = _new_notes_nudge(workspace_display_path)
     else:
         nudge = None
     if nudge is None:
@@ -82,7 +91,9 @@ def build_prompt(
     return f"{text}\n\n{nudge}"
 
 
-def _render_repos_block(repos: Sequence[dict] | None) -> str:
+def _render_repos_block(
+    repos: Sequence[dict] | None, *, workspace_display_path: str | None = None
+) -> str:
     """Render the checked-out repos for a CLI agent, or "".
 
     A direct CLI has no ``git_push`` tool, but its working copy is wired so a
@@ -93,33 +104,48 @@ def _render_repos_block(repos: Sequence[dict] | None) -> str:
     items = [r for r in (repos or []) if r.get("path")]
     if not items:
         return ""
+    path_hint = (
+        "The paths shown are the paths this agent can open in its runtime."
+        if workspace_display_path
+        else "Paths are relative to this workspace."
+    )
     out = [
         "## Code repositories",
         "",
         "Each folder below is an independent git clone you can read, edit, build, "
-        "and commit in (paths are relative to this workspace). Each is already on "
-        "its own task branch — commit your work there and do not switch to the "
-        "default branch:",
+        f"and commit in. {path_hint} Each is already on its own task branch — "
+        "commit your work there and do not switch to the default branch:",
     ]
     has_wiki = False
     has_push = False
+    wiki_index_paths: list[str] = []
     for repo in items:
         branch = (repo.get("branch") or "").strip()
         suffix = f" (branch `{branch}`)" if branch else ""
         if repo.get("is_wiki"):
             suffix += " — **board wiki** (knowledge base)"
             has_wiki = True
+            wiki_index_paths.append(
+                workspace_visible_path(workspace_display_path, f"{repo['path']}/index.md")
+            )
         if repo.get("can_push"):
             suffix += " — push enabled"
             has_push = True
-        out.append(f"- `{repo['path']}/`{suffix}")
+        repo_path = workspace_visible_path(workspace_display_path, f"{repo['path']}/")
+        out.append(f"- `{repo_path}`{suffix}")
     out.append("")
     if has_wiki:
+        wiki_start = ""
+        if len(wiki_index_paths) == 1:
+            wiki_start = f" Start from `{wiki_index_paths[0]}`."
+        elif wiki_index_paths:
+            paths = ", ".join(f"`{path}`" for path in wiki_index_paths)
+            wiki_start = f" Start from one of: {paths}."
         out.append(
-            "A repo marked **board wiki** is this board's knowledge base. Read its "
-            "`index.md` before working and follow the wiki's own conventions (and "
-            "the `board-wiki` skill). Record new knowledge in the wiki's existing "
-            "structure and commit it on your task branch."
+            "A repo marked **board wiki** is this board's knowledge base."
+            f"{wiki_start} Follow the wiki's own conventions (and the `board-wiki` "
+            "skill). Record new knowledge in the wiki's existing structure and "
+            "commit it on your task branch."
         )
         out.append("")
     if has_push:
@@ -134,7 +160,9 @@ def _render_repos_block(repos: Sequence[dict] | None) -> str:
     return "\n".join(out)
 
 
-def _render_skills_block(skills: Sequence[dict] | None) -> str:
+def _render_skills_block(
+    skills: Sequence[dict] | None, *, workspace_display_path: str | None = None
+) -> str:
     """Render the available skill packs as a context block, or "".
 
     Each entry is ``{name, description, path}`` where ``path`` points at the
@@ -158,7 +186,7 @@ def _render_skills_block(skills: Sequence[dict] | None) -> str:
         if desc:
             line += f": {desc}"
         if path:
-            line += f" — read `{path}`"
+            line += f" — read `{workspace_visible_path(workspace_display_path, path)}`"
         out.append(line)
     return "\n".join(out)
 
@@ -168,22 +196,31 @@ def render_brief(
     notes: Sequence[dict] | None,
     repos: Sequence[dict] | None,
     skills: Sequence[dict] | None = None,
+    *,
+    workspace_display_path: str | None = None,
 ) -> str:
     """Render the full task brief written to ``.agent-team/TASK.md``."""
     sections: list[str] = [f"# Task {task.human_key}: {task.title}"]
     if task.description:
         sections.append(task.description.strip())
-    sections.append(f"Shared workspace folder: `{task.workspace_path}`")
+    visible_workspace = workspace_display_path or task.workspace_path
+    sections.append(f"Shared workspace folder: `{visible_workspace}`")
 
-    repos_block = _render_repos_block(repos)
+    repos_block = _render_repos_block(
+        repos, workspace_display_path=workspace_display_path
+    )
     if repos_block:
         sections.append(repos_block)
 
-    skills_block = _render_skills_block(skills)
+    skills_block = _render_skills_block(
+        skills, workspace_display_path=workspace_display_path
+    )
     if skills_block:
         sections.append(skills_block)
 
-    notes_block = _format_notes(notes, new_only=False)
+    notes_block = _format_notes(
+        notes, new_only=False, workspace_display_path=workspace_display_path
+    )
     if notes_block:
         sections.append("## User notes\n\n" + notes_block)
 
@@ -202,6 +239,8 @@ def write_context_files(
     notes: Sequence[dict] | None,
     repos: Sequence[dict] | None,
     skills_manifest: Sequence[dict] | None = None,
+    *,
+    workspace_display_path: str | None = None,
 ) -> None:
     """Write the task brief + native pointer files into the workspace.
 
@@ -215,15 +254,22 @@ def write_context_files(
     try:
         _write_file(
             os.path.join(workspace_path, BRIEF_REL_PATH),
-            render_brief(task, notes, repos, skills_manifest),
+            render_brief(
+                task,
+                notes,
+                repos,
+                skills_manifest,
+                workspace_display_path=workspace_display_path,
+            ),
         )
         # Native discovery files, one per engine, at the workspace root. The
         # Cursor rule needs front matter so the agent always applies it.
-        _write_file(os.path.join(workspace_path, "CLAUDE.md"), _POINTER_BODY + "\n")
-        _write_file(os.path.join(workspace_path, "AGENTS.md"), _POINTER_BODY + "\n")
+        pointer_body = _pointer_body(workspace_display_path)
+        _write_file(os.path.join(workspace_path, "CLAUDE.md"), pointer_body + "\n")
+        _write_file(os.path.join(workspace_path, "AGENTS.md"), pointer_body + "\n")
         _write_file(
             os.path.join(workspace_path, ".cursor", "rules", "agent-team-task.mdc"),
-            "---\nalwaysApply: true\n---\n\n" + _POINTER_BODY + "\n",
+            "---\nalwaysApply: true\n---\n\n" + pointer_body + "\n",
         )
     except OSError:
         logger.warning(
