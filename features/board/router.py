@@ -924,13 +924,13 @@ async def exec_task_runtime(
 async def control_task_runtime(
     task_id: str, action: str, request: Request, db: Session = Depends(get_db)
 ):
-    """Manually ``pause`` or ``kill`` a task's sandbox from the cockpit.
+    """Manually ``run``, ``pause`` or ``kill`` a task's sandbox from the cockpit.
 
     Refused with 409 while any run is queued/running so a live CLI agent is never
-    torn down mid-turn. ``pause`` suspends (resumable next turn); ``kill`` discards
-    the environment (reprovisioned from scratch next turn).
+    changed mid-turn. ``run`` opens or resumes a sandbox for debugging; ``pause``
+    suspends it; ``kill`` discards the environment entirely.
     """
-    if action not in ("pause", "kill"):
+    if action not in ("run", "pause", "kill"):
         return JSONResponse(status_code=404, content={"detail": "unknown runtime action"})
     ctx, err = authz.guard_task(db, request, task_id, min_role="editor")
     if err:
@@ -943,7 +943,17 @@ async def control_task_runtime(
         )
     from agent_team.features.board.runtime.sandbox import service as sandbox_service
 
-    if action == "pause":
+    if action == "run":
+        from agent_team.features.board import workspace as ws_module
+
+        ws_module.ensure_task_workspace(task.workspace_path)
+        await sandbox_service.ensure_task_sandbox_running(
+            task_id=task.id,
+            host_workspace_path=task.workspace_path,
+            profile=sandbox_service.resolve_profile(task.id, task.board_id),
+            board_id=task.board_id,
+        )
+    elif action == "pause":
         await sandbox_service.pause_task_sandbox(task.id)
     else:
         await sandbox_service.kill_task_sandbox(task.id)
@@ -1001,8 +1011,8 @@ async def admin_sandbox_exec(
 async def admin_sandbox_action(
     sandbox_id: str, action: str, request: Request, db: Session = Depends(get_db)
 ):
-    """Admin-only ``pause``/``kill`` for any sandbox by id (incl. orphans)."""
-    if action not in ("pause", "kill"):
+    """Admin-only ``run``/``pause``/``kill`` for sandboxes by id."""
+    if action not in ("run", "pause", "kill"):
         return JSONResponse(status_code=404, content={"detail": "unknown action"})
     user, err = auth_or_401(db, request)
     if err:

@@ -1,7 +1,14 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
-import { Cpu, Loader2, RefreshCw, TerminalSquare, Trash2 } from "@/components/icons";
+import {
+  Cpu,
+  Loader2,
+  Play,
+  RefreshCw,
+  TerminalSquare,
+  Trash2,
+} from "@/components/icons";
 import {
   useAdminSandboxAction,
   useAdminSandboxes,
@@ -122,7 +129,7 @@ export function SandboxesPage() {
 
   const data = overview.data;
 
-  const run = async (row: SandboxAdminRow, act: "pause" | "kill") => {
+  const run = async (row: SandboxAdminRow, act: "run" | "pause" | "kill") => {
     if (act === "kill") {
       const ok = await confirm({
         title: "Kill sandbox?",
@@ -139,7 +146,13 @@ export function SandboxesPage() {
     setBusyId(row.sandbox_id);
     try {
       await action.mutateAsync({ sandboxId: row.sandbox_id, action: act });
-      toast.success(act === "kill" ? "Sandbox killed" : "Sandbox paused");
+      toast.success(
+        act === "run"
+          ? "Sandbox running"
+          : act === "kill"
+            ? "Sandbox killed"
+            : "Sandbox paused",
+      );
     } catch (e) {
       toast.error(e instanceof Error ? e.message : `Failed to ${act} sandbox`);
     } finally {
@@ -254,6 +267,10 @@ export function SandboxesPage() {
                         : undefined;
                       const source = SOURCE_BADGE[row.source];
                       const busy = busyId === row.sandbox_id;
+                      const canRun =
+                        !!row.task_id &&
+                        row.source !== "orphan" &&
+                        row.ui_state !== "running";
                       const canPause = row.ui_state === "running";
                       // Exec needs the live in-process handle: tracked + open only.
                       const canConsole =
@@ -323,6 +340,26 @@ export function SandboxesPage() {
                           </td>
                           <td className="px-3 py-2">
                             <div className="flex justify-end gap-1.5">
+                              {canRun ? (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  disabled={busy}
+                                  title={
+                                    row.ui_state === "paused"
+                                      ? "Resume this task's sandbox"
+                                      : "Create a fresh sandbox for this task"
+                                  }
+                                  onClick={() => void run(row, "run")}
+                                >
+                                  {busy ? (
+                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                  ) : (
+                                    <Play className="h-3.5 w-3.5" />
+                                  )}
+                                  {row.ui_state === "paused" ? "Resume" : "Run"}
+                                </Button>
+                              ) : null}
                               {canConsole ? (
                                 <Button
                                   variant="outline"

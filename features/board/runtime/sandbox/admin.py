@@ -59,6 +59,7 @@ def _task_rows() -> dict[str, dict[str, Any]]:
                     "task_id": task.id,
                     "task_key": task.human_key,
                     "task_title": task.title,
+                    "workspace_path": task.workspace_path,
                     "board_id": board.id,
                     "board_slug": board.slug,
                     "board_name": getattr(board, "name", None)
@@ -189,25 +190,74 @@ async def list_sandboxes_overview() -> dict[str, Any]:
     }
 
 
+def _task_has_active_run(task_id: str) -> bool:
+    try:
+        from agent_team.features.board.repositories import runs as runs_repo
+        from core.database.base import SessionLocal
+
+        with SessionLocal() as db:
+            return runs_repo.has_active_run(db, task_id)
+    except Exception:  # noqa: BLE001
+        logger.debug("sandbox admin: active run check failed", exc_info=True)
+        return True
+
+
+async def _run_task_sandbox_from_row(info: dict[str, Any]) -> dict[str, Any]:
+    task_id = str(info.get("task_id") or "")
+    board_id = str(info.get("board_id") or "")
+    workspace_path = str(info.get("workspace_path") or "")
+    if not task_id or not workspace_path:
+        return {
+            "ok": False,
+            "error": "sandbox is linked to a task but missing workspace metadata",
+        }
+    if _task_has_active_run(task_id):
+        return {"ok": False, "error": "an agent is currently running on this task"}
+
+    from agent_team.features.board import workspace as ws_module
+
+    ws_module.ensure_task_workspace(workspace_path)
+    await sandbox_service.ensure_task_sandbox_running(
+        task_id=task_id,
+        host_workspace_path=workspace_path,
+        profile=sandbox_service.resolve_profile(task_id, board_id),
+        board_id=board_id,
+    )
+    return {"ok": True, "routed": "task", "task_id": task_id}
+
+
 async def sandbox_admin_action(sandbox_id: str, action: str) -> dict[str, Any]:
-    """Pause/kill one sandbox by id — routed to the task path when tracked.
+    """Run/pause/kill one sandbox by id — routed to the task path when possible.
 
     Tracked sandboxes go through ``pause_task_sandbox``/``kill_task_sandbox`` so
     the manager bookkeeping and the persisted id stay consistent; anything else
     (orphans) is hit directly on the server.
     """
-    if action not in ("pause", "kill"):
+    if action not in ("run", "pause", "kill"):
         return {"ok": False, "error": f"unknown action {action!r}"}
 
+    tasks = _task_rows()
     tracked = _tracked_rows()
     rec = tracked.get(sandbox_id)
     if rec is not None:
         task_id = str(rec["task_id"])
+        if action == "run":
+            info = tasks.get(sandbox_id, {"task_id": task_id})
+            return await _run_task_sandbox_from_row(info)
         if action == "pause":
             await sandbox_service.pause_task_sandbox(task_id)
         else:
             await sandbox_service.kill_task_sandbox(task_id)
         return {"ok": True, "routed": "task", "task_id": task_id}
+
+    if action == "run":
+        info = tasks.get(sandbox_id)
+        if info is None:
+            return {
+                "ok": False,
+                "error": "cannot run an orphan sandbox because it is not linked to a task",
+            }
+        return await _run_task_sandbox_from_row(info)
 
     profile = sandbox_service.resolve_profile()
     if profile.provider != "opensandbox":
@@ -239,7 +289,7 @@ async def sandbox_admin_action(sandbox_id: str, action: str) -> dict[str, Any]:
     # deleted it, e.g. after the idle TTL) is exactly this cleanup.
     cleared_link = False
     if action == "kill":
-        for sid, info in _task_rows().items():
+        for sid, info in tasks.items():
             if sid == sandbox_id:
                 sandbox_service._store_task_sandbox_id(str(info["task_id"]), None)  # noqa: SLF001
                 cleared_link = True

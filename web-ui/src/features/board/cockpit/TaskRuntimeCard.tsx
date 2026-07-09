@@ -6,6 +6,7 @@ import {
   Cpu,
   Loader2,
   Moon,
+  Play,
   TerminalSquare,
   Trash2,
 } from "@/components/icons";
@@ -22,9 +23,9 @@ import { cn } from "@/lib/utils";
  * "Runtime" card in the task cockpit: shows where this task executes — on the
  * host or in an isolated OpenSandbox environment — plus the effective profile
  * (image / resources / idle timeout) and the live sandbox state when one is
- * currently warm. Editors can manually pause (resume next turn) or kill (discard)
- * the sandbox, but only while no agent is running so a live turn is never torn
- * down mid-flight. The profile itself is set via env defaults or the board's
+ * currently warm. Editors can manually run/resume, pause or kill the sandbox,
+ * but only while no agent is running so a live turn is never changed mid-flight.
+ * The profile itself is set via env defaults or the board's
  * ``runtime_profile`` override (Board settings → Isolated runtime).
  */
 export function TaskRuntimeCard({
@@ -51,30 +52,38 @@ export function TaskRuntimeCard({
   const dot = stateColor(isolated, state);
   // Something to act on only when a sandbox is warm (running) or suspended.
   const hasSandbox = state === "running" || state === "paused";
-  const showControls = isolated && canControl && hasSandbox;
+  const showControls = isolated && canControl;
   const locked = busy || control.isPending;
 
-  const act = async (action: "pause" | "kill") => {
-    const ok = await confirm(
-      action === "pause"
-        ? {
-            title: "Pause sandbox?",
-            description:
-              "Suspends this task's sandbox to free resources. It resumes automatically on the next agent turn.",
-            confirmLabel: "Pause",
-          }
-        : {
-            title: "Kill sandbox?",
-            description:
-              "Tears down this task's sandbox entirely. A fresh environment is provisioned from scratch on the next turn.",
-            confirmLabel: "Kill",
-            tone: "danger",
-          },
-    );
-    if (!ok) return;
+  const act = async (action: "run" | "pause" | "kill") => {
+    if (action !== "run") {
+      const ok = await confirm(
+        action === "pause"
+          ? {
+              title: "Pause sandbox?",
+              description:
+                "Suspends this task's sandbox to free resources. It resumes automatically on the next agent turn.",
+              confirmLabel: "Pause",
+            }
+          : {
+              title: "Kill sandbox?",
+              description:
+                "Tears down this task's sandbox entirely. A fresh environment is provisioned from scratch on the next turn.",
+              confirmLabel: "Kill",
+              tone: "danger",
+            },
+      );
+      if (!ok) return;
+    }
     try {
       await control.mutateAsync(action);
-      toast.success(action === "pause" ? "Sandbox paused" : "Sandbox killed");
+      toast.success(
+        action === "run"
+          ? "Sandbox running"
+          : action === "pause"
+            ? "Sandbox paused"
+            : "Sandbox killed",
+      );
     } catch (err) {
       toast.error(err instanceof Error ? err.message : `Failed to ${action} sandbox`);
     }
@@ -114,6 +123,27 @@ export function TaskRuntimeCard({
         )}
         {showControls && (
           <div className="mt-2 flex items-center gap-2">
+            {state !== "running" && (
+              <ControlButton
+                icon={
+                  control.isPending ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Play className="h-3.5 w-3.5" />
+                  )
+                }
+                label={state === "paused" ? "Resume" : "Run"}
+                disabled={locked}
+                title={
+                  busy
+                    ? "An agent is running — stop it first"
+                    : state === "paused"
+                      ? "Resume sandbox"
+                      : "Create and run sandbox"
+                }
+                onClick={() => act("run")}
+              />
+            )}
             {state === "running" && (
               <ControlButton
                 icon={<TerminalSquare className="h-3.5 w-3.5" />}
@@ -138,14 +168,16 @@ export function TaskRuntimeCard({
                 onClick={() => act("pause")}
               />
             )}
-            <ControlButton
-              icon={<Trash2 className="h-3.5 w-3.5" />}
-              label="Kill"
-              danger
-              disabled={locked}
-              title={busy ? "An agent is running — stop it first" : "Kill sandbox"}
-              onClick={() => act("kill")}
-            />
+            {hasSandbox && (
+              <ControlButton
+                icon={<Trash2 className="h-3.5 w-3.5" />}
+                label="Kill"
+                danger
+                disabled={locked}
+                title={busy ? "An agent is running — stop it first" : "Kill sandbox"}
+                onClick={() => act("kill")}
+              />
+            )}
             {busy && (
               <span className="text-[11px] text-muted-foreground">
                 locked while running

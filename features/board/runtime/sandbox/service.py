@@ -368,6 +368,14 @@ def _mark_busy(task_id: str) -> None:
     _busy_counts[task_id] = _busy_counts.get(task_id, 0) + 1
 
 
+def _unmark_busy(task_id: str) -> None:
+    remaining = _busy_counts.get(task_id, 0) - 1
+    if remaining > 0:
+        _busy_counts[task_id] = remaining
+    else:
+        _busy_counts.pop(task_id, None)
+
+
 async def prepare_task_sandbox(
     *,
     task_id: str,
@@ -511,6 +519,32 @@ async def prepare_task_sandbox(
             _store_task_sandbox_id(task_id, None)
             raise
     _mark_busy(task_id)
+    return sb
+
+
+async def ensure_task_sandbox_running(
+    *,
+    task_id: str,
+    host_workspace_path: str,
+    profile: RuntimeProfile,
+    board_id: str = "",
+    extra_env: dict[str, str] | None = None,
+) -> Sandbox:
+    """Open or resume a task sandbox for a human-driven manual action.
+
+    ``prepare_task_sandbox`` is intentionally turn-oriented: it marks the sandbox
+    busy so post-turn cleanup can pause it only after every active agent turn has
+    finished. A cockpit "Run sandbox" button is different: it should leave the
+    sandbox open for debugging, but it must not hold a busy reference forever.
+    """
+    sb = await prepare_task_sandbox(
+        task_id=task_id,
+        host_workspace_path=host_workspace_path,
+        profile=profile,
+        board_id=board_id,
+        extra_env=extra_env,
+    )
+    _unmark_busy(task_id)
     return sb
 
 

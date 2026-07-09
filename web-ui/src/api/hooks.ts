@@ -1000,7 +1000,10 @@ export function useAdminSandboxAction() {
   const { client } = useApi();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (vars: { sandboxId: string; action: "pause" | "kill" }) =>
+    mutationFn: (vars: {
+      sandboxId: string;
+      action: "run" | "pause" | "kill";
+    }) =>
       client.adminSandboxAction(vars.sandboxId, vars.action),
     onSuccess: () =>
       void qc.invalidateQueries({ queryKey: qk.adminSandboxes }),
@@ -1087,10 +1090,12 @@ export function useControlTaskRuntime(taskId: string) {
   const { client } = useApi();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (action: "pause" | "kill") =>
+    mutationFn: (action: "run" | "pause" | "kill") =>
       client.controlTaskRuntime(taskId, action),
-    onSuccess: () =>
-      qc.invalidateQueries({ queryKey: qk.taskRuntime(taskId) }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: qk.taskRuntime(taskId) });
+      void qc.invalidateQueries({ queryKey: qk.adminSandboxes });
+    },
   });
 }
 

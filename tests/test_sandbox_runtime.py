@@ -1275,6 +1275,31 @@ async def test_prepare_local_provider_keeps_app_db_store(monkeypatch, tmp_path):
     assert env.get("GIT_CONFIG_VALUE_0") == "*"
 
 
+async def test_manual_run_opens_sandbox_without_holding_busy_ref(
+    monkeypatch, tmp_path
+):
+    from agent_team.features.board.runtime.sandbox import service as svc
+
+    mgr = _CapturingManager()
+    monkeypatch.setattr(svc, "get_manager", lambda profile=None: mgr)
+
+    async def _no_reattach(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(svc, "_try_reattach_sandbox", _no_reattach)
+    monkeypatch.setattr(svc, "_store_task_sandbox_id", lambda *_a: None)
+    svc._busy_counts.clear()
+
+    sb = await svc.ensure_task_sandbox_running(
+        task_id="T-11",
+        host_workspace_path=str(tmp_path / "T-11"),
+        profile=RuntimeProfile(provider="opensandbox"),
+    )
+
+    assert sb.sandbox_id == "sb-new"
+    assert "T-11" not in svc._busy_counts
+
+
 # ─── admin sandboxes overview ───────────────────────────────────────────────
 
 
@@ -1398,6 +1423,49 @@ async def test_admin_kill_stale_link_clears_task_row(monkeypatch):
     res = await adm.sandbox_admin_action("sb-gone", "kill")
     assert res == {"ok": True, "routed": "stale_link"}
     assert cleared == [("T-G", None)]
+
+
+async def test_admin_run_persisted_sandbox_routes_to_task(monkeypatch, tmp_path):
+    from agent_team.features.board.runtime.sandbox import admin as adm
+    from agent_team.features.board.runtime.sandbox import service as svc
+
+    workspace_path = tmp_path / "board" / "T-R"
+    monkeypatch.setattr(adm, "_tracked_rows", lambda: {})
+    monkeypatch.setattr(
+        adm,
+        "_task_rows",
+        lambda: {
+            "sb-persisted": {
+                "task_id": "T-R",
+                "task_key": "K-10",
+                "task_title": "Run me",
+                "workspace_path": str(workspace_path),
+                "board_id": "B-R",
+                "board_name": "Board",
+            }
+        },
+    )
+    monkeypatch.setattr(adm, "_task_has_active_run", lambda _task_id: False)
+    monkeypatch.setattr(
+        svc,
+        "resolve_profile",
+        lambda *a, **k: RuntimeProfile(provider="opensandbox"),
+    )
+    calls: list[dict] = []
+
+    async def _ensure(**kwargs):
+        calls.append(kwargs)
+        return _ReattachableSandbox()
+
+    monkeypatch.setattr(svc, "ensure_task_sandbox_running", _ensure)
+
+    res = await adm.sandbox_admin_action("sb-persisted", "run")
+
+    assert res == {"ok": True, "routed": "task", "task_id": "T-R"}
+    assert workspace_path.is_dir()
+    assert calls[0]["task_id"] == "T-R"
+    assert calls[0]["host_workspace_path"] == str(workspace_path)
+    assert calls[0]["board_id"] == "B-R"
 
 
 async def test_admin_overview_server_state_wins_over_stale_record(monkeypatch):

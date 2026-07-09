@@ -785,7 +785,7 @@ export class ApiClient {
   getTaskRuntime(taskId: string) {
     return this.request<TaskRuntimeDTO>(`/api/tasks/${taskId}/runtime`);
   }
-  controlTaskRuntime(taskId: string, action: "pause" | "kill") {
+  controlTaskRuntime(taskId: string, action: "run" | "pause" | "kill") {
     return this.request<TaskRuntimeDTO>(`/api/tasks/${taskId}/runtime/${action}`, {
       method: "POST",
     });
@@ -793,7 +793,7 @@ export class ApiClient {
   listAdminSandboxes() {
     return this.request<SandboxesOverviewDTO>("/api/admin/sandboxes");
   }
-  adminSandboxAction(sandboxId: string, action: "pause" | "kill") {
+  adminSandboxAction(sandboxId: string, action: "run" | "pause" | "kill") {
     return this.request<{ ok: boolean; routed: string }>(
       `/api/admin/sandboxes/${sandboxId}/${action}`,
       { method: "POST" },
