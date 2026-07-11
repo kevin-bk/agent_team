@@ -23,7 +23,7 @@ def _loop_alias(agent_alias: str, role: str) -> str:
     Loop runs keep their *real* ``agent_alias`` on the run row (so the worker
     still resolves the right engine), but their conversation — and therefore the
     ``thread_id`` that keys the agent session — is scoped per role so the
-    planner, generator and evaluator never share one process. The bare alias
+    planner, reviewer, generator and evaluator never share one process. The bare alias
     stays reserved for the user's manual direct chat.
     """
     return f"{agent_alias}::loop:{role}"
@@ -82,8 +82,8 @@ def get_or_create_loop_conversation(
     * ``fresh=False`` reuses a persistent per-role thread — used by the
       generator (one session carried across attempts) and the planner.
     * ``fresh=True`` opens a brand-new isolated thread on every call — used by
-      the evaluator so each grading runs with clean eyes, never sharing context
-      with the generation it is judging or with a prior verdict.
+      reviewers/evaluators so each grading runs with clean eyes, never sharing
+      context with the work it is judging or with a prior verdict.
     """
     scoped = _loop_alias(agent_alias, role)
     if not fresh:

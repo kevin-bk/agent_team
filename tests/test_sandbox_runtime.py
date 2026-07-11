@@ -637,6 +637,9 @@ async def test_sidecar_worker_relays_frames(monkeypatch):
         monkeypatch.setattr(sa, "prepare_task_sandbox", _prepare)
         monkeypatch.setattr(sa, "open_sidecar_channel", _channel)
         monkeypatch.setattr(sa, "pause_task_sandbox", _pause)
+        # This unit uses a synthetic run id and no database; cancellation is
+        # exercised separately, so keep the worker's durable poll isolated.
+        monkeypatch.setattr(sa.event_store, "is_cancel_requested", lambda _run_id: False)
         monkeypatch.setattr(
             sa, "resolve_profile",
             lambda *a, **k: RuntimeProfile(

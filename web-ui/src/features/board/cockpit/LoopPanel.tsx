@@ -62,6 +62,7 @@ import {
 /** Maps a loop run role to its human label (the cockpit's vocabulary). */
 const ROLE_LABELS: Record<string, string> = {
   planner: "Planner",
+  reviewer: "Reviewer",
   generator: "Builder",
   evaluator: "Critic",
 };

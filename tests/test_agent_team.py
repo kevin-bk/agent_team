@@ -5642,3 +5642,462 @@ def test_loop_generator_session_is_stable_evaluator_is_fresh(db):
     # Evaluator: a brand-new isolated thread every grading.
     assert ev1.thread_id != ev2.thread_id
     assert ev1.thread_id != gen1.thread_id
+
+
+def test_loop_reviewer_session_is_fresh_and_isolated(db):
+    """A plan reviewer must never inherit the planner's drafting context."""
+    from agent_team.features.board.repositories import conversations as conv_repo
+
+    _, task = _loop_board_task(db)
+    alias = "cli:claude"
+    planner = conv_repo.get_or_create_loop_conversation(
+        db, task_id=task.id, agent_alias=alias, role="planner"
+    )
+    reviewer1 = conv_repo.get_or_create_loop_conversation(
+        db, task_id=task.id, agent_alias=alias, role="reviewer", fresh=True
+    )
+    reviewer2 = conv_repo.get_or_create_loop_conversation(
+        db, task_id=task.id, agent_alias=alias, role="reviewer", fresh=True
+    )
+    db.flush()
+
+    assert reviewer1.thread_id != planner.thread_id
+    assert reviewer2.thread_id != reviewer1.thread_id
+
+
+# ---------------------------------------------------------------------------
+# Turn-aware retry persistence
+# ---------------------------------------------------------------------------
+
+
+def test_interrupted_generator_turn_is_claimed_once_with_recovery_context(
+    db, tmp_path
+):
+    from agent_team.features.board.repositories import conversations as conv_repo
+    from agent_team.features.board.repositories import runs as runs_repo
+    from agent_team.features.board.runtime import turn_recovery
+    from agent_team.features.board.runtime.events import RUN_DONE, RUN_ERROR
+
+    _, task = _loop_board_task(db)
+    workspace = tmp_path / "workspace"
+    repo = workspace / "app"
+    repo.mkdir(parents=True)
+    import subprocess
+
+    def git(*args: str) -> None:
+        subprocess.run(
+            ["git", "-C", str(repo), *args],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    git("init")
+    git("config", "user.name", "Test")
+    git("config", "user.email", "test@example.com")
+    (repo / "auth.py").write_text("enabled = False\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "initial")
+    task.workspace_path = str(workspace)
+
+    conv = conv_repo.get_or_create_loop_conversation(
+        db, task_id=task.id, agent_alias="cli:claude", role="generator"
+    )
+    source = runs_repo.create_run(
+        db,
+        task_id=task.id,
+        conversation=conv,
+        agent_alias="cli:claude",
+        trigger="loop",
+        actor_id=None,
+        prompt="Implement auth",
+        role="generator",
+    )
+    assert turn_recovery.prepare_run(
+        db, source, workspace_path=str(workspace), repo_paths=["app"]
+    )
+    db.commit()
+
+    (repo / "auth.py").write_text("enabled = True\n", encoding="utf-8")
+    (repo / "test_auth.py").write_text("def test_auth(): pass\n", encoding="utf-8")
+    source.status = RUN_ERROR
+    source.error = "Interrupted by restart"
+    source.last_seq = 3
+    db.add_all(
+        [
+            AgentTeamRunEvent(
+                run_id=source.id,
+                seq=1,
+                type="tool_use_start",
+                data=json.dumps(
+                    {
+                        "tool_id": "t1",
+                        "tool_name": "Write auth.py",
+                        "input": {"path": "app/auth.py"},
+                    }
+                ),
+            ),
+            AgentTeamRunEvent(
+                run_id=source.id,
+                seq=2,
+                type="tool_use_end",
+                data=json.dumps(
+                    {
+                        "tool_id": "t1",
+                        "tool_name": "Write auth.py",
+                        "success": True,
+                        "is_error": False,
+                    }
+                ),
+            ),
+            AgentTeamRunEvent(
+                run_id=source.id,
+                seq=3,
+                type="tool_use_start",
+                data=json.dumps(
+                    {
+                        "tool_id": "t2",
+                        "tool_name": "Run tests",
+                        "input": {"command": "pytest test_auth.py"},
+                    }
+                ),
+            ),
+        ]
+    )
+    db.commit()
+
+    # Freeze at interruption time. Later resume setup must become the successor's
+    # baseline, not be attributed to the failed turn.
+    assert turn_recovery.finalize_run(
+        db, source, workspace_path=str(workspace)
+    )
+    db.commit()
+    (workspace / "resume-setup.txt").write_text("created later\n", encoding="utf-8")
+
+    successor = runs_repo.create_run(
+        db,
+        task_id=task.id,
+        conversation=conv,
+        agent_alias="cli:claude",
+        trigger="loop",
+        actor_id=None,
+        prompt="Continue after evaluator feedback",
+        role="generator",
+    )
+    assert turn_recovery.prepare_run(
+        db, successor, workspace_path=str(workspace), repo_paths=["app"]
+    )
+    db.commit()
+    db.refresh(source)
+    db.refresh(successor)
+
+    assert successor.recovery_source_run_id == source.id
+    assert '<turn_recovery version="1">' in successor.prompt
+    assert "app/auth.py" in successor.prompt
+    assert "app/test_auth.py" in successor.prompt
+    assert "pytest test_auth.py" in successor.prompt
+    assert "resume-setup.txt" not in successor.prompt
+    assert "Continue after evaluator feedback" in successor.prompt
+    delta = json.loads(source.workspace_delta_json)
+    assert {row["path"] for row in delta["changed_files"]} == {
+        "app/auth.py",
+        "app/test_auth.py",
+    }
+    assert delta["operations"]["possibly_in_flight_tools"][0]["tool_id"] == "t2"
+
+    # A later normal turn cannot claim the same source a second time.
+    successor.status = RUN_DONE
+    third = runs_repo.create_run(
+        db,
+        task_id=task.id,
+        conversation=conv,
+        agent_alias="cli:claude",
+        trigger="loop",
+        actor_id=None,
+        prompt="Normal evaluator follow-up",
+        role="generator",
+    )
+    assert turn_recovery.prepare_run(
+        db, third, workspace_path=str(workspace), repo_paths=["app"]
+    )
+    db.commit()
+    assert third.recovery_source_run_id is None
+    assert "turn_recovery" not in third.prompt
+
+
+def test_reviewer_and_evaluator_turns_do_not_capture_recovery_state(db, tmp_path):
+    from agent_team.features.board.repositories import conversations as conv_repo
+    from agent_team.features.board.repositories import runs as runs_repo
+    from agent_team.features.board.runtime import turn_recovery
+
+    _, task = _loop_board_task(db)
+    task.workspace_path = str(tmp_path)
+    for role in ("reviewer", "evaluator"):
+        conv = conv_repo.get_or_create_loop_conversation(
+            db,
+            task_id=task.id,
+            agent_alias="cli:claude",
+            role=role,
+            fresh=True,
+        )
+        run = runs_repo.create_run(
+            db,
+            task_id=task.id,
+            conversation=conv,
+            agent_alias="cli:claude",
+            trigger="loop",
+            actor_id=None,
+            prompt="Review independently",
+            role=role,
+        )
+        assert not turn_recovery.prepare_run(
+            db, run, workspace_path=str(tmp_path), repo_paths=[]
+        )
+        assert run.workspace_snapshot_json is None
+
+
+def test_only_non_user_cancelled_turn_is_recovered(db, tmp_path):
+    from agent_team.features.board.repositories import conversations as conv_repo
+    from agent_team.features.board.repositories import runs as runs_repo
+    from agent_team.features.board.runtime import turn_recovery
+    from agent_team.features.board.runtime.events import RUN_CANCELLED
+
+    board, task = _loop_board_task(db)
+    workspace = tmp_path / "infra-cancel"
+    workspace.mkdir()
+    task.workspace_path = str(workspace)
+    state = workspace / "state.txt"
+    state.write_text("before\n", encoding="utf-8")
+    conv = conv_repo.get_or_create_loop_conversation(
+        db, task_id=task.id, agent_alias="cli:claude", role="generator"
+    )
+    source = runs_repo.create_run(
+        db,
+        task_id=task.id,
+        conversation=conv,
+        agent_alias="cli:claude",
+        trigger="loop",
+        actor_id=None,
+        prompt="work",
+        role="generator",
+    )
+    turn_recovery.prepare_run(
+        db, source, workspace_path=str(workspace), repo_paths=[]
+    )
+    db.commit()
+    state.write_text("partial\n", encoding="utf-8")
+    source.status = RUN_CANCELLED
+    source.cancel_requested = False
+    source.started_at = source.created_at
+    turn_recovery.finalize_run(db, source, workspace_path=str(workspace))
+
+    successor = runs_repo.create_run(
+        db,
+        task_id=task.id,
+        conversation=conv,
+        agent_alias="cli:claude",
+        trigger="loop",
+        actor_id=None,
+        prompt="retry",
+        role="generator",
+    )
+    turn_recovery.prepare_run(
+        db, successor, workspace_path=str(workspace), repo_paths=[]
+    )
+    assert successor.recovery_source_run_id == source.id
+
+    # An explicit user cancel sets cancel_requested and must not surprise the user
+    # by silently handing that turn to a later run.
+    explicit_task = tasks_repo.create_task(
+        db,
+        board_id=board.id,
+        title="Explicit cancel",
+        description=None,
+        status="todo",
+        assignee_id=None,
+        labels=None,
+        priority=None,
+        created_by=None,
+    )
+    explicit_workspace = tmp_path / "explicit-cancel"
+    explicit_workspace.mkdir()
+    explicit_task.workspace_path = str(explicit_workspace)
+    explicit_conv = conv_repo.get_or_create_loop_conversation(
+        db,
+        task_id=explicit_task.id,
+        agent_alias="cli:claude",
+        role="generator",
+    )
+    explicit_source = runs_repo.create_run(
+        db,
+        task_id=explicit_task.id,
+        conversation=explicit_conv,
+        agent_alias="cli:claude",
+        trigger="loop",
+        actor_id=None,
+        prompt="work",
+        role="generator",
+    )
+    turn_recovery.prepare_run(
+        db,
+        explicit_source,
+        workspace_path=str(explicit_workspace),
+        repo_paths=[],
+    )
+    explicit_source.status = RUN_CANCELLED
+    explicit_source.cancel_requested = True
+    explicit_source.started_at = explicit_source.created_at
+    db.flush()
+    explicit_successor = runs_repo.create_run(
+        db,
+        task_id=explicit_task.id,
+        conversation=explicit_conv,
+        agent_alias="cli:claude",
+        trigger="loop",
+        actor_id=None,
+        prompt="new work",
+        role="generator",
+    )
+    turn_recovery.prepare_run(
+        db,
+        explicit_successor,
+        workspace_path=str(explicit_workspace),
+        repo_paths=[],
+    )
+    assert explicit_successor.recovery_source_run_id is None
+
+
+def test_restart_reconcile_fails_active_loop_task_but_not_chat_task(db, tmp_path):
+    from agent_team.features.board.repositories import conversations as conv_repo
+    from agent_team.features.board.repositories import runs as runs_repo
+    from agent_team.features.board.runtime import local_backend, turn_recovery
+
+    board, loop_task = _loop_board_task(db)
+    loop_task.loop_state = "running"
+    loop_task.workspace_path = str(tmp_path / "loop-workspace")
+    workspace = tmp_path / "loop-workspace"
+    workspace.mkdir()
+    work_file = workspace / "work.py"
+    work_file.write_text("before = True\n", encoding="utf-8")
+    loop_conv = conv_repo.get_or_create_loop_conversation(
+        db, task_id=loop_task.id, agent_alias="cli:claude", role="generator"
+    )
+    loop_run = runs_repo.create_run(
+        db,
+        task_id=loop_task.id,
+        conversation=loop_conv,
+        agent_alias="cli:claude",
+        trigger="loop",
+        actor_id=None,
+        prompt="work",
+        role="generator",
+    )
+    assert turn_recovery.prepare_run(
+        db, loop_run, workspace_path=str(workspace), repo_paths=[]
+    )
+
+    chat_task = tasks_repo.create_task(
+        db,
+        board_id=board.id,
+        title="Chat task",
+        description=None,
+        status="todo",
+        assignee_id=None,
+        labels=None,
+        priority=None,
+        created_by=None,
+    )
+    chat_conv = conv_repo.get_or_create_active_conversation(
+        db, task_id=chat_task.id, agent_alias="cli:claude"
+    )
+    chat_run = runs_repo.create_run(
+        db,
+        task_id=chat_task.id,
+        conversation=chat_conv,
+        agent_alias="cli:claude",
+        trigger="manual",
+        actor_id=None,
+        prompt="hello",
+    )
+
+    graceful_task = tasks_repo.create_task(
+        db,
+        board_id=board.id,
+        title="Graceful interruption",
+        description=None,
+        status="todo",
+        assignee_id=None,
+        labels=None,
+        priority=None,
+        created_by=None,
+    )
+    graceful_task.loop_state = "running"
+    graceful_workspace = tmp_path / "graceful-workspace"
+    graceful_workspace.mkdir()
+    graceful_task.workspace_path = str(graceful_workspace)
+    graceful_file = graceful_workspace / "partial.py"
+    graceful_file.write_text("before = True\n", encoding="utf-8")
+    graceful_conv = conv_repo.get_or_create_loop_conversation(
+        db,
+        task_id=graceful_task.id,
+        agent_alias="cli:claude",
+        role="generator",
+    )
+    graceful_run = runs_repo.create_run(
+        db,
+        task_id=graceful_task.id,
+        conversation=graceful_conv,
+        agent_alias="cli:claude",
+        trigger="loop",
+        actor_id=None,
+        prompt="work",
+        role="generator",
+    )
+    turn_recovery.prepare_run(
+        db,
+        graceful_run,
+        workspace_path=str(graceful_workspace),
+        repo_paths=[],
+    )
+    graceful_run.status = "cancelled"
+    graceful_run.cancel_requested = False
+    graceful_run.started_at = graceful_run.created_at
+
+    # A crash can also land exactly between two runs (e.g. generator done,
+    # evaluator not yet created). There is no orphan row, but the process-local
+    # driver is gone and the active projection must still become resumable.
+    boundary_task = tasks_repo.create_task(
+        db,
+        board_id=board.id,
+        title="Between turns",
+        description=None,
+        status="todo",
+        assignee_id=None,
+        labels=None,
+        priority=None,
+        created_by=None,
+    )
+    boundary_task.loop_state = "running"
+    db.commit()
+    work_file.write_text("after = True\n", encoding="utf-8")
+    graceful_file.write_text("after = True\n", encoding="utf-8")
+    assert turn_recovery.finalize_run(
+        db, graceful_run, workspace_path=str(graceful_workspace)
+    )
+    db.commit()
+
+    assert local_backend.reconcile_orphans_sync() == 2
+    db.expire_all()
+    reconciled = db.get(AgentTeamRun, loop_run.id)
+    assert reconciled.error == "Interrupted by restart"
+    assert json.loads(reconciled.workspace_delta_json)["changed_files"] == [
+        {"path": "work.py", "change": "modified"}
+    ]
+    assert db.get(AgentTeamRun, chat_run.id).error == "Interrupted by restart"
+    assert db.get(AgentTeamTask, loop_task.id).loop_state == "failed"
+    assert db.get(AgentTeamTask, chat_task.id).loop_state is None
+    assert db.get(AgentTeamTask, graceful_task.id).loop_state == "failed"
+    assert db.get(AgentTeamTask, boundary_task.id).loop_state == "failed"
+    assert json.loads(db.get(AgentTeamRun, graceful_run.id).workspace_delta_json)[
+        "changed_files"
+    ] == [{"path": "partial.py", "change": "modified"}]

@@ -18,6 +18,7 @@ from agent_team.features.board.board_events import get_board_bus
 from agent_team.features.board.models import (
     PLANNING_MODE_STRICT,
     RUN_ROLE_PLANNER,
+    RUN_ROLE_REVIEWER,
     AgentTeamTask,
 )
 from agent_team.features.board.runtime import task_journal
@@ -30,9 +31,9 @@ from agent_team.features.board.runtime.loop.service import (
     _drive_to_completion,
     _task_workspace_and_board,
 )
-from agent_team.features.board.runtime.sandbox.service import fix_workspace_ownership
 from agent_team.features.board.runtime.loop.status import LoopState
 from agent_team.features.board.runtime.loop.verdict import parse_verdict
+from agent_team.features.board.runtime.sandbox.service import fix_workspace_ownership
 from core.database.base import SessionLocal
 
 logger = logging.getLogger(__name__)
@@ -455,7 +456,7 @@ async def _run_reviewer(
         task_id=task_id,
         agent_alias=reviewer_alias,
         prompt=planning_prompts.build_review_prompt(conventions=conventions),
-        role=RUN_ROLE_PLANNER,
+        role=RUN_ROLE_REVIEWER,
         attempt_id=None,
     )
     result = await _drive_to_completion(run_id)

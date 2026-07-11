@@ -14,7 +14,7 @@ import logging
 from datetime import UTC, datetime
 
 from agent_team.features.board.board_events import get_board_bus
-from agent_team.features.board.models import AgentTeamRun
+from agent_team.features.board.models import AgentTeamRun, AgentTeamTask
 from agent_team.features.board.repositories import activity as activity_repo
 from agent_team.features.board.repositories import tool_outputs as tool_outputs_repo
 from agent_team.features.board.repositories.comments import list_comments
@@ -133,6 +133,9 @@ class LocalRunBackend:
                 await self._finish_cancelled(
                     run_id, thread_id, final_text, usage, cli_usage_text
                 )
+                await asyncio.to_thread(
+                    _finalize_turn_recovery_sync, run_id, workspace_path
+                )
                 await _log_run_finished(
                     task_id, actor_id, run_id, RUN_CANCELLED,
                     board_id=board_id, agent_alias=agent_alias,
@@ -148,6 +151,9 @@ class LocalRunBackend:
             usage["total_tokens"] = usage["input_tokens"] + usage["output_tokens"]
             await self._finish_cancelled(
                 run_id, thread_id, final_text, usage, cli_usage_text
+            )
+            await asyncio.to_thread(
+                _finalize_turn_recovery_sync, run_id, workspace_path
             )
             await _log_run_finished(
                 task_id, actor_id, run_id, RUN_CANCELLED,
@@ -165,6 +171,9 @@ class LocalRunBackend:
             )
             await asyncio.to_thread(
                 event_store.finalize_run, run_id, status=RUN_ERROR, error=str(exc), usage=usage
+            )
+            await asyncio.to_thread(
+                _finalize_turn_recovery_sync, run_id, workspace_path
             )
             await _log_run_finished(
                 task_id, actor_id, run_id, RUN_ERROR,
@@ -383,7 +392,9 @@ def _load_run_context(run_id: str) -> dict | None:
         workspace_display_path = (
             visible_workspace if visible_workspace != task.workspace_path else None
         )
-        if is_direct_cli_alias(run.agent_alias):
+        direct_cli = is_direct_cli_alias(run.agent_alias)
+        all_notes: list[dict] = []
+        if direct_cli:
             # The CLI reads its context from files in the workspace
             # (``.agent-team/TASK.md`` via the CLAUDE.md / AGENTS.md / cursor-rule
             # pointers), refreshed with the full note history every turn. The
@@ -397,12 +408,6 @@ def _load_run_context(run_id: str) -> dict | None:
                 all_notes,
                 repos,
                 skills_manifest,
-                workspace_display_path=workspace_display_path,
-            )
-            input_text = cli_context.build_prompt(
-                run.prompt or "",
-                first_turn=full,
-                has_new_notes=bool(notes),
                 workspace_display_path=workspace_display_path,
             )
             # Per-agent MCP config: this CLI alias may have its own MCP servers
@@ -421,6 +426,40 @@ def _load_run_context(run_id: str) -> dict | None:
                 skills_rt.write_codex_manifest(task.workspace_path, skills_manifest)
             except Exception:
                 logger.exception("agent_team: failed to write Codex manifest for %s", task.id)
+
+        # Planner/generator runs are recoverable turns. Capture their baseline only
+        # after repos, skills and generated context files are ready, so a later
+        # delta contains agent work rather than setup performed by this backend.
+        try:
+            from agent_team.features.board.runtime import turn_recovery
+
+            turn_recovery.prepare_run(
+                db,
+                run,
+                workspace_path=task.workspace_path,
+                repo_paths=[str(r["path"]) for r in repos if r.get("path")],
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception(
+                "agent_team: failed to prepare turn checkpoint for run %s", run.id
+            )
+            # Recovery metadata is an availability aid, not permission to block
+            # normal work. Reload after rollback and continue with the original
+            # prompt if checkpoint preparation failed.
+            run = get_run(db, run_id)
+            if run is None:
+                return None
+
+        if direct_cli:
+            input_text = cli_context.build_prompt(
+                run.prompt or "",
+                first_turn=full,
+                has_new_notes=bool(notes),
+                workspace_display_path=workspace_display_path,
+            )
+        else:
             input_text = build_task_context(
                 task,
                 run.prompt,
@@ -492,8 +531,74 @@ def reconcile_orphans_sync() -> int:
             run.status = RUN_ERROR
             run.error = "Interrupted by restart"
             run.ended_at = now
+
+        # Freeze deltas before any resumed phase resets task markers or refreshes
+        # generated context files. Also catch a graceful process shutdown that
+        # finalized a run as cancelled without a durable human cancel request.
+        graceful_candidates = (
+            db.query(AgentTeamRun)
+            .filter(
+                AgentTeamRun.status == RUN_CANCELLED,
+                AgentTeamRun.cancel_requested.is_(False),
+                AgentTeamRun.workspace_snapshot_json.isnot(None),
+            )
+            .all()
+        )
+        graceful_interruptions = [
+            run
+            for run in graceful_candidates
+            if (
+                db.query(AgentTeamRun.id)
+                .filter(AgentTeamRun.recovery_source_run_id == run.id)
+                .first()
+            )
+            is None
+        ]
+        recovery_rows = [
+            *rows,
+            *(run for run in graceful_interruptions if run.workspace_delta_json is None),
+        ]
+        if recovery_rows:
+            from agent_team.features.board.runtime import turn_recovery
+
+            for run in recovery_rows:
+                task = db.get(AgentTeamTask, run.task_id)
+                if task is not None:
+                    turn_recovery.finalize_run(
+                        db, run, workspace_path=task.workspace_path
+                    )
+
+        # The in-memory planning/loop driver disappeared with the process too.
+        # Move only actively-running task states to FAILED so the existing human
+        # resume/re-plan actions become available; never regress a task that had
+        # already reached a parked or terminal state in a concurrent final write.
+        (
+            db.query(AgentTeamTask)
+            .filter(AgentTeamTask.loop_state.in_(("planning", "running")))
+            .update({"loop_state": "failed"}, synchronize_session=False)
+        )
         db.commit()
         return len(rows)
+    finally:
+        db.close()
+
+
+def _finalize_turn_recovery_sync(run_id: str, workspace_path: str) -> None:
+    """Best-effort terminal checkpoint using the backend's configured DB factory."""
+    db = SessionLocal()
+    try:
+        run = get_run(db, run_id)
+        if run is None:
+            return
+        from agent_team.features.board.runtime import turn_recovery
+
+        if turn_recovery.finalize_run(
+            db, run, workspace_path=workspace_path
+        ):
+            db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("agent_team: failed to finalize turn checkpoint for run %s", run_id)
     finally:
         db.close()
 

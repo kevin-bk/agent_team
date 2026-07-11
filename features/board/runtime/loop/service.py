@@ -20,6 +20,7 @@ from agent_team.features.board.board_events import get_board_bus
 from agent_team.features.board.models import (
     RUN_ROLE_EVALUATOR,
     RUN_ROLE_GENERATOR,
+    RUN_ROLE_REVIEWER,
     AgentTeamTask,
 )
 from agent_team.features.board.repositories import conversations as conversations_repo
@@ -95,10 +96,10 @@ def _create_loop_run(
 ) -> str:
     """Create a queued run tagged with its loop role + attempt (own session).
 
-    The conversation is scoped per role so the planner, generator and evaluator
-    each run in their own agent session — never one shared process. The
-    evaluator gets a brand-new thread every time (``fresh``) so each grading is
-    independent of the generation it judges and of any prior verdict.
+    The conversation is scoped per role so planner, reviewer, generator and
+    evaluator each run in their own agent session — never one shared process.
+    Reviewers/evaluators get a brand-new thread every time (``fresh``) so each
+    judgement is independent of the work it grades and of any prior verdict.
     """
     db = SessionLocal()
     try:
@@ -107,7 +108,7 @@ def _create_loop_run(
             task_id=task_id,
             agent_alias=agent_alias,
             role=role,
-            fresh=role == RUN_ROLE_EVALUATOR,
+            fresh=role in (RUN_ROLE_REVIEWER, RUN_ROLE_EVALUATOR),
         )
         run = runs_repo.create_run(
             db,

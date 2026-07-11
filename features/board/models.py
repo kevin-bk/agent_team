@@ -21,6 +21,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -66,11 +67,12 @@ PLANNING_MODE_STRICT = "strict_plan"
 PLANNING_MODES = frozenset({PLANNING_MODE_LEGACY, PLANNING_MODE_STRICT})
 
 #: Why a run was executed (its stage in the autonomous loop). A plain chat/mention
-#: run is ``chat``; the loop tags its runs ``planner`` / ``generator`` /
-#: ``evaluator``. Stored in a plain VARCHAR(16) (no CHECK), so new roles need no
-#: migration.
+#: run is ``chat``; the loop tags its runs ``planner`` / ``reviewer`` /
+#: ``generator`` / ``evaluator``. Stored in a plain VARCHAR(16) (no CHECK), so
+#: new roles need no migration.
 RUN_ROLE_CHAT = "chat"
 RUN_ROLE_PLANNER = "planner"
+RUN_ROLE_REVIEWER = "reviewer"
 RUN_ROLE_GENERATOR = "generator"
 RUN_ROLE_EVALUATOR = "evaluator"
 
@@ -492,6 +494,13 @@ class AgentTeamRun(Base):
     """One execution of an agent against a task (one turn of a conversation)."""
 
     __tablename__ = "plugin_agent_team_run"
+    __table_args__ = (
+        Index(
+            "uq_agent_team_run_recovery_source",
+            "recovery_source_run_id",
+            unique=True,
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
     human_key: Mapped[str] = mapped_column(String(32), unique=True, nullable=False, index=True)
@@ -512,8 +521,8 @@ class AgentTeamRun(Base):
     #: How the run was started, e.g. ``mention`` or ``manual``.
     trigger: Mapped[str] = mapped_column(String(32), nullable=False, default="mention")
     #: Stage in the autonomous loop: ``chat`` (default), ``planner``,
-    #: ``generator`` or ``evaluator``. Lets the cockpit label loop runs and the
-    #: loop layer query them.
+    #: ``reviewer``, ``generator`` or ``evaluator``. Lets the cockpit label loop
+    #: runs and the loop layer query them.
     role: Mapped[str] = mapped_column(String(16), nullable=False, default=RUN_ROLE_CHAT)
     #: The loop attempt this run belongs to (null for chat runs).
     attempt_id: Mapped[str | None] = mapped_column(
@@ -541,6 +550,20 @@ class AgentTeamRun(Base):
     cancel_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     #: Highest event ``seq`` persisted so far (the SSE resume cursor).
     last_seq: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: Machine-generated workspace checkpoint captured immediately before a
+    #: recoverable planner/generator turn starts. It records Git heads plus the
+    #: current dirty/untracked signatures without mutating the real Git index.
+    workspace_snapshot_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: Workspace/event delta calculated if this turn is later recovered. Kept on
+    #: the interrupted source run so operators can audit the hand-off.
+    workspace_delta_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: Interrupted planner/generator run this turn is recovering. Unique means a
+    #: failed turn can be claimed by at most one successor.
+    recovery_source_run_id: Mapped[str | None] = mapped_column(
+        String(32),
+        ForeignKey("plugin_agent_team_run.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
