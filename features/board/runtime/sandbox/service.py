@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shlex
 from typing import Any
 
 from agent_team.features.board.runtime.acp.engines import CODEX_ACP_DEFAULT_ARGS
@@ -694,14 +695,18 @@ _UI_STATE = {
 }
 
 
-async def pause_task_sandbox(task_id: str) -> None:
-    """Pause a task's sandbox after a turn so an idle task costs no resources.
+async def pause_task_sandbox(
+    task_id: str, workspace_mount_path: str = "/workspace"
+) -> None:
+    """Return workspace ownership, then pause an idle task sandbox.
 
     Best-effort: providers that cannot pause (e.g. local) are left running.
     Reference-counted against :func:`prepare_task_sandbox`: when two turns
     overlap (e.g. a quick follow-up chat message), the first turn's post-turn
     pause is skipped instead of freezing the sandbox under the still-running
-    second turn.
+    second turn. Ownership is restored while the sandbox is still open because
+    files created by its root user on the bind mount must remain writable by the
+    host-side planner and task graph after the turn.
     """
     remaining = _busy_counts.get(task_id, 1) - 1
     if remaining > 0:
@@ -724,6 +729,7 @@ async def pause_task_sandbox(task_id: str) -> None:
     # just-paused sandbox would be reaped on the very next GC sweep.
     _manager.mark_used(task_id)
     try:
+        await fix_workspace_ownership(task_id, workspace_mount_path)
         await sb.pause()
     except NotImplementedError:
         pass  # local sandbox has nothing to pause
@@ -749,7 +755,7 @@ async def fix_workspace_ownership(task_id: str, workspace_mount_path: str = "/wo
 
     host_uid = os.getuid()
     host_gid = os.getgid()
-    target = f"{workspace_mount_path}/.agent-team"
+    target = shlex.quote(f"{workspace_mount_path.rstrip('/')}/.agent-team")
     try:
         await sb.exec_shell(
             f"chown -R {host_uid}:{host_gid} {target} 2>/dev/null || true",
@@ -760,6 +766,35 @@ async def fix_workspace_ownership(task_id: str, workspace_mount_path: str = "/wo
             "fix_workspace_ownership: chown failed for task=%s (non-fatal)",
             task_id,
             exc_info=True,
+        )
+
+
+async def repair_workspace_ownership(
+    *,
+    task_id: str,
+    host_workspace_path: str,
+    profile: RuntimeProfile,
+    board_id: str = "",
+) -> None:
+    """Open a task sandbox long enough to repair legacy bind-mount ownership.
+
+    Older turns paused before ownership handoff existed, so their artifacts can
+    already be root-owned when a task graph resumes. Opening/resuming the same
+    sandbox lets :func:`pause_task_sandbox` perform the normal handoff before the
+    host attempts its first ``TASKS.json`` status write.
+    """
+    await prepare_task_sandbox(
+        task_id=task_id,
+        host_workspace_path=host_workspace_path,
+        profile=profile,
+        board_id=board_id,
+    )
+    try:
+        await fix_workspace_ownership(task_id, profile.workspace_mount_path)
+    finally:
+        await pause_task_sandbox(
+            task_id,
+            workspace_mount_path=profile.workspace_mount_path,
         )
 
 

@@ -129,7 +129,10 @@ class SandboxedCliWorker:
                 await emit(*ev.error(error_class="CliError", message=str(message)))
 
         # Pause the sandbox so an idle task frees its resources (best-effort).
-        await pause_task_sandbox(ctx.task_id or ctx.run_id)
+        await pause_task_sandbox(
+            ctx.task_id or ctx.run_id,
+            workspace_mount_path=profile.workspace_mount_path,
+        )
 
         return TurnResult(
             final_text=parsed.final_text,

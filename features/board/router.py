@@ -955,7 +955,11 @@ async def control_task_runtime(
             board_id=task.board_id,
         )
     elif action == "pause":
-        await sandbox_service.pause_task_sandbox(task.id)
+        profile = sandbox_service.resolve_profile(task.id, task.board_id)
+        await sandbox_service.pause_task_sandbox(
+            task.id,
+            workspace_mount_path=profile.workspace_mount_path,
+        )
     else:
         await sandbox_service.kill_task_sandbox(task.id)
     return sandbox_service.describe_runtime(task_id=task.id, board_id=task.board_id)

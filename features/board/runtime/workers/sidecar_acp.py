@@ -88,7 +88,10 @@ class SidecarAcpWorker:
                 ctx, emit, cancel, profile, ws_url, ws_headers, sandbox
             )
         finally:
-            await pause_task_sandbox(task_key)
+            await pause_task_sandbox(
+                task_key,
+                workspace_mount_path=profile.workspace_mount_path,
+            )
 
     async def _drive(
         self,

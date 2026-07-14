@@ -245,7 +245,14 @@ async def sandbox_admin_action(sandbox_id: str, action: str) -> dict[str, Any]:
             info = tasks.get(sandbox_id, {"task_id": task_id})
             return await _run_task_sandbox_from_row(info)
         if action == "pause":
-            await sandbox_service.pause_task_sandbox(task_id)
+            info = tasks.get(sandbox_id, {})
+            profile = sandbox_service.resolve_profile(
+                task_id, str(info.get("board_id") or "")
+            )
+            await sandbox_service.pause_task_sandbox(
+                task_id,
+                workspace_mount_path=profile.workspace_mount_path,
+            )
         else:
             await sandbox_service.kill_task_sandbox(task_id)
         return {"ok": True, "routed": "task", "task_id": task_id}

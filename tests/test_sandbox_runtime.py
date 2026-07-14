@@ -513,7 +513,7 @@ async def test_sandboxed_worker_emits_and_pauses(monkeypatch):
 
     paused = {"v": False}
 
-    async def _pause(task_id):
+    async def _pause(task_id, **kwargs):
         paused["v"] = True
 
     monkeypatch.setattr(sc, "prepare_task_sandbox", _prepare)
@@ -631,7 +631,7 @@ async def test_sidecar_worker_relays_frames(monkeypatch):
 
         paused = {"v": False}
 
-        async def _pause(task_id):
+        async def _pause(task_id, **kwargs):
             paused["v"] = True
 
         monkeypatch.setattr(sa, "prepare_task_sandbox", _prepare)
@@ -1571,6 +1571,118 @@ async def test_pause_is_refcounted_across_overlapping_turns(monkeypatch):
     monkeypatch.setattr(svc, "_manager", None)
     await svc.kill_task_sandbox("T-Z")
     assert "T-Z" not in svc._busy_counts
+
+
+async def test_pause_restores_workspace_ownership_before_pausing(monkeypatch):
+    """Root-owned artifacts must be handed back while sandbox exec still works."""
+    from agent_team.features.board.runtime.sandbox import service as svc
+
+    events: list[tuple[str, str]] = []
+
+    class _SB:
+        state = "open"
+
+        async def exec_shell(self, command, **kwargs):
+            events.append(("exec", command))
+
+        async def pause(self):
+            events.append(("pause", ""))
+            self.state = "paused"
+
+    class _Mgr:
+        def __init__(self, sb):
+            self._sb = sb
+
+        def get(self, task_id):
+            return self._sb
+
+        def mark_used(self, task_id):
+            pass
+
+    sb = _SB()
+    monkeypatch.setattr(svc, "_manager", _Mgr(sb))
+    monkeypatch.setattr(svc.os, "getuid", lambda: 1234)
+    monkeypatch.setattr(svc.os, "getgid", lambda: 5678)
+    svc._busy_counts.clear()
+    svc._busy_counts["T-OWN"] = 1
+
+    await svc.pause_task_sandbox(
+        "T-OWN", workspace_mount_path="/custom workspace"
+    )
+
+    assert events == [
+        (
+            "exec",
+            "chown -R 1234:5678 '/custom workspace/.agent-team' "
+            "2>/dev/null || true",
+        ),
+        ("pause", ""),
+    ]
+    assert sb.state == "paused"
+
+
+async def test_repair_workspace_ownership_opens_then_releases_sandbox(monkeypatch):
+    """Legacy root-owned artifacts are repaired through the normal release path."""
+    from agent_team.features.board.runtime.sandbox import service as svc
+
+    calls: list[tuple[str, dict]] = []
+
+    async def _prepare(**kwargs):
+        calls.append(("prepare", kwargs))
+
+    async def _fix(task_id, workspace_mount_path):
+        calls.append(
+            (
+                "fix",
+                {
+                    "task_id": task_id,
+                    "workspace_mount_path": workspace_mount_path,
+                },
+            )
+        )
+
+    async def _pause(task_id, **kwargs):
+        calls.append(("pause", {"task_id": task_id, **kwargs}))
+
+    monkeypatch.setattr(svc, "prepare_task_sandbox", _prepare)
+    monkeypatch.setattr(svc, "fix_workspace_ownership", _fix)
+    monkeypatch.setattr(svc, "pause_task_sandbox", _pause)
+    profile = RuntimeProfile(
+        provider="opensandbox", workspace_mount_path="/custom-workspace"
+    )
+
+    await svc.repair_workspace_ownership(
+        task_id="T-LEGACY",
+        host_workspace_path="/host/workspace",
+        profile=profile,
+        board_id="B-1",
+    )
+
+    assert calls == [
+        (
+            "prepare",
+            {
+                "task_id": "T-LEGACY",
+                "host_workspace_path": "/host/workspace",
+                "profile": profile,
+                "board_id": "B-1",
+            },
+        ),
+        (
+            "fix",
+            {
+                "task_id": "T-LEGACY",
+                "workspace_mount_path": "/custom-workspace",
+            },
+        ),
+        (
+            "pause",
+            {
+                "task_id": "T-LEGACY",
+                "workspace_mount_path": "/custom-workspace",
+            },
+        ),
+    ]
 
 
 async def test_admin_action_routes_tracked_to_task_kill(monkeypatch):
