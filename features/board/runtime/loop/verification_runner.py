@@ -234,6 +234,11 @@ def _write_output(
     stream: str,
     content: str,
 ) -> tuple[str, bool]:
+    # An empty stream is valid (and common for successful type-checks), but it
+    # is not a useful workspace artifact.  Keep its SHA on the receipt while
+    # omitting a path so evaluators do not cite a zero-byte log as evidence.
+    if not content.strip():
+        return "", False
     rel_path = (
         f"{RECEIPT_OUTPUT_DIR}/{batch_id}/"
         f"{_safe_command_segment(command_id)}.{stream}.log"
@@ -276,6 +281,8 @@ def _persist_observed(
                 **observed.runtime,
                 "stdout_truncated": stdout_truncated,
                 "stderr_truncated": stderr_truncated,
+                "stdout_bytes": len(observed.stdout.encode("utf-8", errors="replace")),
+                "stderr_bytes": len(observed.stderr.encode("utf-8", errors="replace")),
             }
             row = receipt_repo.create_receipt(
                 db,

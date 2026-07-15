@@ -429,30 +429,89 @@ def build_task_objective(task: dict) -> str:
     )
 
 
-_EVIDENCE_V2_SCHEMA = (
-    "{\n"
-    '  "version": 2,\n'
-    '  "verdict": "pass|fail|needs_human",\n'
-    '  "score": 0.0,\n'
-    '  "subject": {"commit_sha": "...", "deployment_id": "...", '
-    '"environment": "..."},\n'
-    '  "checked_tasks": ["T1"],\n'
-    '  "receipt_ids": ["backend-receipt-id"],\n'
-    '  "commands": [{"id": "cmd-1", "cmd": "...", "exit_code": 0, '
-    '"summary": "...", "trusted": false}],\n'
-    '  "criteria": [{"id": "T1:AC-1", "status": "pass|fail", '
-    '"evidence_ids": ["cmd-1", "scenario-1"]}],\n'
-    '  "scenarios": [{"id": "scenario-1", "profile": "ui_admin", '
-    '"status": "pass|fail", "summary": "...", '
-    '"evidence_ids": ["screenshot-1"]}],\n'
-    '  "artifacts": [{"id": "screenshot-1", '
-    '"kind": "screenshot|trace|report", '
-    '"path": "workspace-relative/path"}],\n'
-    '  "changed_files": ["..."],\n'
-    '  "missing": ["..."],\n'
-    '  "risks": ["..."]\n'
-    "}"
-)
+def _profile_evidence_shape(profiles: list[str]) -> tuple[bool, bool]:
+    normalised = [str(profile).strip().lower() for profile in profiles]
+    needs_ui_artifact = any(
+        profile == "ui" or profile.startswith("ui_") or profile == "visual"
+        for profile in normalised
+    )
+    needs_scenario = needs_ui_artifact or any(
+        profile == "ai" or profile.startswith("ai_") for profile in normalised
+    )
+    return needs_scenario, needs_ui_artifact
+
+
+def _evidence_v2_schema(profiles: list[str]) -> str:
+    """Render a profile-aware example without suggesting optional fake evidence."""
+    needs_scenario, needs_ui_artifact = _profile_evidence_shape(profiles)
+    if needs_ui_artifact:
+        scenarios = (
+            '[{"id": "scenario-1", "profile": "ui_admin", '
+            '"status": "pass|fail", "summary": "...", '
+            '"evidence_ids": ["screenshot-1"]}]'
+        )
+        artifacts = (
+            '[{"id": "screenshot-1", "kind": "screenshot|trace|report", '
+            '"path": "workspace-relative/non-empty/path"}]'
+        )
+    elif needs_scenario:
+        scenarios = (
+            '[{"id": "scenario-1", "profile": "ai", '
+            '"status": "pass|fail", "summary": "...", '
+            '"evidence_ids": ["backend-receipt-id"]}]'
+        )
+        artifacts = "[]"
+    else:
+        scenarios = "[]"
+        artifacts = "[]"
+    return (
+        "{\n"
+        '  "version": 2,\n'
+        '  "verdict": "pass|fail|needs_human",\n'
+        '  "score": 0.0,\n'
+        '  "subject": {"commit_sha": "...", "deployment_id": "...", '
+        '"environment": "..."},\n'
+        '  "checked_tasks": ["T1"],\n'
+        '  "receipt_ids": ["backend-receipt-id"],\n'
+        '  "commands": [{"id": "cmd-1", "cmd": "...", "exit_code": 0, '
+        '"summary": "...", "trusted": false}],\n'
+        '  "criteria": [{"id": "T1:AC-1", "status": "pass|fail", '
+        '"evidence_ids": ["backend-receipt-id"]}],\n'
+        f'  "scenarios": {scenarios},\n'
+        f'  "artifacts": {artifacts},\n'
+        '  "changed_files": ["..."],\n'
+        '  "missing": ["..."],\n'
+        '  "risks": ["..."]\n'
+        "}"
+    )
+
+
+def _profile_evidence_guidance(profiles: list[str]) -> str:
+    needs_scenario, needs_ui_artifact = _profile_evidence_shape(profiles)
+    if needs_ui_artifact:
+        profile_rule = (
+            "UI/visual profiles require passing scenarios, and every scenario "
+            "must reference a non-empty screenshot, trace, video, snapshot, or "
+            "report artifact inside the workspace."
+        )
+    elif needs_scenario:
+        profile_rule = (
+            "AI profiles require passing scenarios with non-empty evidence_ids; "
+            "workspace artifacts are optional unless explicitly required."
+        )
+    else:
+        profile_rule = (
+            "This is a code-only/non-scenario contract. Keep `scenarios` and "
+            "`artifacts` as empty arrays unless you have real additional evidence; "
+            "trusted receipt ids may be mapped directly to criteria."
+        )
+    return (
+        f"{profile_rule} Use exactly the listed criterion ids and do not invent "
+        "additional acceptance criteria. Every included criterion or scenario "
+        "must have non-empty `evidence_ids`. Never cite an empty stdout/stderr "
+        "log as an artifact. Do not rerun a planned command already covered by "
+        "a fresh passing backend receipt unless extra diagnosis is necessary."
+    )
 
 
 def build_task_evaluator_prompt(
@@ -481,7 +540,7 @@ def build_task_evaluator_prompt(
         f"- Approved contract: `{A.SPEC_PATH}` · plan: `{A.PLAN_PATH}`\n\n"
         "## Acceptance criteria for THIS task\n"
         f"{_bullets(acceptance)}\n\n"
-        "## Validation to run yourself\n"
+        "## Validation expected\n"
         f"{_bullets(validation)}\n\n"
         "## Verification contract\n"
         f"- Profiles: {', '.join(verification.get('profiles') or []) or '(none)'}\n"
@@ -501,7 +560,8 @@ def build_task_evaluator_prompt(
         "following it\n\n"
         "## Required output\n"
         f"Write `{verdict_path}` (schema version 2):\n\n"
-        f"{_EVIDENCE_V2_SCHEMA}\n\n"
+        f"{_evidence_v2_schema(verification.get('profiles') or [])}\n\n"
+        f"{_profile_evidence_guidance(verification.get('profiles') or [])}\n\n"
         "Use `pass` only when every acceptance criterion for this task is "
         "provably mapped to real evidence. Commands declared in the verification "
         "contract are run by the backend; cite its trusted receipt ids instead "
@@ -551,6 +611,7 @@ def build_strict_evaluator_prompt(
     generator_summary: str,
     verdict_path: str,
     conventions: str | None = None,
+    profiles: list[str] | None = None,
 ) -> str:
     """Compose the strict evaluator turn, grading against approved artifacts."""
     objective = (objective or "").strip() or "(no explicit objective given)"
@@ -577,7 +638,8 @@ def build_strict_evaluator_prompt(
         "following it\n\n"
         "## Required output\n"
         f"Write `{A.EVIDENCE_PATH}` (schema version 2):\n\n"
-        f"{_EVIDENCE_V2_SCHEMA}\n\n"
+        f"{_evidence_v2_schema(profiles or [])}\n\n"
+        f"{_profile_evidence_guidance(profiles or [])}\n\n"
         "Map acceptance criteria as `<task-id>:AC-<1-based-index>`. UI scenarios "
         "must reference a real screenshot, trace, snapshot, video, or report "
         "inside the workspace. A `pass` with failed or omitted planned commands "

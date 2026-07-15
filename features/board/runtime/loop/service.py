@@ -480,6 +480,7 @@ class WorkerEvaluator:
                 generator_summary=generator_summary,
                 verdict_path=artifacts.EVIDENCE_PATH,
                 conventions=self._conventions,
+                profiles=contract.profiles,
             )
         else:
             # Unique per evaluation so a leftover file from a prior attempt can

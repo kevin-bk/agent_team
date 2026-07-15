@@ -372,6 +372,13 @@ def validate_verification_evidence(
     for criterion_id in expected_criteria:
         if criterion_id not in criteria_by_id:
             errors.append(f"acceptance criterion has no evidence: {criterion_id}")
+    expected_criterion_ids = set(expected_criteria)
+    for criterion_id in criteria_by_id:
+        if criterion_id not in expected_criterion_ids:
+            errors.append(
+                "evidence contains criterion outside the approved contract: "
+                f"{criterion_id}"
+            )
 
     is_ui = any(
         profile.lower() == "ui"

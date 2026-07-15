@@ -677,7 +677,29 @@ def test_build_task_prompts_scope_to_single_task():
     assert A.EVIDENCE_PATH in ev
     assert "T3:AC-1" in ev and '"version": 2' in ev
     assert "api-service: pytest test_api.py" in ev
+    assert '"scenarios": []' in ev
+    assert '"artifacts": []' in ev
+    assert "code-only/non-scenario contract" in ev
+    assert "Never cite an empty stdout/stderr" in ev
+    assert "Do not rerun a planned command" in ev
     assert A.PLAN_CHANGE_REQUEST_PATH in P.TASK_GRAPH_PREAMBLE
+
+
+def test_ui_evaluator_prompt_requires_scenario_artifact_evidence():
+    task = {
+        "id": "T1",
+        "title": "Check UI",
+        "acceptance": ["The page renders"],
+        "verification": {"profiles": ["ui_admin"]},
+    }
+    prompt = P.build_task_evaluator_prompt(
+        task=task,
+        generator_summary="done",
+        verdict_path=A.EVIDENCE_PATH,
+    )
+    assert '"scenarios": [{"id": "scenario-1"' in prompt
+    assert '"artifacts": [{"id": "screenshot-1"' in prompt
+    assert "UI/visual profiles require passing scenarios" in prompt
 
 
 # ── plan-change-request outcome mapping ──────────────────────────────────────

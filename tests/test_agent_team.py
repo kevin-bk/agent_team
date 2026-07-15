@@ -2526,6 +2526,25 @@ def test_trusted_receipts_replace_evaluator_command_claims(tmp_path):
         workspace_path=str(tmp_path),
     ) == []
 
+    evidence["criteria"].append(
+        {
+            "id": "T1:AC-2",
+            "status": "pass",
+            "evidence_ids": ["receipt-real"],
+        }
+    )
+    issues = validate_verification_evidence(
+        evidence,
+        profiles=["unit"],
+        expected_criteria=["T1:AC-1"],
+        planned_commands=[{"repo": "chizy-chat-bot", "command": "npm test"}],
+        trusted_receipts=[receipt],
+        current_source_sha256="source-current",
+        workspace_path=str(tmp_path),
+    )
+    assert any("outside the approved contract: T1:AC-2" in issue for issue in issues)
+    evidence["criteria"].pop()
+
     evidence["receipt_ids"] = ["receipt-invented"]
     issues = validate_verification_evidence(
         evidence,
@@ -2695,6 +2714,10 @@ async def test_verification_runner_executes_only_approved_commands(
     assert batch.receipts[1]["repo"] is None
     assert batch.receipts[1]["working_directory"] == "."
     assert all(row["status"] == "pass" for row in batch.receipts)
+    assert batch.receipts[0]["stdout_path"].endswith("T1-feature-1.stdout.log")
+    assert batch.receipts[0]["stderr_path"] == ""
+    assert batch.receipts[0]["runtime"]["stdout_bytes"] == len(b"12 passed")
+    assert batch.receipts[0]["runtime"]["stderr_bytes"] == 0
     manifest = json.loads(
         (tmp_path / ".agent-team" / "VERIFICATION_RECEIPTS.json").read_text()
     )
