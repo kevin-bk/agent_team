@@ -128,8 +128,18 @@ class LocalRunBackend:
             final_text = result.final_text
             cancelled = result.cancelled
             cli_usage_text = result.cli_usage_text
+            result_error = getattr(result, "error", None)
 
-            if cancelled:
+            if result_error and not cancelled:
+                await self._finish_error(run_id, result_error, usage, cli_usage_text)
+                await asyncio.to_thread(
+                    _finalize_turn_recovery_sync, run_id, workspace_path
+                )
+                await _log_run_finished(
+                    task_id, actor_id, run_id, RUN_ERROR,
+                    board_id=board_id, agent_alias=agent_alias,
+                )
+            elif cancelled:
                 await self._finish_cancelled(
                     run_id, thread_id, final_text, usage, cli_usage_text
                 )
@@ -229,6 +239,26 @@ class LocalRunBackend:
             cli_usage_text=cli_usage_text,
         )
         await _cancel_ai_coding(thread_id)
+
+    async def _finish_error(
+        self,
+        run_id: str,
+        error: str,
+        usage: dict,
+        cli_usage_text: str | None = None,
+    ) -> None:
+        """Finalize a worker-reported failure whose live error frame was emitted."""
+        await asyncio.to_thread(
+            event_store.append_event, run_id, *ev.run_end(status=RUN_ERROR)
+        )
+        await asyncio.to_thread(
+            event_store.finalize_run,
+            run_id,
+            status=RUN_ERROR,
+            error=error,
+            usage=usage,
+            cli_usage_text=cli_usage_text,
+        )
 
 
 def _load_task_notes(db, task_id: str, *, since=None) -> list[dict]:

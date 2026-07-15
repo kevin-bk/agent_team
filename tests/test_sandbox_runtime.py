@@ -663,6 +663,103 @@ async def test_sidecar_worker_relays_frames(monkeypatch):
     assert kinds.count("text_delta") == 2
     assert result.final_text == "world"
     assert result.usage["total_tokens"] == 7
+    assert result.error is None
+    assert paused["v"] is True
+
+
+async def _run_sidecar_failure_case(monkeypatch, handler):
+    """Run one synthetic sidecar exchange and return its result + frames."""
+    import websockets
+    from agent_team.features.board.runtime.workers import sidecar_acp as sa
+    from agent_team.features.board.runtime.workers.base import TurnContext
+
+    async with websockets.serve(handler, "127.0.0.1", 0) as server:
+        port = server.sockets[0].getsockname()[1]
+        url = f"ws://127.0.0.1:{port}/acp"
+        fake = _FakeSandbox()
+
+        async def _prepare(**kwargs):
+            return fake
+
+        async def _channel(sandbox, profile):
+            return url, {}
+
+        paused = {"v": False}
+
+        async def _pause(task_id, **kwargs):
+            paused["v"] = True
+
+        monkeypatch.setattr(sa, "prepare_task_sandbox", _prepare)
+        monkeypatch.setattr(sa, "open_sidecar_channel", _channel)
+        monkeypatch.setattr(sa, "pause_task_sandbox", _pause)
+        monkeypatch.setattr(sa.event_store, "is_cancel_requested", lambda _run_id: False)
+
+        profile = RuntimeProfile(provider="opensandbox", runtime_strategy="acp_sidecar")
+        worker = sa.SidecarAcpWorker(engine="codex", profile=profile)
+        ctx = TurnContext(
+            run_id="r-failure",
+            agent_alias="cli:codex",
+            prompt="go",
+            workspace_path="/tmp/ws",
+            thread_id="th-failure",
+            task_id="TASK-FAILURE",
+        )
+        emitted: list[tuple[str, dict]] = []
+
+        async def emit(event_type, data):
+            emitted.append((event_type, data))
+
+        result = await worker.run_turn(ctx, emit, asyncio.Event())
+    return result, emitted, paused
+
+
+async def test_sidecar_worker_propagates_unsuccessful_result(monkeypatch):
+    from agent_team.features.board.runtime.sandbox import sidecar_protocol as p
+
+    async def handler(ws):
+        await ws.send(p.encode(p.hello(engines=["codex"])))
+        await ws.recv()
+        await ws.send(p.encode(p.frame("text_delta", {"text": "partial"})))
+        await ws.send(
+            p.encode(
+                p.result(
+                    final_text="Codex ACP agent failed: HTTP status 401",
+                    cancelled=False,
+                    ok=False,
+                )
+            )
+        )
+
+    result, emitted, paused = await _run_sidecar_failure_case(monkeypatch, handler)
+
+    assert result.cancelled is False
+    assert result.error == "Codex ACP agent failed: HTTP status 401"
+    assert any(
+        event_type == "error" and data["error_class"] == "AcpTurnError"
+        for event_type, data in emitted
+    )
+    assert paused["v"] is True
+
+
+async def test_sidecar_worker_rejects_partial_disconnect_as_success(monkeypatch):
+    from agent_team.features.board.runtime.sandbox import sidecar_protocol as p
+
+    async def handler(ws):
+        await ws.send(p.encode(p.hello(engines=["codex"])))
+        await ws.recv()
+        await ws.send(p.encode(p.frame("text_delta", {"text": "partial"})))
+        await ws.close(code=1011, reason="proxy lost")
+
+    result, emitted, paused = await _run_sidecar_failure_case(monkeypatch, handler)
+
+    assert result.cancelled is False
+    assert result.error is not None
+    assert "closed before a terminal result" in result.error
+    assert "code=1011" in result.error
+    assert any(
+        event_type == "error" and data["error_class"] == "SidecarNoResult"
+        for event_type, data in emitted
+    )
     assert paused["v"] is True
 
 
@@ -695,6 +792,7 @@ async def test_sidecar_worker_strict_fail_when_unavailable(monkeypatch):
     result = await worker.run_turn(ctx, emit, asyncio.Event())
     assert any(e[0] == "error" for e in emitted)
     assert "could not be prepared" in result.final_text
+    assert result.error == result.final_text
 
 
 # ─── credential injection (config_dir mounts from the AI Code pool) ────────

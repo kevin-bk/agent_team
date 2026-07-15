@@ -1546,6 +1546,76 @@ async def test_local_backend_drives_run_and_persists_events(db, monkeypatch, tmp
     assert refreshed.total_tokens == 5
 
 
+async def test_local_backend_persists_worker_reported_failure(db, monkeypatch, tmp_path):
+    from agent_team.features.board.repositories import conversations as conv_repo
+    from agent_team.features.board.repositories import runs as runs_repo
+    from agent_team.features.board.runtime import event_store, local_backend, registry
+    from agent_team.features.board.runtime import events as ev
+    from agent_team.features.board.runtime.workers.base import TurnResult
+
+    monkeypatch.setenv("AGENT_TEAM_WORKSPACE_ROOT", str(tmp_path))
+    board = boards_repo.create_board(
+        db, name="Failure board", description=None, columns=None, owner_id=None
+    )
+    db.flush()
+    task = tasks_repo.create_task(
+        db,
+        board_id=board.id,
+        title="Fail safely",
+        description=None,
+        status="todo",
+        assignee_id=None,
+        labels=None,
+        priority=None,
+        created_by=None,
+    )
+    conversation = conv_repo.get_or_create_active_conversation(
+        db, task_id=task.id, agent_alias="alice"
+    )
+    run = runs_repo.create_run(
+        db,
+        task_id=task.id,
+        conversation=conversation,
+        agent_alias="alice",
+        trigger="mention",
+        actor_id=None,
+        prompt="do it",
+    )
+    db.commit()
+
+    class _FailedWorker:
+        async def run_turn(self, ctx, emit, cancel):
+            await emit(*ev.text_delta("partial"))
+            await emit(
+                *ev.error(
+                    error_class="SidecarNoResult",
+                    message="connection closed before terminal result",
+                )
+            )
+            return TurnResult(
+                final_text="",
+                cancelled=False,
+                usage=ctx.usage,
+                error="connection closed before terminal result",
+            )
+
+    monkeypatch.setattr(local_backend, "resolve_worker", lambda *a, **k: _FailedWorker())
+    handle = registry.register(run.id)
+    await local_backend.LocalRunBackend()._drive(run.id, handle)
+
+    frames = event_store.list_events(run.id)
+    assert [frame["type"] for frame in frames][-2:] == [
+        ev.EVENT_ERROR,
+        ev.EVENT_RUN_END,
+    ]
+    assert frames[-1]["data"]["status"] == ev.RUN_ERROR
+    db.expire_all()
+    refreshed = runs_repo.get_run(db, run.id)
+    assert refreshed.status == ev.RUN_ERROR
+    assert refreshed.error == "connection closed before terminal result"
+    assert refreshed.final_answer is None
+
+
 # ---------------------------------------------------------------------------
 # Worker resolution + CLI run-control policies
 # ---------------------------------------------------------------------------
@@ -1608,6 +1678,46 @@ async def test_acp_worker_threads_permission_and_idle(monkeypatch):
     assert captured["idle_timeout_seconds"] == 42
     assert result.final_text == "hi"
     assert result.cancelled is False
+
+
+async def test_acp_worker_reports_unsuccessful_direct_run(monkeypatch):
+    import asyncio
+
+    from agent_team.features.board.runtime.workers import acp_cli
+    from agent_team.features.board.runtime.workers.base import TurnContext
+
+    class _FailedRun:
+        def __init__(self, **kwargs):
+            self.final_text = "Codex ACP agent failed: stream disconnected"
+            self.cancelled = False
+            self.ok = False
+            self.cli_usage_text = None
+            self.usage = {"total_tokens": 3}
+
+        async def stream_frames(self, cancel):
+            if False:  # pragma: no cover - generator with no frames
+                yield ("", {})
+
+    monkeypatch.setattr(acp_cli, "DirectCliRun", _FailedRun)
+    worker = acp_cli.AcpCliWorker(engine="codex")
+    ctx = TurnContext(
+        run_id="r-failed",
+        agent_alias="cli:codex",
+        prompt="p",
+        workspace_path="/tmp/ws",
+        thread_id="t-failed",
+    )
+    emitted: list[tuple[str, dict]] = []
+
+    async def emit(event_type, data):
+        emitted.append((event_type, data))
+
+    result = await worker.run_turn(ctx, emit, asyncio.Event())
+
+    assert result.error == "Codex ACP agent failed: stream disconnected"
+    assert result.cancelled is False
+    assert emitted[-1][0] == "error"
+    assert emitted[-1][1]["error_class"] == "AcpTurnError"
 
 
 # ---------------------------------------------------------------------------
@@ -3336,6 +3446,57 @@ def test_thread_messages_reconstructs_user_and_assistant_turns(db):
     kinds = [b["type"] for b in msgs[1].content]
     assert kinds == ["text", "tool_use", "tool_result"]
     assert msgs[1].content[0]["text"] == "Hello"
+
+
+def test_thread_messages_preserves_partial_text_and_terminal_error(db):
+    from agent_team.features.board.repositories import (
+        conversations as conversations_repo,
+    )
+    from agent_team.features.board.repositories import messages as messages_repo
+    from agent_team.features.board.repositories import runs as runs_repo
+    from agent_team.features.board.runtime import event_store
+    from agent_team.features.board.runtime import events as ev
+
+    task = _make_task(db)
+    conv = conversations_repo.get_or_create_active_conversation(
+        db, task_id=task.id, agent_alias="cli:codex"
+    )
+    run = runs_repo.create_run(
+        db,
+        task_id=task.id,
+        conversation=conv,
+        agent_alias="cli:codex",
+        trigger="mention",
+        actor_id=None,
+        prompt="work",
+    )
+    db.commit()
+
+    event_store.append_event(run.id, *ev.text_delta("Partial work"))
+    event_store.append_event(
+        run.id,
+        *ev.error(
+            error_class="AcpTurnError",
+            message="Codex ACP agent failed: HTTP status 401",
+        ),
+    )
+    event_store.finalize_run(
+        run.id,
+        status=ev.RUN_ERROR,
+        error="Codex ACP agent failed: HTTP status 401",
+    )
+
+    msgs = messages_repo.list_thread_messages(
+        db, conversation=conv, agent_display="Codex"
+    )
+    assistant = msgs[1]
+    assert [block["type"] for block in assistant.content] == ["text", "error"]
+    assert assistant.content[0]["text"] == "Partial work"
+    assert assistant.content[1] == {
+        "type": "error",
+        "error_class": "AcpTurnError",
+        "message": "Codex ACP agent failed: HTTP status 401",
+    }
 
 
 def test_thread_messages_strips_leaked_tool_json_from_old_events(db):

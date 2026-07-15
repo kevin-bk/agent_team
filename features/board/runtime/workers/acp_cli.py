@@ -20,6 +20,7 @@ import os
 import time
 
 from agent_team.features.board.runtime import event_store
+from agent_team.features.board.runtime import events as ev
 from agent_team.features.board.runtime.workers.base import (
     EmitFn,
     PermissionMode,
@@ -114,9 +115,14 @@ class AcpCliWorker:
             await emit(event_type, data)
         cancelled = run.cancelled or cancel.is_set()
         ctx.usage.update(run.usage)
+        error = None
+        if not getattr(run, "ok", True) and not cancelled:
+            error = run.final_text or f"{self.engine or 'ACP'} turn failed."
+            await emit(*ev.error(error_class="AcpTurnError", message=error))
         return TurnResult(
             final_text=run.final_text,
             cancelled=cancelled,
             usage=ctx.usage,
             cli_usage_text=run.cli_usage_text,
+            error=error,
         )

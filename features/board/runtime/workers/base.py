@@ -92,6 +92,10 @@ class TurnResult:
     #: Direct-CLI context-window gauge text (e.g. "45,000/200,000 tokens"), or
     #: ``None`` for engines/paths that do not report one.
     cli_usage_text: str | None = None
+    #: Terminal failure text when the worker completed cleanly at the transport
+    #: layer but the underlying agent turn did not. ``None`` preserves the
+    #: historical success/cancel contract for workers that do not set it.
+    error: str | None = None
 
 
 #: Persists one streamed frame. The backend's implementation offloads large tool

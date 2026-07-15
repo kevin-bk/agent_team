@@ -122,9 +122,11 @@ class SidecarAcpWorker:
         cli_usage_text: str | None = None
         cancel_sent = False
         last_poll = 0.0
-        errored = False
         frames_emitted = 0
         close_info = ""
+        received_result = False
+        result_ok = True
+        terminal_error = ""
 
         try:
             async with websockets.connect(
@@ -165,8 +167,11 @@ class SidecarAcpWorker:
                     except TimeoutError:
                         continue
                     except websockets.ConnectionClosed as closed:
-                        code = getattr(closed, "code", None)
-                        reason = (getattr(closed, "reason", "") or "").strip()
+                        received_close = getattr(closed, "rcvd", None)
+                        code = getattr(received_close, "code", None)
+                        reason = (
+                            getattr(received_close, "reason", "") or ""
+                        ).strip()
                         close_info = f"code={code}" + (f" reason={reason}" if reason else "")
                         break
 
@@ -181,23 +186,29 @@ class SidecarAcpWorker:
                             frames_emitted += 1
                             await emit(event_type, data)
                     elif mtype == proto.MSG_RESULT:
+                        received_result = True
                         final_text = str(msg.get("final_text") or "")
                         cancelled = cancelled or bool(msg.get("cancelled"))
+                        # Protocol v1 has always included ``ok``. Defaulting to
+                        # true keeps compatibility with an older/custom sidecar
+                        # that may omit it.
+                        result_ok = bool(msg.get("ok", True))
                         cli_usage_text = msg.get("cli_usage_text")
                         usage = msg.get("usage") or {}
                         if isinstance(usage, dict):
                             ctx.usage.update(usage)
                         break
                     elif mtype == proto.MSG_ERROR:
-                        errored = True
-                        err_text = str(msg.get("message") or "sidecar error")
+                        terminal_error = str(msg.get("message") or "sidecar error")
+                        if masker.active:
+                            terminal_error = masker(terminal_error)
                         logger.error(
                             "SidecarAcpWorker: sidecar error for run=%s task=%s "
                             "engine=%s: %s",
-                            ctx.run_id, ctx.task_id, self.engine, err_text,
+                            ctx.run_id, ctx.task_id, self.engine, terminal_error,
                         )
                         await emit(*ev.error(
-                            error_class="SidecarError", message=err_text,
+                            error_class="SidecarError", message=terminal_error,
                         ))
                         break
                     # MSG_HELLO and unknown types are ignored.
@@ -207,25 +218,28 @@ class SidecarAcpWorker:
                 f"Could not reach the in-sandbox ACP server: {exc}",
             )
 
-        # The turn produced nothing (no frames, empty final text) and we didn't
-        # cancel or surface an error: the in-sandbox CLI likely failed to launch
-        # or authenticate — whether the socket dropped or an empty result came
-        # back. Pull the sidecar log so the failure is visible, not a blank reply.
-        if (
-            not cancelled
-            and not errored
-            and frames_emitted == 0
-            and not final_text.strip()
-        ):
+        # A successful turn must end with MSG_RESULT. A socket close after some
+        # frames is still a failed turn; previously it was silently treated as
+        # success, which finalized the run as ``done`` and made F5 unable to
+        # reattach. User cancellation is the one intentional no-result path.
+        if not cancelled and not terminal_error and not received_result:
             log_tail = await self._tail_sidecar_log(sandbox, profile.sidecar_port)
             detail = f" ({close_info})" if close_info else ""
-            message = (
-                "The in-sandbox ACP turn produced no output" + detail
-                + " — the CLI likely failed to start or authenticate inside the "
-                "sandbox (e.g. missing model credentials)."
-            )
+            if frames_emitted:
+                message = (
+                    "The in-sandbox ACP connection closed before a terminal result"
+                    + detail
+                )
+            else:
+                message = (
+                    "The in-sandbox ACP turn produced no output" + detail
+                    + " — the CLI likely failed to start or authenticate inside the "
+                    "sandbox (e.g. missing model credentials)."
+                )
             if log_tail:
                 message += f"\n\n--- sidecar log (tail) ---\n{log_tail}"
+            if masker.active:
+                message = masker(message)
             # Mirror to the host log too — run events are easy to miss in the UI
             # when a turn dies this early, and operators watch the console.
             logger.error(
@@ -237,17 +251,30 @@ class SidecarAcpWorker:
                 log_tail or "(sidecar log empty/unreadable)",
             )
             await emit(*ev.error(error_class="SidecarNoResult", message=message))
-            # Surface it as the turn's reply too (like _fail does) — an error
-            # event alone renders as a silent, empty turn in the chat UI.
-            final_text = message
+            terminal_error = message
+
+        if (
+            not cancelled
+            and received_result
+            and not result_ok
+            and not terminal_error
+        ):
+            terminal_error = (
+                final_text.strip() or "The ACP agent reported an unsuccessful turn."
+            )
+            if masker.active:
+                terminal_error = masker(terminal_error)
+            await emit(*ev.error(error_class="AcpTurnError", message=terminal_error))
 
         if masker.active:
             final_text = masker(final_text)
+            terminal_error = masker(terminal_error)
         return TurnResult(
             final_text=final_text,
             cancelled=cancelled,
             usage=ctx.usage,
             cli_usage_text=cli_usage_text,
+            error=terminal_error or None,
         )
 
     async def _tail_sidecar_log(self, sandbox: Any, port: int) -> str:
@@ -268,4 +295,9 @@ class SidecarAcpWorker:
         self, ctx: TurnContext, emit: EmitFn, error_class: str, message: str
     ) -> TurnResult:
         await emit(*ev.error(error_class=error_class, message=message))
-        return TurnResult(final_text=message, cancelled=False, usage=ctx.usage)
+        return TurnResult(
+            final_text=message,
+            cancelled=False,
+            usage=ctx.usage,
+            error=message,
+        )

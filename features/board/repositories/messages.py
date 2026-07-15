@@ -18,6 +18,7 @@ from agent_team.features.board.models import AgentTeamConversation, AgentTeamRun
 from agent_team.features.board.repositories import runs as runs_repo
 from agent_team.features.board.runtime import event_store
 from agent_team.features.board.runtime.events import (
+    EVENT_ERROR,
     EVENT_TEXT_DELTA,
     EVENT_THINKING,
     EVENT_TOOL_USE_END,
@@ -80,6 +81,14 @@ def _assistant_blocks(events: list[dict]) -> tuple[list[dict], str]:
                     # Full output lives in the tool-output store; the flag lets
                     # the UI offer "show more" after a reload too.
                     "truncated": bool(data.get("truncated")),
+                }
+            )
+        elif ftype == EVENT_ERROR:
+            blocks.append(
+                {
+                    "type": "error",
+                    "error_class": str(data.get("error_class") or "AgentError"),
+                    "message": str(data.get("message") or "The agent turn failed."),
                 }
             )
     # Sanitize on read too: runs recorded before tool-use blocks were filtered
@@ -146,7 +155,15 @@ def _assistant_turn(
     agent_display: str,
 ) -> MessageDTO:
     blocks, text = _assistant_blocks(event_store.list_events(run.id))
-    final = strip_tool_blocks(run.final_answer or "") or text
+    # Failed turns often have useful partial text plus a terminal error. Keep
+    # both, including legacy runs that stored ``run.error`` before error content
+    # blocks were reconstructed.
+    has_error_block = any(block.get("type") == "error" for block in blocks)
+    if run.error and not has_error_block:
+        blocks.append(
+            {"type": "error", "error_class": "AgentError", "message": run.error}
+        )
+    final = strip_tool_blocks(run.final_answer or "") or run.error or text
     if not blocks and final:
         blocks = [{"type": "text", "text": final}]
     return MessageDTO(

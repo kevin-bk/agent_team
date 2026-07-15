@@ -149,6 +149,22 @@ export function blocksFromHistory(
             };
           }
         }
+      } else if (type === "error") {
+        const errorClass =
+          typeof block.error_class === "string"
+            ? block.error_class
+            : "AgentError";
+        const message =
+          typeof block.message === "string"
+            ? block.message
+            : "The agent turn failed.";
+        out.push({
+          kind: "notice",
+          id: nid("n"),
+          variant: "error",
+          text: `${errorClass}: ${message}`,
+          createdAtMs: m.created_at_ms,
+        });
       }
       // image / file blocks only appear on user messages (handled above).
     }
