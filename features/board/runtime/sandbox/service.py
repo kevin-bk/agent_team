@@ -409,6 +409,28 @@ def _unmark_busy(task_id: str) -> None:
         _busy_counts.pop(task_id, None)
 
 
+async def _finish_prepare(
+    sandbox: Sandbox,
+    *,
+    task_id: str,
+    board_id: str,
+    profile: RuntimeProfile,
+    host_workspace_path: str,
+) -> Sandbox:
+    """Bootstrap assigned repos, then mark the sandbox busy for its caller."""
+    from agent_team.features.repos.bootstrap import run_repo_bootstraps
+
+    await run_repo_bootstraps(
+        sandbox,
+        task_id=task_id,
+        board_id=board_id,
+        profile=profile,
+        host_workspace_path=host_workspace_path,
+    )
+    _mark_busy(task_id)
+    return sandbox
+
+
 async def prepare_task_sandbox(
     *,
     task_id: str,
@@ -436,20 +458,31 @@ async def prepare_task_sandbox(
     if sb is not None:
         if sb.state == "open":
             manager.mark_used(task_id)
-            _mark_busy(task_id)
-            return sb
+            return await _finish_prepare(
+                sb,
+                task_id=task_id,
+                board_id=board_id,
+                profile=profile,
+                host_workspace_path=host_workspace_path,
+            )
         if sb.state == "paused":
             logger.info("agent_team runtime: resuming paused sandbox for task=%s", task_id)
             try:
                 await sb.resume()
-                manager.mark_used(task_id)
-                _mark_busy(task_id)
-                return sb
             except SandboxError:
                 logger.warning(
                     "agent_team runtime: resume failed for task=%s; reopening fresh",
                     task_id,
                     exc_info=True,
+                )
+            else:
+                manager.mark_used(task_id)
+                return await _finish_prepare(
+                    sb,
+                    task_id=task_id,
+                    board_id=board_id,
+                    profile=profile,
+                    host_workspace_path=host_workspace_path,
                 )
         else:
             # closed / broken (e.g. runtime idle-closed or lost on restart) —
@@ -467,8 +500,13 @@ async def prepare_task_sandbox(
         reattached = await _try_reattach_sandbox(manager, task_id, profile)
         if reattached is not None:
             manager.mark_used(task_id)
-            _mark_busy(task_id)
-            return reattached
+            return await _finish_prepare(
+                reattached,
+                task_id=task_id,
+                board_id=board_id,
+                profile=profile,
+                host_workspace_path=host_workspace_path,
+            )
 
     # Credential injection, driven by the board's staffed coding agents +
     # remote MCP hosts. Only for the isolated provider — the local runtime uses
@@ -551,8 +589,13 @@ async def prepare_task_sandbox(
             await manager.close(task_id)
             _store_task_sandbox_id(task_id, None)
             raise
-    _mark_busy(task_id)
-    return sb
+    return await _finish_prepare(
+        sb,
+        task_id=task_id,
+        board_id=board_id,
+        profile=profile,
+        host_workspace_path=host_workspace_path,
+    )
 
 
 async def ensure_task_sandbox_running(

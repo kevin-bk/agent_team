@@ -56,6 +56,7 @@ export function RepoDialog({
   const [name, setName] = useState("");
   const [gitUrl, setGitUrl] = useState("");
   const [branch, setBranch] = useState("");
+  const [bootstrapCommand, setBootstrapCommand] = useState("");
   const [authType, setAuthType] = useState<RepoAuthType>("none");
   const [authUsername, setAuthUsername] = useState("");
   const [secret, setSecret] = useState("");
@@ -72,6 +73,7 @@ export function RepoDialog({
     setName(repo?.name ?? "");
     setGitUrl(repo?.git_url ?? "");
     setBranch(repo?.default_branch ?? "");
+    setBootstrapCommand(repo?.bootstrap_command ?? "");
     setAuthType(repo?.auth_type ?? "none");
     setAuthUsername(repo?.auth_username ?? "");
     setSecret("");
@@ -106,6 +108,7 @@ export function RepoDialog({
       name: name.trim(),
       git_url: gitUrl.trim(),
       default_branch: branch.trim() || null,
+      bootstrap_command: bootstrapCommand.trim() || null,
       auth_type: authType,
       auth_username: authType === "token" ? authUsername.trim() || null : null,
       ...(authSecret === undefined ? {} : { auth_secret: authSecret }),
@@ -159,6 +162,21 @@ export function RepoDialog({
               onChange={(e) => setBranch(e.target.value)}
               placeholder="leave empty for the remote default"
             />
+          </Field>
+
+          <Field label="Task bootstrap command (optional)">
+            <Textarea
+              value={bootstrapCommand}
+              onChange={(e) => setBootstrapCommand(e.target.value)}
+              placeholder="npm ci --prefer-offline --no-audit"
+              rows={3}
+              className="font-mono text-xs"
+            />
+            <p className="pt-1 text-[12px] text-muted-foreground">
+              Runs inside this repository in the task runtime before the first
+              agent turn. It runs again after a fresh clone or when this command
+              changes. Use deterministic, non-interactive setup only.
+            </p>
           </Field>
 
           <Field label="Authentication">

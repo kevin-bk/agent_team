@@ -299,6 +299,12 @@ def prepare_task_repos(db: Session, task: AgentTeamTask) -> list[dict]:
                 "path": repo.slug,
                 "branch": work_branch,
                 "base_branch": base_branch or None,
+                # The runtime executes this before the first agent turn. Keep
+                # only the boolean in prompt metadata so a long shell command
+                # does not waste model context on every task.
+                "bootstrap_configured": bool(
+                    (getattr(repo, "bootstrap_command", None) or "").strip()
+                ),
                 # Effective push = admin master gate AND this board's opt-in.
                 "can_push": can_push,
                 # Marks the board's knowledge base so the run can advertise it.

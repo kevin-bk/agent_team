@@ -19,6 +19,7 @@ class RepoCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     git_url: str = Field(min_length=1, max_length=1024)
     default_branch: str | None = Field(default=None, max_length=255)
+    bootstrap_command: str | None = Field(default=None, max_length=10000)
     auth_type: AuthType = "none"
     auth_username: str | None = Field(default=None, max_length=255)
     #: PAT or SSH private key. Stored as-is, never echoed back.
@@ -35,6 +36,7 @@ class RepoUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     git_url: str | None = Field(default=None, min_length=1, max_length=1024)
     default_branch: str | None = Field(default=None, max_length=255)
+    bootstrap_command: str | None = Field(default=None, max_length=10000)
     auth_type: AuthType | None = None
     auth_username: str | None = Field(default=None, max_length=255)
     #: Omit to keep the current secret; send "" to clear it.
@@ -55,6 +57,7 @@ class RepoDTO(BaseModel):
     slug: str
     git_url: str
     default_branch: str | None
+    bootstrap_command: str | None = None
     auth_type: str
     auth_username: str | None
     #: True when a credential is stored (the secret itself is never exposed).

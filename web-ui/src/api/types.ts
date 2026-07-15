@@ -1050,6 +1050,8 @@ export interface RepoDTO {
   slug: string;
   git_url: string;
   default_branch: string | null;
+  /** Runs once inside each fresh task clone before the first agent turn. */
+  bootstrap_command: string | null;
   auth_type: RepoAuthType;
   auth_username: string | null;
   /** True when a credential is stored — the secret itself is never returned. */
@@ -1076,6 +1078,7 @@ export interface RepoCreateBody {
   name: string;
   git_url: string;
   default_branch?: string | null;
+  bootstrap_command?: string | null;
   auth_type?: RepoAuthType;
   auth_username?: string | null;
   auth_secret?: string | null;
@@ -1091,6 +1094,7 @@ export interface RepoUpdateBody {
   name?: string;
   git_url?: string;
   default_branch?: string | null;
+  bootstrap_command?: string | null;
   auth_type?: RepoAuthType;
   auth_username?: string | null;
   /** Omit to keep the stored secret; send "" to clear it. */

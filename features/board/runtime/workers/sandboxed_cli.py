@@ -38,6 +38,7 @@ from agent_team.features.board.runtime.workers.base import (
     TurnContext,
     TurnResult,
 )
+from agent_team.features.repos.bootstrap import RepoBootstrapError
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,16 @@ class SandboxedCliWorker:
                 host_workspace_path=ctx.workspace_path,
                 profile=profile,
                 board_id=ctx.board_id,
+            )
+        except RepoBootstrapError as exc:
+            # A repository bootstrap failure is a deterministic workspace
+            # preparation error, not a sandbox-provider outage. Never bypass it
+            # by falling back to a host agent turn.
+            return await self._fail(
+                ctx,
+                emit,
+                "RepositoryBootstrapFailed",
+                str(exc),
             )
         except SandboxError as exc:
             if profile.strict_isolation or not profile.allow_fallback:

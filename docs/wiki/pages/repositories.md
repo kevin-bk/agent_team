@@ -41,6 +41,7 @@ Task copy : <task workspace>/<repo_slug>/
 | `git_service.py` | clone/pull/status with credential injection, all via `asyncio.to_thread`; temp SSH key cleaned in `finally`. |
 | `paths.py` | canonical + task-copy path helpers. |
 | `task_copy.py` | `prepare_task_repos(db, task)` → `git clone --local` + checkout branch; `cleanup_task_repos`; `reset_task_repos_by_id` (pull canonical + re-clone). |
+| `bootstrap.py` | Runs each repo's optional setup command inside the task runtime once per fresh clone. |
 | `scheduler.py` | `RepoPullTicker` (asyncio + `croniter` + `fcntl` lock). |
 | `git_cred_helper.py` | legacy host-only DB credential helper, retained for compatibility. |
 | `router.py` | `/repos` CRUD (admin) + `/boards/{id}/repos` assign endpoints. |
@@ -86,6 +87,27 @@ copies and re-clones them** from the now-updated canonical. It is **destructive*
 — un-pushed work on the task branch is discarded. Surfaced as a **"Re-prepare"**
 button in the cockpit's *Code workspace* card (`TaskRepoCard.tsx`), behind a
 confirm dialog.
+
+## Automatic task bootstrap
+
+A repository may define one optional `bootstrap_command`, for example:
+
+```bash
+npm ci --prefer-offline --no-audit
+```
+
+After task repos are prepared and the task sandbox is open, Agent Team executes
+the command with that repository as `cwd`, before the first agent turn. A
+successful run writes a fingerprint marker under the task clone's `.git`
+directory, so later turns and sandbox pause/resume do not rerun it or dirty
+source. A reset/re-clone removes the marker and runs setup again; editing the
+configured command also changes the fingerprint and triggers a new run.
+
+Bootstrap commands are administrator-controlled shell commands. Keep them
+deterministic, non-interactive, and safe to retry. Failure blocks the agent turn
+with the repository slug, exit code, timeout state, and a bounded output tail.
+The default timeout is 10 minutes and can be changed with
+`AGENT_TEAM_REPO_BOOTSTRAP_TIMEOUT_SECONDS` (30–3600 seconds).
 
 ## Scheduler
 

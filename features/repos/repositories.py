@@ -51,6 +51,7 @@ def create_repo(db: Session, *, owner_id: str | None, payload: RepoCreate) -> Ag
         slug=_unique_slug(db, payload.name),
         git_url=payload.git_url.strip(),
         default_branch=(payload.default_branch or None),
+        bootstrap_command=(payload.bootstrap_command or "").strip() or None,
         auth_type=payload.auth_type,
         auth_username=(payload.auth_username or None),
         auth_secret=(payload.auth_secret or None),
@@ -80,6 +81,8 @@ def update_repo(db: Session, repo: AgentTeamRepo, payload: RepoUpdate) -> AgentT
         repo.git_url = data["git_url"].strip()
     if "default_branch" in data:
         repo.default_branch = data["default_branch"] or None
+    if "bootstrap_command" in data:
+        repo.bootstrap_command = (data["bootstrap_command"] or "").strip() or None
     if "auth_type" in data and data["auth_type"]:
         repo.auth_type = data["auth_type"]
     if "auth_username" in data:
@@ -250,6 +253,7 @@ def serialize_repo(db: Session, repo: AgentTeamRepo) -> RepoDTO:
         slug=repo.slug,
         git_url=repo.git_url,
         default_branch=repo.default_branch,
+        bootstrap_command=repo.bootstrap_command,
         auth_type=repo.auth_type,
         auth_username=repo.auth_username,
         has_secret=repo.has_secret(),

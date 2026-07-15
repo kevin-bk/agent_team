@@ -577,6 +577,97 @@ async def test_sandboxed_worker_strict_no_host_fallback(monkeypatch):
     assert "could not be prepared" in result.final_text
 
 
+async def test_sandboxed_worker_bootstrap_failure_never_falls_back(monkeypatch):
+    from agent_team.features.board.runtime.workers import sandboxed_cli as sc
+    from agent_team.features.board.runtime.workers.base import TurnContext
+    from agent_team.features.repos.bootstrap import RepoBootstrapError
+
+    async def _prepare(**kwargs):
+        raise RepoBootstrapError("Repository bootstrap failed for 'frontend'")
+
+    host_spawned = {"v": False}
+
+    async def _fake_fallback(self, ctx, emit, cancel):
+        host_spawned["v"] = True
+        raise AssertionError("bootstrap failures must not run an agent on the host")
+
+    monkeypatch.setattr(sc, "prepare_task_sandbox", _prepare)
+    monkeypatch.setattr(
+        sc,
+        "resolve_profile",
+        lambda *a, **k: RuntimeProfile(
+            provider="opensandbox", strict_isolation=False, allow_fallback=True
+        ),
+    )
+    monkeypatch.setattr(sc.SandboxedCliWorker, "_fallback_host", _fake_fallback)
+
+    worker = sc.SandboxedCliWorker(engine="claude")
+    ctx = TurnContext(
+        run_id="r3",
+        agent_alias="cli:claude",
+        prompt="go",
+        workspace_path="/tmp/ws",
+        thread_id="th3",
+        task_id="TASK-11",
+    )
+    emitted: list[tuple[str, dict]] = []
+
+    async def emit(t, d):
+        emitted.append((t, d))
+
+    result = await worker.run_turn(ctx, emit, asyncio.Event())
+    assert host_spawned["v"] is False
+    assert "Repository bootstrap failed" in result.final_text
+    assert any(e[0] == "error" for e in emitted)
+
+
+async def test_resumed_sandbox_bootstrap_failure_does_not_reopen(monkeypatch, tmp_path):
+    from agent_team.features.board.runtime.sandbox import service as svc
+    from agent_team.features.repos import bootstrap
+    from agent_team.features.repos.bootstrap import RepoBootstrapError
+
+    class PausedSandbox:
+        state = "paused"
+
+        async def resume(self):
+            self.state = "open"
+
+    class ExistingManager:
+        def __init__(self):
+            self.sandbox = PausedSandbox()
+            self.close_calls = 0
+
+        async def start_gc(self):
+            pass
+
+        def get(self, _task_id):
+            return self.sandbox
+
+        def mark_used(self, _task_id):
+            pass
+
+        async def close(self, _task_id):
+            self.close_calls += 1
+
+    manager = ExistingManager()
+    monkeypatch.setattr(svc, "get_manager", lambda _profile=None: manager)
+
+    async def _failed_bootstrap(*_args, **_kwargs):
+        raise RepoBootstrapError("npm ci failed")
+
+    monkeypatch.setattr(bootstrap, "run_repo_bootstraps", _failed_bootstrap)
+
+    with pytest.raises(RepoBootstrapError, match="npm ci failed"):
+        await svc.prepare_task_sandbox(
+            task_id="TASK-12",
+            board_id="board-1",
+            host_workspace_path=str(tmp_path),
+            profile=RuntimeProfile(provider="opensandbox"),
+        )
+
+    assert manager.close_calls == 0
+
+
 # ─── ACP sidecar protocol + worker (Phase 2) ─────────────────────────────
 
 

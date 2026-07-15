@@ -74,6 +74,10 @@ class AgentTeamRepo(Base):
     git_url: Mapped[str] = mapped_column(String(1024), nullable=False)
     #: Branch to track; empty/null = the remote's default branch (HEAD).
     default_branch: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    #: Optional administrator-defined setup command. The task runtime executes
+    #: it inside this repo after a fresh task clone and before the first agent
+    #: turn (for example ``npm ci`` or ``uv sync``).
+    bootstrap_command: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # ── credentials (write-only; never returned to the client) ────────────
     #: One of ``none`` / ``token`` / ``ssh``.

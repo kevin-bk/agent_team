@@ -4862,6 +4862,26 @@ def test_build_task_context_includes_repos_only_on_first_turn(db):
     assert "backend/" not in delta
 
 
+def test_build_task_context_mentions_automatic_repo_bootstrap(db):
+    from agent_team.features.board.runtime.context import build_task_context
+
+    task = _make_task(db)
+    full = build_task_context(
+        task,
+        "Do it.",
+        repos=[
+            {
+                "slug": "frontend",
+                "path": "frontend",
+                "branch": "task/t-1",
+                "bootstrap_configured": True,
+            }
+        ],
+        full=True,
+    )
+    assert "dependencies/setup prepared automatically by the runtime" in full
+
+
 def test_repo_push_policy_roundtrip(db):
     from agent_team.features.repos import repositories as repos_repo
     from agent_team.features.repos.schemas import RepoCreate, RepoUpdate
@@ -4890,6 +4910,27 @@ def test_repo_push_policy_roundtrip(db):
     assert dto2.allow_push is False
     assert dto2.committer_name is None
     assert dto2.committer_email is None
+
+
+def test_repo_bootstrap_command_roundtrip(db):
+    from agent_team.features.repos import repositories as repos_repo
+    from agent_team.features.repos.schemas import RepoCreate, RepoUpdate
+
+    repo = repos_repo.create_repo(
+        db,
+        owner_id="owner1",
+        payload=RepoCreate(
+            name="Frontend",
+            git_url="https://example.com/frontend.git",
+            bootstrap_command="  npm ci --prefer-offline  ",
+        ),
+    )
+    assert repos_repo.serialize_repo(db, repo).bootstrap_command == (
+        "npm ci --prefer-offline"
+    )
+
+    repos_repo.update_repo(db, repo, RepoUpdate(bootstrap_command=""))
+    assert repos_repo.serialize_repo(db, repo).bootstrap_command is None
 
 
 def _prepare_pushable_task(db, tmp_path, monkeypatch, *, allow_push: bool):

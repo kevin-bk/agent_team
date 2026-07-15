@@ -181,6 +181,7 @@ export function ReposPage() {
                         <Badge variant="outline">{repo.auth_type === "ssh" ? "SSH" : "Token"}</Badge>
                       )}
                       {repo.allow_push && <Badge variant="outline">Push</Badge>}
+                      {repo.bootstrap_command && <Badge variant="outline">Bootstrap</Badge>}
                     </div>
                     <div className="mt-0.5 truncate text-[12.5px] text-muted-foreground">
                       {repo.git_url}

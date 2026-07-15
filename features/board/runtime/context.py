@@ -100,6 +100,8 @@ def _format_repos(
         if repo.get("can_push"):
             suffix += " — push enabled"
             pushable = True
+        if repo.get("bootstrap_configured"):
+            suffix += " — dependencies/setup prepared automatically by the runtime"
         repo_path = workspace_visible_path(workspace_display_path, f"{repo['path']}/")
         out.append(f"- `{repo_path}`{suffix}")
     if has_wiki:

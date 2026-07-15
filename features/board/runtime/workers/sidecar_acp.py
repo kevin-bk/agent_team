@@ -38,6 +38,7 @@ from agent_team.features.board.runtime.workers.base import (
     TurnContext,
     TurnResult,
 )
+from agent_team.features.repos.bootstrap import RepoBootstrapError
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,10 @@ class SidecarAcpWorker:
                 board_id=ctx.board_id,
             )
             ws_url, ws_headers = await open_sidecar_channel(sandbox, profile)
+        except RepoBootstrapError as exc:
+            return await self._fail(
+                ctx, emit, "RepositoryBootstrapFailed", str(exc)
+            )
         except SandboxError as exc:
             return await self._fail(
                 ctx, emit, "SandboxUnavailable",
