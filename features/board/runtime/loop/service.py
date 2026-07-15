@@ -705,7 +705,7 @@ async def run_autonomous_loop(
     ``TASKS.json`` exists), execution is scheduled task-by-task from that file
     instead of running one loop over the whole objective.
     """
-    workspace_path, board_id = await asyncio.to_thread(
+    workspace_path, board_id, _approved_contract_etag = await asyncio.to_thread(
         _task_workspace_and_board, task_id
     )
     # The board's planning house rules ride into every strict phase prompt

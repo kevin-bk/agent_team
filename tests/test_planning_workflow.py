@@ -8,12 +8,95 @@ controller's strict preamble, and the evidence→verdict mapping.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
+from agent_team.features.board.runtime.loop import planning as planning_module
 from agent_team.features.board.runtime.loop import planning_artifacts as A
 from agent_team.features.board.runtime.loop import planning_prompts as P
+from agent_team.features.board.runtime.loop import service as loop_service
 from agent_team.features.board.runtime.loop.controller import LoopController
+from agent_team.features.board.runtime.loop.status import LoopState
 from agent_team.features.board.runtime.loop.verdict import LoopVerdict
+
+
+@pytest.mark.asyncio
+async def test_planning_job_accepts_extended_task_runtime_context(monkeypatch, tmp_path):
+    """The shared task lookup includes the approved contract fingerprint."""
+    states = []
+    monkeypatch.setattr(
+        planning_module,
+        "_task_workspace_and_board",
+        lambda _task_id: (str(tmp_path), "board-1", "sha256:approved"),
+    )
+    monkeypatch.setattr(
+        planning_module,
+        "_board_planning_settings",
+        lambda _board_id: SimpleNamespace(
+            conventions="", planning_skill="", auto_approve_quick=False
+        ),
+    )
+    monkeypatch.setattr(
+        planning_module,
+        "_agent_visible_workspace",
+        lambda workspace, _board_id: workspace,
+    )
+    monkeypatch.setattr(planning_module, "_board_repo_names", lambda _board_id: [])
+    monkeypatch.setattr(
+        planning_module,
+        "_persist_planning",
+        lambda _task_id, *, state, **_kwargs: states.append(state),
+    )
+    monkeypatch.setattr(planning_module, "_create_loop_run", lambda **_kwargs: "run-1")
+
+    async def failed_run(_run_id):
+        return SimpleNamespace(status="error")
+
+    monkeypatch.setattr(planning_module, "_drive_to_completion", failed_run)
+    monkeypatch.setattr(
+        planning_module.task_journal, "ingest_agent_notes", lambda **_kwargs: None
+    )
+    monkeypatch.setattr(planning_module.task_journal, "record", lambda **_kwargs: None)
+    monkeypatch.setattr(planning_module.artifacts, "questions_pending", lambda _ws: False)
+    monkeypatch.setattr(planning_module.artifacts, "missing_required", lambda _ws: [])
+
+    result = await planning_module.run_planning_job(
+        task_id="task-1", planner_alias="planner", objective="Pilot"
+    )
+
+    assert result is LoopState.FAILED
+    assert states == [LoopState.PLANNING, LoopState.FAILED]
+
+
+@pytest.mark.asyncio
+async def test_autonomous_loop_accepts_extended_task_runtime_context(monkeypatch, tmp_path):
+    """Execution must ignore the approval etag when only workspace/board are needed."""
+    sentinel = object()
+    monkeypatch.setattr(
+        loop_service,
+        "_task_workspace_and_board",
+        lambda _task_id: (str(tmp_path), "board-1", "sha256:approved"),
+    )
+    monkeypatch.setattr(
+        loop_service,
+        "_board_planning_settings",
+        lambda _board_id: SimpleNamespace(conventions=""),
+    )
+    monkeypatch.setattr(loop_service, "_make_status_sink", lambda _board_id: None)
+
+    async def fake_run_loop(**_kwargs):
+        return sentinel
+
+    monkeypatch.setattr(loop_service, "run_loop", fake_run_loop)
+
+    result = await loop_service.run_autonomous_loop(
+        task_id="task-1",
+        agent_alias="generator",
+        evaluator_alias="critic",
+        objective="Pilot",
+    )
+
+    assert result is sentinel
 
 
 # ── artifact path safety ─────────────────────────────────────────────────────
