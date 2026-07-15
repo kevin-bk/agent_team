@@ -4429,8 +4429,7 @@ def test_prepare_task_repos_wires_push_to_host(db, tmp_path, monkeypatch):
 
 
 def test_configure_push_to_host_sets_credential_helper_for_token(db, tmp_path):
-    """Token repos get a credential helper + a 0600 non-secret cred file."""
-    import json
+    """Token repos get a portable helper + a 0600 credential file."""
     import stat as _stat
     import subprocess
 
@@ -4459,19 +4458,48 @@ def test_configure_push_to_host_sets_credential_helper_for_token(db, tmp_path):
     )
     db.commit()
 
-    _configure_push_to_host(dest, repo, task)
+    _configure_push_to_host(dest, repo, task, can_push=True)
 
     helper = subprocess.run(
         ["git", "-C", str(dest), "config", "credential.helper"],
         capture_output=True, text=True,
     ).stdout.strip()
-    assert "git_cred_helper.py" in helper
-    cred = dest / ".git" / "at_cred.json"
+    assert helper == "!./.git/at_git_cred_helper.sh"
+    cred = dest / ".git" / "at_git_credential"
     assert cred.is_file()
-    data = json.loads(cred.read_text())
-    assert data["task_id"] == task.id and data["repo_id"] == repo.id
+    assert cred.read_text() == "username=x-access-token\npassword=tok\n"
     # 0600: not readable/writable by group or other.
     assert _stat.S_IMODE(cred.stat().st_mode) & 0o077 == 0
+
+    # Exercise Git's real helper protocol from a nested directory. This is the
+    # portability property the previous absolute host-Python helper lacked.
+    nested = dest / "nested"
+    nested.mkdir()
+    filled = subprocess.run(
+        ["git", "-C", str(nested), "credential", "fill"],
+        input="protocol=https\nhost=x\n\n",
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert "username=x-access-token" in filled
+    assert "password=tok" in filled
+
+    # Re-preparing after either push gate is disabled removes the materialised
+    # secret and leaves an empty helper list that blocks inherited credentials.
+    _configure_push_to_host(dest, repo, task, can_push=False)
+    assert not cred.exists()
+    assert not (dest / ".git" / "at_git_cred_helper.sh").exists()
+    helpers = subprocess.run(
+        [
+            "git", "-C", str(dest), "config", "--local", "--get-all",
+            "credential.helper",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert helpers == "\n"
 
 
 def test_pre_push_hook_blocks_default_branch():

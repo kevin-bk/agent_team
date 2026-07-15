@@ -10,7 +10,6 @@ other tasks. No credentials are involved (the source is local).
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
@@ -18,7 +17,6 @@ import shlex
 import shutil
 import stat
 import subprocess
-import sys
 from pathlib import Path
 
 from sqlalchemy.orm import Session
@@ -94,8 +92,23 @@ def _ensure_work_branch(dest: str, work_branch: str) -> None:
         _run_git("-C", dest, "checkout", "-B", work_branch)
 
 
-#: git credential helper bundled with the plugin (token auth, live DB lookup).
-_CRED_HELPER_PY = Path(__file__).resolve().parent / "git_cred_helper.py"
+#: Sandbox-portable token credential files.  They live under ``.git`` so they
+#: are never committed; unlike the legacy DB-backed helper they use no host-only
+#: Python path and therefore also work when the workspace is mounted at
+#: ``/workspace`` inside OpenSandbox.
+_TOKEN_CRED_FILE = "at_git_credential"
+_TOKEN_HELPER_FILE = "at_git_cred_helper.sh"
+_LEGACY_CRED_FILE = "at_cred.json"
+
+
+def _token_helper_body() -> str:
+    """Return a tiny Git credential helper that reads its sibling 0600 file."""
+    return (
+        "#!/bin/sh\n"
+        "[ \"$1\" = get ] || exit 0\n"
+        "helper_dir=$(dirname \"$0\")\n"
+        f"cat \"$helper_dir/{_TOKEN_CRED_FILE}\"\n"
+    )
 
 
 def _pre_push_hook_body(protected: list[str]) -> str:
@@ -135,15 +148,23 @@ def _install_pre_push_hook(dest: Path, protected: list[str]) -> None:
         logger.warning("task: failed to install pre-push hook in %s", dest, exc_info=True)
 
 
-def _configure_push_to_host(dest: Path, repo: AgentTeamRepo, task: AgentTeamTask) -> None:
+def _configure_push_to_host(
+    dest: Path,
+    repo: AgentTeamRepo,
+    task: AgentTeamTask,
+    *,
+    can_push: bool,
+) -> None:
     """Point the copy's single ``origin`` remote straight at the real host.
 
     The copy is created with ``git clone --local`` (cheap, hardlinked objects);
     we then repoint ``origin`` to the real remote URL so there is **one** remote
     and a plain ``git push`` reaches the host (not a local mirror). For token auth
-    the secret is fetched live by the bundled credential helper (never stored in
-    the workspace); for SSH a key file is materialised in ``.git`` (kept out of
-    the work tree). Best-effort: failures only mean push falls back to the
+    a sandbox-portable credential helper + 0600 credential file are materialised
+    in ``.git``.  This intentionally trades secret isolation for compatibility
+    with OpenSandbox and is suitable for the demo runtime; Credential Vault is
+    the hardened follow-up. For SSH a key file is materialised in ``.git`` (kept
+    out of the work tree). Best-effort: failures only mean push falls back to the
     (gated) ``git_push`` tool.
     """
     from agent_team.features.repos import git_service
@@ -165,15 +186,10 @@ def _configure_push_to_host(dest: Path, repo: AgentTeamRepo, task: AgentTeamTask
 
         git_dir = dest / ".git"
         if repo.auth_type == AUTH_TOKEN:
-            cred_file = git_dir / "at_cred.json"
-            cred_file.write_text(
-                json.dumps({"task_id": task.id, "repo_id": repo.id}), encoding="utf-8"
-            )
-            cred_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
-            helper = (
-                f"!{shlex.quote(sys.executable)} {shlex.quote(str(_CRED_HELPER_PY))} "
-                f"--cred-file {shlex.quote(str(cred_file))}"
-            )
+            cred_file = git_dir / _TOKEN_CRED_FILE
+            helper_file = git_dir / _TOKEN_HELPER_FILE
+            # Clean copies prepared by the old host-only Python helper.
+            (git_dir / _LEGACY_CRED_FILE).unlink(missing_ok=True)
             # Make our helper authoritative. Git accumulates credential helpers
             # across system/global/local config and queries them in order, so an
             # inherited helper (e.g. macOS ``osxkeychain``) can answer *first* with
@@ -183,8 +199,31 @@ def _configure_push_to_host(dest: Path, repo: AgentTeamRepo, task: AgentTeamTask
             # add ours as the only one.
             _run_git("-C", dest_s, "config", "--unset-all", "credential.helper")
             _run_git("-C", dest_s, "config", "credential.helper", "")
-            _run_git("-C", dest_s, "config", "--add", "credential.helper", helper)
-        elif repo.auth_type == AUTH_SSH and (repo.auth_secret or "").strip():
+            secret = (repo.auth_secret or "").strip()
+            user = (repo.auth_username or "").strip() or "x-access-token"
+            if can_push and secret and not any(c in user + secret for c in "\r\n"):
+                cred_file.write_text(
+                    f"username={user}\npassword={secret}\n", encoding="utf-8"
+                )
+                cred_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
+                helper_file.write_text(_token_helper_body(), encoding="utf-8")
+                helper_file.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+                # Git runs shell helpers from the repository root, so this path
+                # stays valid on the host and at /workspace inside OpenSandbox.
+                _run_git(
+                    "-C", dest_s, "config", "--add", "credential.helper",
+                    f"!./.git/{_TOKEN_HELPER_FILE}",
+                )
+            else:
+                cred_file.unlink(missing_ok=True)
+                helper_file.unlink(missing_ok=True)
+                if can_push and secret:
+                    logger.warning(
+                        "task %s: refusing token credential with newline for %s",
+                        task.human_key,
+                        repo.slug,
+                    )
+        elif repo.auth_type == AUTH_SSH and can_push and (repo.auth_secret or "").strip():
             # SSH cannot use a credential helper; the key must be a file. Keep it
             # inside .git (never committed) with 0600 perms.
             key = git_dir / "at_ssh_key"
@@ -251,7 +290,8 @@ def prepare_task_repos(db: Session, task: AgentTeamTask) -> list[dict]:
         _configure_copy(str(dest), repo)
         # Wire a plain ``git push`` to reach the real host (gated), and block the
         # default branch locally. Runs every prepare so it self-heals/idempotent.
-        _configure_push_to_host(dest, repo, task)
+        can_push = bool(repo.allow_push and bp_allow_push)
+        _configure_push_to_host(dest, repo, task, can_push=can_push)
         _install_pre_push_hook(dest, [base_branch] if base_branch else [])
         prepared.append(
             {
@@ -260,7 +300,7 @@ def prepare_task_repos(db: Session, task: AgentTeamTask) -> list[dict]:
                 "branch": work_branch,
                 "base_branch": base_branch or None,
                 # Effective push = admin master gate AND this board's opt-in.
-                "can_push": bool(repo.allow_push and bp_allow_push),
+                "can_push": can_push,
                 # Marks the board's knowledge base so the run can advertise it.
                 "is_wiki": bool(is_wiki),
             }

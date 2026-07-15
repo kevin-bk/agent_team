@@ -42,7 +42,7 @@ Task copy : <task workspace>/<repo_slug>/
 | `paths.py` | canonical + task-copy path helpers. |
 | `task_copy.py` | `prepare_task_repos(db, task)` → `git clone --local` + checkout branch; `cleanup_task_repos`; `reset_task_repos_by_id` (pull canonical + re-clone). |
 | `scheduler.py` | `RepoPullTicker` (asyncio + `croniter` + `fcntl` lock). |
-| `git_cred_helper.py` | a bundled git credential helper that fetches the token live from the DB at push time. |
+| `git_cred_helper.py` | legacy host-only DB credential helper, retained for compatibility. |
 | `router.py` | `/repos` CRUD (admin) + `/boards/{id}/repos` assign endpoints. |
 
 ## Per-task branch & publishing
@@ -55,10 +55,12 @@ branch**. To let a human review/merge as a normal PR, the work must reach the
   remote at the real host URL** (so a plain `git push` reaches the host);
 - installs a **pre-push hook** that refuses pushes to the default branch — any
   push can only publish the task branch;
-- token auth is provided live by `git_cred_helper.py` **only if** the repo's
-  `allow_push` master gate **and** the board opt-in are on (the secret never lands
-  in the workspace). SSH keys are materialised inside `.git` (0600, never
-  committed).
+- for token auth, a small portable helper and its credential file are
+  materialised inside `.git` (0600, never committed) **only if** the repo's
+  `allow_push` master gate **and** the board opt-in are on. This works from both
+  the host and an OpenSandbox `/workspace` mount, but is a demo-mode trade-off:
+  a determined sandbox agent can read the token. SSH keys are likewise
+  materialised inside `.git` (0600, never committed).
 
 Result: direct-CLI agents publish with a plain `git push`; LLM agents use plain
 `git push` or the explicit `git_push` tool (see

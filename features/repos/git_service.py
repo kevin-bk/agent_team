@@ -2,11 +2,11 @@
 
 Credentials are injected only at git-time (an ``http.extraHeader`` Basic header
 for token auth, or ``GIT_SSH_COMMAND`` for an SSH key) and are **never** written
-into ``.git/config``, so the canonical clone on disk holds no secret. Per-task
-working copies are made with ``git clone --local`` from a local path; for *push*
-their ``origin`` is repointed at the real host and credentials are supplied on
-demand by a git credential helper (token) — never stored in the copy (see
-``task_copy`` / ``git_cred_helper``).
+into the canonical clone's ``.git/config``. Per-task working copies are made
+with ``git clone --local`` from a local path; for *push* their ``origin`` is
+repointed at the real host. The demo runtime materialises a sandbox-portable
+credential helper under the task copy's private ``.git`` directory (see
+``task_copy``); the hardened follow-up is OpenSandbox Credential Vault.
 
 The DB-mutating entrypoint :func:`sync_repo_by_id` opens its own ``Session`` and
 is therefore safe to call from a worker thread via ``asyncio.to_thread``.
