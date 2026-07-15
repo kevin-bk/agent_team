@@ -40,6 +40,15 @@ def _new_id() -> str:
     return uuid4().hex
 
 
+def _json_object(raw: str) -> dict:
+    """Decode a JSON object column, returning an empty object on bad data."""
+    try:
+        value = json.loads(raw or "{}")
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
 #: Default Kanban columns for a fresh board. Stored per-board as JSON text so a
 #: board owner can rename/reorder them without a schema change.
 DEFAULT_BOARD_COLUMNS: list[dict[str, str]] = [
@@ -759,6 +768,64 @@ class AgentTeamEvaluation(Base):
         except (json.JSONDecodeError, TypeError):
             return {}
         return value if isinstance(value, dict) else {}
+
+
+class AgentTeamVerificationReceipt(Base):
+    """Backend-minted proof that an approved verification command was run.
+
+    Evaluator-authored ``EVIDENCE.json`` is intentionally not authoritative for
+    command execution.  The verification runner owns these rows and the
+    completion gate reads them back from the database, so an evaluator can cite
+    a receipt but cannot manufacture one by editing a workspace artifact.
+    """
+
+    __tablename__ = "plugin_agent_team_verification_receipt"
+    __table_args__ = (
+        UniqueConstraint("batch_id", "command_id", name="uq_at_verify_batch_command"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    task_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("plugin_agent_team_task.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    attempt_id: Mapped[str | None] = mapped_column(
+        String(32),
+        ForeignKey("plugin_agent_team_attempt.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    batch_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    command_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    #: Assigned board-repo slug for structured commands; null for legacy strings.
+    repo_slug: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: Stable workspace-relative cwd (repo slug, or ``.`` for legacy strings).
+    working_directory: Mapped[str] = mapped_column(Text, nullable=False, default=".")
+    command: Mapped[str] = mapped_column(Text, nullable=False)
+    exit_code: Mapped[int] = mapped_column(Integer, nullable=False)
+    duration_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    timed_out: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    stdout_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    stderr_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    stdout_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    stderr_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    source_before_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    source_after_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    source_before_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_after_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    runtime_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+    def source_before(self) -> dict:
+        return _json_object(self.source_before_json)
+
+    def source_after(self) -> dict:
+        return _json_object(self.source_after_json)
+
+    def runtime(self) -> dict:
+        return _json_object(self.runtime_json)
 
 
 class AgentTeamJournalEntry(Base):

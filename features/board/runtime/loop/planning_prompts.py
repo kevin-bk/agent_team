@@ -154,6 +154,15 @@ _TASKS_SCHEMA = (
     '      "files": ["relative/path.py"],\n'
     '      "acceptance": ["Concrete observable condition"],\n'
     '      "validation": ["exact command where possible"],\n'
+    '      "verification": {\n'
+    '        "profiles": ["code", "ui_admin"],\n'
+    '        "test_change": "none|add|update",\n'
+    '        "feature_commands": [{"repo": "repo-slug", '
+    '"command": "exact focused test command"}],\n'
+    '        "regression_commands": [{"repo": "repo-slug", '
+    '"command": "exact regression command"}],\n'
+    '        "required_evidence": []\n'
+    "      },\n"
     '      "risk": "low"\n'
     "    }\n"
     "  ]\n"
@@ -227,7 +236,17 @@ def build_planning_prompt(
         "`AGENTS.md` with house rules), prefer and follow those formats for the "
         "CONTENT of `SPEC.md`/`PLAN.md` — the file paths above stay as required.\n\n"
         "Keep each task small and independently verifiable. Use repo-relative "
-        "paths. Do not implement. When done, end your reply with a one-line "
+        "paths. For every task, classify its verification profiles and whether "
+        "automated tests must be added or updated. UI/visual profiles require "
+        "scenario evidence plus a real screenshot/trace/report artifact; AI "
+        "profiles require scenario evidence. Write every `feature_commands` and "
+        "`regression_commands` entry as a structured `{repo, command}` object. "
+        "Use the exact assigned repository slug in `repo`; put only the command "
+        "to run inside that repo in `command` (do not prefix it with `cd`). Never "
+        "assume the workspace root is a project root. Do not target a skill "
+        "folder unless the task explicitly "
+        "changes or verifies that skill. Do not implement. When done, end "
+        "your reply with a one-line "
         "confirmation that all three files were written.\n\n"
         f"{conv_section}"
         f"## Journal\n{JOURNAL_DISCIPLINE}\n\n"
@@ -261,7 +280,9 @@ def build_review_prompt(*, conventions: str | None = None) -> str:
         "- ambiguous acceptance criteria\n- missing or weak validation\n"
         "- tasks that are too broad\n- incorrect file assumptions\n"
         "- risky migrations without rollback\n- hidden human decisions\n"
-        "- places the evaluator could not verify completion\n\n"
+        "- places the evaluator could not verify completion\n"
+        "- multi-repo verification commands that do not explicitly select their "
+        "repository working directory\n\n"
         "## Required output\n"
         f"Write a single JSON object to `{A.PLAN_REVIEW_PATH}` with this shape:\n\n"
         "{\n"
@@ -353,7 +374,10 @@ TASK_GRAPH_PREAMBLE = (
     f"human to proceed, write `{A.QUESTIONS_PATH}` with blocking "
     "questions (schema version 1) rather than guessing. In either case, END "
     "YOUR TURN IMMEDIATELY after writing the file — do not make further edits "
-    f"or run other steps in this turn; wait for the human.\n\n{JOURNAL_DISCIPLINE}"
+    "or run other steps in this turn; wait for the human. Treat the task's "
+    "`verification` block as part of the deliverable: add or update tests when "
+    "requested and run its focused commands before claiming completion.\n\n"
+    f"{JOURNAL_DISCIPLINE}"
 )
 
 
@@ -368,6 +392,12 @@ def _bullets(items: list[str]) -> str:
     return "\n".join(f"- {i}" for i in cleaned) if cleaned else "- (none specified)"
 
 
+def _verification_commands(items: list[object]) -> str:
+    """Render legacy and structured verification commands for agent prompts."""
+    labels = [A.verification_command_label(item) for item in items]
+    return ", ".join(label for label in labels if label) or "(none)"
+
+
 def build_task_objective(task: dict) -> str:
     """Compose the per-task objective the generator loop works against.
 
@@ -380,6 +410,7 @@ def build_task_objective(task: dict) -> str:
     files = [str(f) for f in (task.get("files") or [])]
     acceptance = [str(a) for a in (task.get("acceptance") or [])]
     validation = [str(v) for v in (task.get("validation") or [])]
+    verification = A.normalize_verification(task.get("verification"))
     files_line = ", ".join(files) if files else "(discover from the plan)"
     return (
         f"## Current task: {tid} — {title}\n"
@@ -387,8 +418,41 @@ def build_task_objective(task: dict) -> str:
         f"Files likely involved: {files_line}\n\n"
         f"Acceptance criteria (this task is done only when all hold):\n"
         f"{_bullets(acceptance)}\n\n"
-        f"Validation to run:\n{_bullets(validation)}"
+        f"Validation to run:\n{_bullets(validation)}\n\n"
+        "Verification contract:\n"
+        f"- Profiles: {', '.join(verification.get('profiles') or []) or '(none)'}\n"
+        f"- Test change: {verification.get('test_change') or 'none'}\n"
+        "- Feature commands: "
+        f"{_verification_commands(verification.get('feature_commands') or [])}\n"
+        "- Regression commands: "
+        f"{_verification_commands(verification.get('regression_commands') or [])}"
     )
+
+
+_EVIDENCE_V2_SCHEMA = (
+    "{\n"
+    '  "version": 2,\n'
+    '  "verdict": "pass|fail|needs_human",\n'
+    '  "score": 0.0,\n'
+    '  "subject": {"commit_sha": "...", "deployment_id": "...", '
+    '"environment": "..."},\n'
+    '  "checked_tasks": ["T1"],\n'
+    '  "receipt_ids": ["backend-receipt-id"],\n'
+    '  "commands": [{"id": "cmd-1", "cmd": "...", "exit_code": 0, '
+    '"summary": "...", "trusted": false}],\n'
+    '  "criteria": [{"id": "T1:AC-1", "status": "pass|fail", '
+    '"evidence_ids": ["cmd-1", "scenario-1"]}],\n'
+    '  "scenarios": [{"id": "scenario-1", "profile": "ui_admin", '
+    '"status": "pass|fail", "summary": "...", '
+    '"evidence_ids": ["screenshot-1"]}],\n'
+    '  "artifacts": [{"id": "screenshot-1", '
+    '"kind": "screenshot|trace|report", '
+    '"path": "workspace-relative/path"}],\n'
+    '  "changed_files": ["..."],\n'
+    '  "missing": ["..."],\n'
+    '  "risks": ["..."]\n'
+    "}"
+)
 
 
 def build_task_evaluator_prompt(
@@ -404,6 +468,8 @@ def build_task_evaluator_prompt(
     summary = (generator_summary or "").strip() or "(the agent provided no summary)"
     acceptance = [str(a) for a in (task.get("acceptance") or [])]
     validation = [str(v) for v in (task.get("validation") or [])]
+    verification = A.normalize_verification(task.get("verification"))
+    criterion_ids = [f"{tid}:AC-{i}" for i in range(1, len(acceptance) + 1)]
     return (
         f"{PHASE_VERIFY}\n\n"
         "You are an independent verifier grading a SINGLE task of an approved "
@@ -417,28 +483,31 @@ def build_task_evaluator_prompt(
         f"{_bullets(acceptance)}\n\n"
         "## Validation to run yourself\n"
         f"{_bullets(validation)}\n\n"
+        "## Verification contract\n"
+        f"- Profiles: {', '.join(verification.get('profiles') or []) or '(none)'}\n"
+        f"- Test change: {verification.get('test_change') or 'none'}\n"
+        "- Feature commands: "
+        f"{_verification_commands(verification.get('feature_commands') or [])}\n"
+        "- Regression commands: "
+        f"{_verification_commands(verification.get('regression_commands') or [])}\n"
+        "- Criterion ids to prove: "
+        f"{', '.join(criterion_ids) or '(none)'}\n\n"
         "## Verify against\n"
         "- only this task's acceptance criteria (ignore other tasks)\n"
         "- the actual git diff / current workspace state\n"
-        "- actual test/build/lint output you run yourself\n"
+        "- actual test/build/lint output, preferring backend receipts for planned commands\n"
         f"- any `{A.CLARIFICATIONS_HEADING}` section in `{A.SPEC_PATH}` is "
         "human-approved scope — honour it, do not penalise the agent for "
         "following it\n\n"
         "## Required output\n"
-        f"Write `{verdict_path}` (schema version 1):\n\n"
-        "{\n"
-        '  "version": 1,\n'
-        '  "verdict": "pass|fail|needs_human",\n'
-        '  "score": 0.0,\n'
-        f'  "checked_tasks": ["{tid}"],\n'
-        '  "commands": [{"cmd": "...", "exit_code": 0, "summary": "..."}],\n'
-        '  "changed_files": ["..."],\n'
-        '  "missing": ["..."],\n'
-        '  "risks": ["..."]\n'
-        "}\n\n"
+        f"Write `{verdict_path}` (schema version 2):\n\n"
+        f"{_EVIDENCE_V2_SCHEMA}\n\n"
         "Use `pass` only when every acceptance criterion for this task is "
-        "provably met. A `pass` with failed commands is invalid unless the "
-        "failures are explicitly non-blocking and explained under risks. Use "
+        "provably mapped to real evidence. Commands declared in the verification "
+        "contract are run by the backend; cite its trusted receipt ids instead "
+        "of claiming those executions yourself. UI scenarios must reference a screenshot, "
+        "trace, snapshot, video, or report that exists inside the workspace. "
+        "A `pass` with any failed command is invalid. Use "
         "`needs_human` only when a person must decide. Then end your reply with "
         'a single line of JSON as a fallback: {"verdict": "pass|fail|'
         'needs_human", "score": 0.0, "missing": "short note"}\n\n'
@@ -500,24 +569,19 @@ def build_strict_evaluator_prompt(
         "## Verify against\n"
         "- the acceptance criteria in the SPEC\n"
         "- the actual git diff / current workspace state\n"
-        "- actual test/build/lint output you run yourself\n"
+        "- actual test/build/lint output and backend receipts\n"
+        "- each task's `verification` contract in TASKS.json; the backend runs "
+        "declared feature and regression commands and you interpret its receipts\n"
         f"- any `{A.CLARIFICATIONS_HEADING}` section in `{A.SPEC_PATH}` is "
         "human-approved scope — honour it, do not penalise the agent for "
         "following it\n\n"
         "## Required output\n"
-        f"Write `{A.EVIDENCE_PATH}` (schema version 1):\n\n"
-        "{\n"
-        '  "version": 1,\n'
-        '  "verdict": "pass|fail|needs_human",\n'
-        '  "score": 0.0,\n'
-        '  "checked_tasks": ["T1"],\n'
-        '  "commands": [{"cmd": "...", "exit_code": 0, "summary": "..."}],\n'
-        '  "changed_files": ["..."],\n'
-        '  "missing": ["..."],\n'
-        '  "risks": ["..."]\n'
-        "}\n\n"
-        "A `pass` with failed commands is invalid unless the failures are "
-        "explicitly non-blocking and explained under risks. `changed_files` "
+        f"Write `{A.EVIDENCE_PATH}` (schema version 2):\n\n"
+        f"{_EVIDENCE_V2_SCHEMA}\n\n"
+        "Map acceptance criteria as `<task-id>:AC-<1-based-index>`. UI scenarios "
+        "must reference a real screenshot, trace, snapshot, video, or report "
+        "inside the workspace. A `pass` with failed or omitted planned commands "
+        "is invalid. `changed_files` "
         "should come from git diff, not memory. Use `needs_human` only when a "
         "person must decide or safe verification is impossible here.\n\n"
         "Then end your reply with a single line of JSON as a fallback: "

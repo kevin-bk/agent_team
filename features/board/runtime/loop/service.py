@@ -34,7 +34,7 @@ from agent_team.features.board.runtime.events import (
     RUN_ERROR,
 )
 from agent_team.features.board.runtime.loop import planning_artifacts as artifacts
-from agent_team.features.board.runtime.loop import planning_prompts
+from agent_team.features.board.runtime.loop import planning_prompts, verification_runner
 from agent_team.features.board.runtime.loop.budget import LoopBudget
 from agent_team.features.board.runtime.loop.controller import DEFAULT_MAX_ZERO_STREAK
 from agent_team.features.board.runtime.loop.driver import (
@@ -51,6 +51,8 @@ from agent_team.features.board.runtime.loop.verdict import (
     LoopVerdict,
     has_verification_evidence,
     parse_verdict,
+    validate_command_evidence,
+    validate_verification_evidence,
 )
 from agent_team.features.board.runtime.sandbox.service import (
     repair_workspace_ownership,
@@ -286,7 +288,98 @@ _UNVERIFIED_PASS_NOTE = (
 )
 
 
-def _downgrade_unverified_pass(verdict: Verdict) -> Verdict:
+@dataclass(frozen=True)
+class _VerificationContract:
+    """Aggregated machine-enforced verification requirements for a turn."""
+
+    active: bool
+    profiles: list[str]
+    expected_criteria: list[str]
+    planned_commands: list[object]
+    required_evidence: list[str]
+
+
+def _verification_contract(tasks: list[dict]) -> _VerificationContract:
+    """Aggregate optional per-task verification blocks without project coupling."""
+    profiles: list[str] = []
+    expected_criteria: list[str] = []
+    planned_commands: list[object] = []
+    planned_command_keys: set[tuple[str, str]] = set()
+    required_evidence: list[str] = []
+    active = False
+
+    for task in tasks:
+        verification = artifacts.normalize_verification(task.get("verification"))
+        task_active = bool(
+            verification.get("profiles")
+            or verification.get("feature_commands")
+            or verification.get("regression_commands")
+            or verification.get("required_evidence")
+            or verification.get("test_change") in {"add", "update"}
+        )
+        if not task_active:
+            continue
+        active = True
+        for profile in verification.get("profiles") or []:
+            if profile not in profiles:
+                profiles.append(profile)
+        for command in (
+            (verification.get("feature_commands") or [])
+            + (verification.get("regression_commands") or [])
+        ):
+            key = artifacts.verification_command_key(command)
+            if key != ("", "") and key not in planned_command_keys:
+                planned_command_keys.add(key)
+                planned_commands.append(command)
+        for section in verification.get("required_evidence") or []:
+            if section not in required_evidence:
+                required_evidence.append(section)
+
+        task_id = str(task.get("id") or "task")
+        acceptance = task.get("acceptance") or []
+        expected_criteria.extend(
+            f"{task_id}:AC-{index}" for index in range(1, len(acceptance) + 1)
+        )
+
+    return _VerificationContract(
+        active=active,
+        profiles=profiles,
+        expected_criteria=expected_criteria,
+        planned_commands=planned_commands,
+        required_evidence=required_evidence,
+    )
+
+
+def _strict_verification_issues(
+    verdict: Verdict,
+    *,
+    workspace_path: str,
+    graph_task: dict | None,
+    trusted_receipts: list[dict] | None = None,
+    current_source_sha256: str = "",
+) -> list[str]:
+    """Return backend-observed reasons a strict ``pass`` is not trustworthy."""
+    tasks = [graph_task] if graph_task is not None else artifacts.task_list(workspace_path)
+    contract = _verification_contract(tasks)
+    if not contract.active:
+        # Legacy TASKS.json files remain valid, but a strict pass must still
+        # contain concrete successful commands with explicit exit codes.
+        return validate_command_evidence(verdict.evidence)
+    return validate_verification_evidence(
+        verdict.evidence,
+        profiles=contract.profiles,
+        expected_criteria=contract.expected_criteria,
+        planned_commands=contract.planned_commands,
+        required_evidence=contract.required_evidence,
+        workspace_path=workspace_path,
+        trusted_receipts=trusted_receipts,
+        current_source_sha256=current_source_sha256,
+    )
+
+
+def _downgrade_unverified_pass(
+    verdict: Verdict, issues: list[str] | None = None
+) -> Verdict:
     """Turn an evidence-less ``pass`` into a ``fail`` so the loop keeps going.
 
     Preserves the score/evidence and the accounting fields; prepends a clear
@@ -294,8 +387,13 @@ def _downgrade_unverified_pass(verdict: Verdict) -> Verdict:
     The attempt budget remains the backstop if the evaluator keeps refusing to
     produce evidence.
     """
+    note = _UNVERIFIED_PASS_NOTE
+    if issues:
+        note = "The evaluator's pass failed the verification contract:\n" + "\n".join(
+            f"- {issue}" for issue in issues
+        )
     missing = (verdict.missing or "").strip()
-    combined = f"{_UNVERIFIED_PASS_NOTE}\n\n{missing}" if missing else _UNVERIFIED_PASS_NOTE
+    combined = f"{note}\n\n{missing}" if missing else note
     return Verdict(
         verdict=LoopVerdict.FAIL,
         score=verdict.score,
@@ -341,6 +439,34 @@ class WorkerEvaluator:
         workspace_path: str,
         attempt_id: str | None = None,
     ) -> Verdict | None:
+        trusted_batch: verification_runner.ReceiptBatch | None = None
+        runner_required = False
+        if self._strict:
+            tasks = (
+                [self._graph_task]
+                if self._graph_task is not None
+                else artifacts.task_list(workspace_path)
+            )
+            contract = _verification_contract(tasks)
+            runner_required = bool(contract.active and contract.planned_commands)
+            if runner_required:
+                _stored_workspace, board_id, approved_contract_etag = await asyncio.to_thread(
+                    _task_workspace_and_board, self._task_id
+                )
+                try:
+                    trusted_batch = await verification_runner.run_approved_commands(
+                        task_id=self._task_id,
+                        board_id=board_id or "",
+                        attempt_id=attempt_id,
+                        workspace_path=workspace_path,
+                        tasks=tasks,
+                        approved_tasks_contract_etag=approved_contract_etag,
+                    )
+                except Exception:  # noqa: BLE001 — evaluator must report the block
+                    logger.exception(
+                        "trusted verification runner failed for task=%s",
+                        self._task_id,
+                    )
         if self._strict and self._graph_task is not None:
             prompt = planning_prompts.build_task_evaluator_prompt(
                 task=self._graph_task,
@@ -362,6 +488,25 @@ class WorkerEvaluator:
             prompt = build_evaluator_prompt(
                 objective, generator_summary, verdict_path=rel_path
             )
+        if runner_required:
+            if trusted_batch is None:
+                prompt += (
+                    "\n\n## Trusted verification runner\n"
+                    "The backend could not produce trusted command receipts. "
+                    "Do not claim that planned commands passed; return fail and "
+                    "explain the runner/runtime problem.\n"
+                )
+            else:
+                prompt += (
+                    "\n\n## Trusted verification runner\n"
+                    f"Backend batch: `{trusted_batch.batch_id}`. Read "
+                    f"`{verification_runner.RECEIPT_MANIFEST_PATH}`. Cite every "
+                    "backend receipt id in top-level `receipt_ids` and map useful "
+                    "receipt ids to acceptance criteria. The database copy is "
+                    "authoritative; do not replace receipts with commands you ran "
+                    "yourself. You may still use browser/MCP checks for scenarios "
+                    "and artifacts.\n"
+                )
         run_id = await asyncio.to_thread(
             _create_loop_run,
             task_id=self._task_id,
@@ -404,18 +549,46 @@ class WorkerEvaluator:
         # A pass with no proof of verification is not a verified completion —
         # downgrade it so the backend never marks the task complete on an
         # evidence-less claim (the core invariant of an independent evaluator).
-        if verdict.verdict == LoopVerdict.PASS and not has_verification_evidence(verdict):
-            return _downgrade_unverified_pass(verdict)
+        if verdict.verdict == LoopVerdict.PASS:
+            if self._strict:
+                trusted_receipts: list[dict] | None = None
+                current_source_sha256 = ""
+                if runner_required:
+                    trusted_receipts = (
+                        await asyncio.to_thread(
+                            verification_runner.load_receipt_batch,
+                            self._task_id,
+                            trusted_batch.batch_id,
+                        )
+                        if trusted_batch is not None
+                        else []
+                    )
+                    _source, current_source_sha256 = await asyncio.to_thread(
+                        verification_runner.capture_source_state, workspace_path
+                    )
+                issues = _strict_verification_issues(
+                    verdict,
+                    workspace_path=workspace_path,
+                    graph_task=self._graph_task,
+                    trusted_receipts=trusted_receipts,
+                    current_source_sha256=current_source_sha256,
+                )
+                if issues:
+                    return _downgrade_unverified_pass(verdict, issues)
+            elif not has_verification_evidence(verdict):
+                return _downgrade_unverified_pass(verdict)
         return verdict
 
 
-def _task_workspace_and_board(task_id: str) -> tuple[str, str | None]:
+def _task_workspace_and_board(task_id: str) -> tuple[str, str | None, str]:
     db = SessionLocal()
     try:
         task = get_task(db, task_id)
         if task is None:
-            return "", None
-        return task.workspace_path, task.board_id
+            return "", None, ""
+        meta = task.planning_meta()
+        approved_contract_etag = str(meta.get("tasks_contract_etag") or "")
+        return task.workspace_path, task.board_id, approved_contract_etag
     finally:
         db.close()
 

@@ -31,6 +31,9 @@ PLAN_PATH = f"{ARTIFACT_DIR}/PLAN.md"
 TASKS_PATH = f"{ARTIFACT_DIR}/TASKS.json"
 PLAN_REVIEW_PATH = f"{ARTIFACT_DIR}/PLAN_REVIEW.json"
 EVIDENCE_PATH = f"{ARTIFACT_DIR}/EVIDENCE.json"
+#: Evaluator-readable projection of backend-owned command receipts.  The DB is
+#: authoritative; this file exists so direct CLI evaluators can inspect results.
+VERIFICATION_RECEIPTS_PATH = f"{ARTIFACT_DIR}/VERIFICATION_RECEIPTS.json"
 PLAN_CHANGE_REQUEST_PATH = f"{ARTIFACT_DIR}/PLAN_CHANGE_REQUEST.md"
 #: Structured questions an agent (planner or generator) raises for a human. A
 #: blocking, unanswered question gates the planning/execution phase until the
@@ -173,6 +176,7 @@ def all_metadata(workspace_path: str) -> list[ArtifactMeta]:
         TASKS_PATH,
         PLAN_REVIEW_PATH,
         EVIDENCE_PATH,
+        VERIFICATION_RECEIPTS_PATH,
         PLAN_CHANGE_REQUEST_PATH,
         QUESTIONS_PATH,
     )
@@ -200,6 +204,16 @@ def missing_required(workspace_path: str) -> list[str]:
 #: Valid lifecycle values for a task in ``TASKS.json``.
 TASK_STATUSES: frozenset[str] = frozenset(
     {"pending", "in_progress", "complete", "blocked", "skipped"}
+)
+
+#: How an implementation task is expected to affect automated tests.  The
+#: value is advisory for the generator, but keeping the vocabulary small makes
+#: plans and evidence comparable across agents and projects.
+VERIFICATION_TEST_CHANGES: frozenset[str] = frozenset(
+    {"none", "add", "update"}
+)
+VERIFICATION_EVIDENCE_SECTIONS: frozenset[str] = frozenset(
+    {"commands", "criteria", "scenarios", "artifacts"}
 )
 #: Statuses that satisfy a dependency (a dependant may start once its deps reach
 #: one of these). ``skipped`` counts as satisfied so a manually skipped task does
@@ -247,6 +261,104 @@ def read_tasks(workspace_path: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+def tasks_contract_etag(workspace_path: str) -> str:
+    """Fingerprint approved task content while ignoring backend lifecycle state.
+
+    Task-graph execution updates each task's ``status`` in place.  Those updates
+    must not invalidate approval, while changes to commands, repo selection,
+    acceptance criteria, dependencies, or any other planned content must.
+    """
+    data = read_tasks(workspace_path)
+    if data is None:
+        return ""
+    canonical = json.loads(json.dumps(data))
+    tasks = canonical.get("tasks")
+    if isinstance(tasks, list):
+        for task in tasks:
+            if isinstance(task, dict):
+                task.pop("status", None)
+    payload = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return etag(payload)
+
+
+def normalize_verification(raw: object) -> dict:
+    """Return a compact, safe verification contract for one planned task.
+
+    Verification profiles are intentionally open-ended (``ui_admin``,
+    ``ai_chat``, ``api``...) so Agent Team stays project-agnostic.  The backend
+    understands profile families such as ``ui_*`` and ``ai_*`` while preserving
+    custom names for evaluator instructions and evidence.
+    """
+    if not isinstance(raw, dict):
+        return {}
+
+    def _strings(value: object) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [
+            item.strip()
+            for item in value
+            if isinstance(item, str) and item.strip()
+        ]
+
+    def _commands(value: object) -> list[str | dict[str, str]]:
+        if not isinstance(value, list):
+            return []
+        commands: list[str | dict[str, str]] = []
+        for item in value:
+            normalized = normalize_verification_command(item)
+            if normalized is not None:
+                commands.append(normalized)
+        return commands
+
+    test_change = str(raw.get("test_change") or "none").strip().lower()
+    if test_change not in VERIFICATION_TEST_CHANGES:
+        test_change = "none"
+    return {
+        "profiles": _strings(raw.get("profiles")),
+        "test_change": test_change,
+        "feature_commands": _commands(raw.get("feature_commands")),
+        "regression_commands": _commands(raw.get("regression_commands")),
+        "required_evidence": _strings(raw.get("required_evidence")),
+    }
+
+
+def normalize_verification_command(raw: object) -> str | dict[str, str] | None:
+    """Normalize a legacy string or structured ``{repo, command}`` entry."""
+    if isinstance(raw, str):
+        command = raw.strip()
+        return command or None
+    if not isinstance(raw, dict):
+        return None
+    repo = str(raw.get("repo") or "").strip()
+    command = str(raw.get("command") or "").strip()
+    if not repo or not command:
+        return None
+    return {"repo": repo, "command": command}
+
+
+def verification_command_key(raw: object) -> tuple[str, str]:
+    """Return a stable ``(repo, command)`` identity for de-duplication."""
+    normalized = normalize_verification_command(raw)
+    if isinstance(normalized, dict):
+        repo = normalized["repo"]
+        command = normalized["command"]
+    elif isinstance(normalized, str):
+        repo = ""
+        command = normalized
+    else:
+        return "", ""
+    return repo, " ".join(command.split())
+
+
+def verification_command_label(raw: object) -> str:
+    """Render one command entry for prompts and validation errors."""
+    normalized = normalize_verification_command(raw)
+    if isinstance(normalized, dict):
+        return f"{normalized['repo']}: {normalized['command']}"
+    return normalized if isinstance(normalized, str) else ""
+
+
 def task_list(workspace_path: str) -> list[dict]:
     """Normalised task rows from ``TASKS.json`` for scheduling and the cockpit.
 
@@ -278,6 +390,7 @@ def task_list(workspace_path: str) -> list[dict]:
                 "acceptance": [str(a) for a in (t.get("acceptance") or [])],
                 "validation": [str(v) for v in (t.get("validation") or [])],
                 "risk": str(t.get("risk") or ""),
+                "verification": normalize_verification(t.get("verification")),
             }
         )
     return rows
@@ -363,6 +476,74 @@ def validate_tasks(data: object) -> list[str]:
             errors.append(f"{where} 'depends_on' must be a list")
             depends = []
         deps[tid] = [str(d) for d in depends]
+
+        verification = task.get("verification")
+        if verification is not None:
+            if not isinstance(verification, dict):
+                errors.append(f"{where} 'verification' must be an object")
+            else:
+                for key in ("profiles", "required_evidence"):
+                    value = verification.get(key, [])
+                    if not isinstance(value, list) or any(
+                        not isinstance(item, str) or not item.strip()
+                        for item in value
+                    ):
+                        errors.append(
+                            f"{where} verification.{key} must be a list of "
+                            "non-empty strings"
+                        )
+                for key in ("feature_commands", "regression_commands"):
+                    value = verification.get(key, [])
+                    if not isinstance(value, list):
+                        errors.append(
+                            f"{where} verification.{key} must be a list"
+                        )
+                        continue
+                    for command_index, item in enumerate(value):
+                        command_where = (
+                            f"{where} verification.{key}[{command_index}]"
+                        )
+                        normalized = normalize_verification_command(item)
+                        if normalized is None:
+                            errors.append(
+                                f"{command_where} must be a non-empty command "
+                                "string or an object with non-empty 'repo' and "
+                                "'command' strings"
+                            )
+                            continue
+                        if isinstance(normalized, dict):
+                            repo = normalized["repo"]
+                            if (
+                                repo in {".", ".."}
+                                or "/" in repo
+                                or "\\" in repo
+                            ):
+                                errors.append(
+                                    f"{command_where}.repo must be a safe repo slug"
+                                )
+                test_change = str(
+                    verification.get("test_change") or "none"
+                ).strip().lower()
+                if test_change not in VERIFICATION_TEST_CHANGES:
+                    errors.append(
+                        f"{where} verification.test_change must be one of "
+                        f"{sorted(VERIFICATION_TEST_CHANGES)!r}"
+                    )
+                required = verification.get("required_evidence", [])
+                if isinstance(required, list):
+                    unknown = sorted(
+                        {
+                            item
+                            for item in required
+                            if isinstance(item, str)
+                            and item not in VERIFICATION_EVIDENCE_SECTIONS
+                        }
+                    )
+                    if unknown:
+                        errors.append(
+                            f"{where} verification.required_evidence contains "
+                            f"unknown sections {unknown!r}"
+                        )
 
     for tid, dep_ids in deps.items():
         for dep in dep_ids:

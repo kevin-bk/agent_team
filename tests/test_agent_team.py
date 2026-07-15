@@ -22,6 +22,7 @@ from agent_team.features.board.models import (
     AgentTeamTask,
     AgentTeamTaskSchedule,
     AgentTeamToolOutput,
+    AgentTeamVerificationReceipt,
 )
 from agent_team.features.board.repositories import boards as boards_repo
 from agent_team.features.board.repositories import tasks as tasks_repo
@@ -49,6 +50,7 @@ _PLUGIN_MODELS = (
     AgentTeamAutopilot,
     AgentTeamAttempt,
     AgentTeamEvaluation,
+    AgentTeamVerificationReceipt,
     AgentTeamJournalEntry,
 )
 
@@ -119,6 +121,7 @@ def test_plugin_meta_models_and_menu():
         "plugin_agent_team_task_schedule",
         "plugin_agent_team_attempt",
         "plugin_agent_team_evaluation",
+        "plugin_agent_team_verification_receipt",
         "plugin_agent_team_journal_entry",
         "plugin_agent_team_comm_connection",
         "plugin_agent_team_board_channel",
@@ -2392,6 +2395,446 @@ def test_has_verification_evidence():
     assert not has_verification_evidence(
         Verdict(LoopVerdict.PASS, evidence={"commands": []})
     )
+
+
+def test_validate_strict_command_evidence():
+    from agent_team.features.board.runtime.loop.verdict import (
+        validate_command_evidence,
+    )
+
+    assert validate_command_evidence(
+        {"commands": [{"cmd": "pytest", "exit_code": 0}]},
+        planned_commands=["pytest"],
+    ) == []
+    assert "at least one" in validate_command_evidence({"commands": []})[0]
+    assert any(
+        "exit code 1" in issue
+        for issue in validate_command_evidence(
+            {"commands": [{"cmd": "pytest", "exit_code": 1}]}
+        )
+    )
+    assert any(
+        "was not recorded" in issue
+        for issue in validate_command_evidence(
+            {"commands": [{"cmd": "ruff check", "exit_code": 0}]},
+            planned_commands=["pytest"],
+        )
+    )
+
+
+def test_validate_ui_verification_evidence_requires_real_artifacts(tmp_path):
+    from agent_team.features.board.runtime.loop.verdict import (
+        validate_verification_evidence,
+    )
+
+    screenshot = tmp_path / "evidence" / "appearance.png"
+    screenshot.parent.mkdir()
+    screenshot.write_bytes(b"fake png bytes")
+    evidence = {
+        "version": 2,
+        "commands": [
+            {
+                "id": "cmd-feature",
+                "cmd": "npm run test:feature",
+                "exit_code": 0,
+            },
+            {
+                "id": "cmd-regression",
+                "cmd": "npm run test:smoke",
+                "exit_code": 0,
+            },
+        ],
+        "criteria": [
+            {
+                "id": "T1:AC-1",
+                "status": "pass",
+                "evidence_ids": ["scenario-ui"],
+            }
+        ],
+        "scenarios": [
+            {
+                "id": "scenario-ui",
+                "profile": "ui_admin",
+                "status": "pass",
+                "evidence_ids": ["shot-ui"],
+            }
+        ],
+        "artifacts": [
+            {
+                "id": "shot-ui",
+                "kind": "screenshot",
+                "path": "evidence/appearance.png",
+            }
+        ],
+    }
+    assert validate_verification_evidence(
+        evidence,
+        profiles=["ui_admin"],
+        expected_criteria=["T1:AC-1"],
+        planned_commands=["npm run test:feature", "npm run test:smoke"],
+        workspace_path=str(tmp_path),
+    ) == []
+
+    screenshot.unlink()
+    issues = validate_verification_evidence(
+        evidence,
+        profiles=["ui_admin"],
+        expected_criteria=["T1:AC-1", "T1:AC-2"],
+        planned_commands=["npm run test:feature", "npm run test:smoke"],
+        workspace_path=str(tmp_path),
+    )
+    assert any("missing, empty, or unsafe" in issue for issue in issues)
+    assert any("T1:AC-2" in issue for issue in issues)
+
+
+def test_trusted_receipts_replace_evaluator_command_claims(tmp_path):
+    from agent_team.features.board.runtime.loop.verdict import (
+        validate_verification_evidence,
+    )
+
+    receipt = {
+        "id": "receipt-real",
+        "repo": "chizy-chat-bot",
+        "command": "npm test",
+        "exit_code": 0,
+        "timed_out": False,
+        "source_after_sha256": "source-current",
+    }
+    evidence = {
+        "version": 2,
+        "receipt_ids": ["receipt-real"],
+        # Evaluator-authored command rows are informational and cannot replace a
+        # backend receipt when trusted_receipts is supplied.
+        "commands": [
+            {"id": "cmd-claimed", "cmd": "npm test", "exit_code": 0}
+        ],
+        "criteria": [
+            {
+                "id": "T1:AC-1",
+                "status": "pass",
+                "evidence_ids": ["receipt-real"],
+            }
+        ],
+    }
+    assert validate_verification_evidence(
+        evidence,
+        profiles=["unit"],
+        expected_criteria=["T1:AC-1"],
+        planned_commands=[{"repo": "chizy-chat-bot", "command": "npm test"}],
+        trusted_receipts=[receipt],
+        current_source_sha256="source-current",
+        workspace_path=str(tmp_path),
+    ) == []
+
+    evidence["receipt_ids"] = ["receipt-invented"]
+    issues = validate_verification_evidence(
+        evidence,
+        profiles=["unit"],
+        expected_criteria=["T1:AC-1"],
+        planned_commands=[{"repo": "chizy-chat-bot", "command": "npm test"}],
+        trusted_receipts=[receipt],
+        current_source_sha256="source-current",
+        workspace_path=str(tmp_path),
+    )
+    assert any("unknown receipt id" in issue for issue in issues)
+    assert any("was not cited" in issue for issue in issues)
+
+    evidence["receipt_ids"] = ["receipt-real"]
+    wrong_repo_receipt = {**receipt, "repo": "shopify-ai-agent"}
+    issues = validate_verification_evidence(
+        evidence,
+        profiles=["unit"],
+        expected_criteria=["T1:AC-1"],
+        planned_commands=[{"repo": "chizy-chat-bot", "command": "npm test"}],
+        trusted_receipts=[wrong_repo_receipt],
+        current_source_sha256="source-current",
+        workspace_path=str(tmp_path),
+    )
+    assert any("chizy-chat-bot: npm test" in issue for issue in issues)
+
+
+def test_trusted_receipt_rejects_failure_and_stale_source(tmp_path):
+    from agent_team.features.board.runtime.loop.verdict import (
+        validate_verification_evidence,
+    )
+
+    evidence = {
+        "version": 2,
+        "receipt_ids": ["receipt-failed"],
+        "criteria": [
+            {
+                "id": "T1:AC-1",
+                "status": "pass",
+                "evidence_ids": ["receipt-failed"],
+            }
+        ],
+    }
+    issues = validate_verification_evidence(
+        evidence,
+        profiles=["unit"],
+        expected_criteria=["T1:AC-1"],
+        planned_commands=["pytest"],
+        trusted_receipts=[
+            {
+                "id": "receipt-failed",
+                "command": "pytest",
+                "exit_code": 1,
+                "timed_out": False,
+                "source_after_sha256": "source-before-edit",
+            }
+        ],
+        current_source_sha256="source-after-edit",
+        workspace_path=str(tmp_path),
+    )
+    assert any("did not pass" in issue for issue in issues)
+    assert any("stale" in issue for issue in issues)
+
+
+async def test_verification_runner_executes_only_approved_commands(
+    db, monkeypatch, tmp_path
+):
+    from agent_team.features.board.runtime.loop import verification_runner as runner
+    from agent_team.features.board.runtime.sandbox.base import ExecResult
+    from agent_team.features.board.runtime.sandbox.config import RuntimeProfile
+    from sqlalchemy.orm import sessionmaker
+
+    board = boards_repo.create_board(
+        db, name="Receipt Board", description=None, columns=None, owner_id=None
+    )
+    task_row = tasks_repo.create_task(
+        db,
+        board_id=board.id,
+        title="Verify",
+        description=None,
+        status="todo",
+        assignee_id=None,
+        labels=None,
+        priority=None,
+        created_by=None,
+    )
+    repo_row = AgentTeamRepo(
+        name="Chizy Chat Bot",
+        slug="chizy-chat-bot",
+        git_url="https://example.test/chizy-chat-bot.git",
+    )
+    db.add(repo_row)
+    db.flush()
+    db.add(AgentTeamBoardRepo(board_id=board.id, repo_id=repo_row.id))
+    db.commit()
+    (tmp_path / "chizy-chat-bot" / ".git").mkdir(parents=True)
+
+    factory = sessionmaker(
+        bind=db.get_bind(), autoflush=False, autocommit=False, future=True
+    )
+    monkeypatch.setattr(runner, "SessionLocal", factory)
+    monkeypatch.setattr(runner, "resolve_profile", lambda *_args: RuntimeProfile())
+
+    executed: list[tuple[str, str]] = []
+
+    class FakeSandbox:
+        kind = "fake"
+        sandbox_id = "sandbox-1"
+        is_remote = False
+
+        async def exec_shell(self, command, **kwargs):
+            executed.append((command, kwargs["cwd"]))
+            return ExecResult(
+                stdout="12 passed",
+                stderr="",
+                exit_code=0,
+                duration_ms=42,
+                timed_out=False,
+            )
+
+    async def fake_prepare(**_kwargs):
+        return FakeSandbox()
+
+    async def fake_pause(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(runner, "prepare_task_sandbox", fake_prepare)
+    monkeypatch.setattr(runner, "pause_task_sandbox", fake_pause)
+
+    tasks = [
+        {
+            "id": "T1",
+            "verification": {
+                "feature_commands": [
+                    {"repo": "chizy-chat-bot", "command": "npm test"},
+                    {"repo": "chizy-chat-bot", "command": "npm test"},
+                ],
+                "regression_commands": ["npm run smoke"],
+            },
+        }
+    ]
+    tasks_text = json.dumps({"version": 1, "tasks": tasks})
+    runner.artifacts.write_text(
+        str(tmp_path), runner.artifacts.TASKS_PATH, tasks_text
+    )
+    approved_contract_etag = runner.artifacts.tasks_contract_etag(str(tmp_path))
+    batch = await runner.run_approved_commands(
+        task_id=task_row.id,
+        board_id=board.id,
+        attempt_id=None,
+        workspace_path=str(tmp_path),
+        tasks=tasks,
+        approved_tasks_contract_etag=approved_contract_etag,
+    )
+
+    assert batch is not None
+    assert executed == [
+        ("npm test", str(tmp_path / "chizy-chat-bot")),
+        ("npm run smoke", str(tmp_path)),
+    ]
+    assert [row["command"] for row in batch.receipts] == [
+        "npm test",
+        "npm run smoke",
+    ]
+    assert batch.receipts[0]["repo"] == "chizy-chat-bot"
+    assert batch.receipts[0]["working_directory"] == "chizy-chat-bot"
+    assert batch.receipts[1]["repo"] is None
+    assert batch.receipts[1]["working_directory"] == "."
+    assert all(row["status"] == "pass" for row in batch.receipts)
+    manifest = json.loads(
+        (tmp_path / ".agent-team" / "VERIFICATION_RECEIPTS.json").read_text()
+    )
+    assert manifest["authoritative"] is False
+    assert {row["id"] for row in manifest["receipts"]} == {
+        row["id"] for row in batch.receipts
+    }
+
+    runner.artifacts.write_text(
+        str(tmp_path), runner.artifacts.TASKS_PATH, '{"version": 1, "tasks": []}'
+    )
+    with pytest.raises(runner.VerificationContractError):
+        await runner.run_approved_commands(
+            task_id=task_row.id,
+            board_id=board.id,
+            attempt_id=None,
+            workspace_path=str(tmp_path),
+            tasks=tasks,
+            approved_tasks_contract_etag=approved_contract_etag,
+        )
+    assert executed == [
+        ("npm test", str(tmp_path / "chizy-chat-bot")),
+        ("npm run smoke", str(tmp_path)),
+    ]
+
+
+async def test_verification_runner_rejects_unassigned_structured_repo(
+    db, monkeypatch, tmp_path
+):
+    from agent_team.features.board.runtime.loop import verification_runner as runner
+    from sqlalchemy.orm import sessionmaker
+
+    board = boards_repo.create_board(
+        db, name="Scoped Receipt Board", description=None, columns=None, owner_id=None
+    )
+    task_row = tasks_repo.create_task(
+        db,
+        board_id=board.id,
+        title="Verify scope",
+        description=None,
+        status="todo",
+        assignee_id=None,
+        labels=None,
+        priority=None,
+        created_by=None,
+    )
+    db.commit()
+    factory = sessionmaker(
+        bind=db.get_bind(), autoflush=False, autocommit=False, future=True
+    )
+    monkeypatch.setattr(runner, "SessionLocal", factory)
+    tasks = [
+        {
+            "id": "T1",
+            "verification": {
+                "feature_commands": [
+                    {"repo": "not-on-board", "command": "npm test"}
+                ]
+            },
+        }
+    ]
+    tasks_text = json.dumps({"version": 1, "tasks": tasks})
+    runner.artifacts.write_text(
+        str(tmp_path), runner.artifacts.TASKS_PATH, tasks_text
+    )
+
+    with pytest.raises(runner.VerificationContractError, match="not assigned"):
+        await runner.run_approved_commands(
+            task_id=task_row.id,
+            board_id=board.id,
+            attempt_id=None,
+            workspace_path=str(tmp_path),
+            tasks=tasks,
+            approved_tasks_contract_etag=runner.artifacts.tasks_contract_etag(
+                str(tmp_path)
+            ),
+        )
+
+    repo_row = AgentTeamRepo(
+        name="Missing Copy",
+        slug="missing-copy",
+        git_url="https://example.test/missing-copy.git",
+    )
+    db.add(repo_row)
+    db.flush()
+    db.add(AgentTeamBoardRepo(board_id=board.id, repo_id=repo_row.id))
+    db.commit()
+    tasks[0]["verification"]["feature_commands"] = [
+        {"repo": "missing-copy", "command": "npm test"}
+    ]
+    tasks_text = json.dumps({"version": 1, "tasks": tasks})
+    runner.artifacts.write_text(
+        str(tmp_path), runner.artifacts.TASKS_PATH, tasks_text
+    )
+    with pytest.raises(runner.VerificationContractError, match="not prepared"):
+        await runner.run_approved_commands(
+            task_id=task_row.id,
+            board_id=board.id,
+            attempt_id=None,
+            workspace_path=str(tmp_path),
+            tasks=tasks,
+            approved_tasks_contract_etag=runner.artifacts.tasks_contract_etag(
+                str(tmp_path)
+            ),
+        )
+
+
+def test_strict_verification_gate_uses_task_contract(tmp_path):
+    from agent_team.features.board.runtime.loop.service import (
+        _strict_verification_issues,
+    )
+    from agent_team.features.board.runtime.loop.verdict import LoopVerdict, Verdict
+
+    task = {
+        "id": "T1",
+        "acceptance": ["UI is visible"],
+        "verification": {
+            "profiles": ["ui_admin"],
+            "test_change": "add",
+            "feature_commands": ["npm run test:feature"],
+            "regression_commands": ["npm run test:smoke"],
+        },
+    }
+    legacy_claim = Verdict(
+        LoopVerdict.PASS,
+        evidence={
+            "version": 1,
+            "commands": [{"cmd": "npm run build", "exit_code": 0}],
+        },
+    )
+    issues = _strict_verification_issues(
+        legacy_claim,
+        workspace_path=str(tmp_path),
+        graph_task=task,
+    )
+    assert any("schema version 2" in issue for issue in issues)
+    assert any("npm run test:feature" in issue for issue in issues)
+    assert any("scenarios" in issue for issue in issues)
+    assert any("artifacts" in issue for issue in issues)
+    assert any("T1:AC-1" in issue for issue in issues)
 
 
 def test_format_evidence_digest():

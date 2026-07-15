@@ -39,7 +39,8 @@ Modules under `runtime/loop/`:
 | `controller.py` | **No-I/O** decision logic: first prompt, continue-vs-stop. Testable in isolation. |
 | `driver.py` | The I/O loop: run generator → evaluate → apply the controller's decision → publish status. |
 | `evaluator.py` | The independent verifier worker. |
-| `verdict.py` | The structured verdict shape (`pass`/`fail`/`needs_human` + score + missing + evidence + the evaluator's own `eval_tokens`/`eval_cost_usd`). Also `has_verification_evidence` and `format_evidence_digest` (the compact evidence summary relayed into the next attempt). |
+| `verdict.py` | The structured verdict shape, evaluator usage, legacy evidence checks, schema-v2 verification-contract and workspace-artifact validation, plus the compact evidence digest relayed into retries. |
+| `verification_runner.py` | Resolves only approved commands, executes them in the task runtime, and mints source/runtime-bound database receipts. |
 | `budget.py` | `LoopBudget` (caps) + `LoopLedger` (running token/cost/runtime accounting). |
 | `status.py` | `LoopState` (persisted) + `LoopStatus` (live snapshot) + `outcome_to_state`. |
 | `service.py` | Entry points: `start_autonomous_loop`, the planner wrapper, etc. |
@@ -52,8 +53,8 @@ Modules under `runtime/loop/`:
 - **The evaluator is independent and owns completion.** The generator must not
   grade its own work. The evaluator is a separate worker (can be a different
   model) instructed to *disprove* completion — "assume broken until proven
-  otherwise" — and to *act* (run the project's tests/lint/build), not just read
-  the transcript. The **backend** applies `complete` only after the evaluator
+  otherwise" — and to inspect the diff, trusted command receipts, and real UI or
+  scenario evidence, not just read the transcript. The **backend** applies `complete` only after the evaluator
   returns `pass`. The generator may at most claim `in_progress` / `ready_for_review`.
 - **A `pass` must be evidence-backed, or it is downgraded.** `service.py`
   downgrades any `pass` that carries no verification evidence (no commands/checks
@@ -63,6 +64,16 @@ Modules under `runtime/loop/`:
   (`format_evidence_digest`) into the next attempt's prompt so the generator
   fixes the exact gap instead of guessing. See
   [`decisions.md`](../decisions.md) D13.
+- **Strict tasks can declare verification contracts.** Profiles and planned
+  commands live on each `TASKS.json` task. The backend runner, not the evaluator,
+  executes those approved commands in their declared assigned repo working
+  directories and stores receipts tied to repo/cwd, source, and runtime
+  fingerprints. Legacy string commands still run from the workspace root. The
+  backend downgrades `pass` when a receipt is
+  missing/failing/stale, a criterion is unmapped, a UI/AI scenario is absent, or
+  a referenced workspace artifact is missing/unsafe. Legacy plans
+  without this block remain valid, but strict passes still require successful
+  commands with explicit exit codes.
 - **Continuation is a normal user message** appended to the same thread — no
   system-prompt mutation, no toolset swap — so the prompt cache stays warm.
 - **Fail-open judging.** Evaluator/judge failures are treated as "continue"; the

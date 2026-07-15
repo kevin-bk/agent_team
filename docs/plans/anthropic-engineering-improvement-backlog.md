@@ -237,7 +237,15 @@ change the contract used by execution or verification.
 
 ### AT-04 — Structured acceptance criteria and trusted verification receipts
 
-**Current observation.** `runtime/loop/verdict.py::has_verification_evidence`
+**Partial foundation shipped.** `TASKS.json` supports per-task verification
+profiles, test impact, and focused/regression commands. Strict `EVIDENCE.json`
+schema v2 maps criteria to command/scenario/artifact IDs, and the backend checks
+planned commands, exit codes, profile-specific scenario requirements, and real
+workspace artifact paths before accepting `pass`. The remaining work is
+execution provenance: command rows are still evaluator-authored observations,
+not backend-minted receipts tied to a commit/runtime.
+
+**Original observation.** `runtime/loop/verdict.py::has_verification_evidence`
 checks whether evidence-shaped fields are non-empty. A model-written
 `EVIDENCE.json` can therefore claim that a command ran; the backend has no
 cryptographic or execution provenance tying that claim to a repository state.

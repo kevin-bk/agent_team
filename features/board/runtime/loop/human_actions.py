@@ -68,6 +68,9 @@ def approve_plan(
             "approved_by": getattr(user, "id", None),
             "approved_at": datetime.now(UTC).isoformat(),
             "artifact_etags": artifacts.approved_etags(task.workspace_path),
+            "tasks_contract_etag": artifacts.tasks_contract_etag(
+                task.workspace_path
+            ),
             "last_error": None,
         }
     )

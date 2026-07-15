@@ -34,6 +34,7 @@ across three feature packages: `features/board/models.py`,
 |---|---|---|
 | `AgentTeamAttempt` | `…_attempt` | one loop iteration (a generator turn + its evaluation). |
 | `AgentTeamEvaluation` | `…_evaluation` | the independent evaluator's verdict for an attempt (`pass`/`fail`/`needs_human`, score, missing, evidence). |
+| `AgentTeamVerificationReceipt` | `…_verification_receipt` | backend-owned proof for one approved command: repo/cwd, exit/duration/output hashes, source fingerprints, runtime identity, task/attempt/batch binding. |
 | `AgentTeamJournalEntry` | `…_journal_entry` | the semantic decision timeline (see [`pages/task-journal.md`](pages/task-journal.md)). |
 
 `Task.loop_state` is the **single canonical public lifecycle** (see

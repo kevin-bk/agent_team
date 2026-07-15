@@ -67,6 +67,109 @@ def test_validate_tasks_accepts_well_formed():
     assert A.validate_tasks(data) == []
 
 
+def test_validate_tasks_accepts_and_normalises_verification_contract(tmp_path):
+    data = {
+        "version": 1,
+        "tasks": [
+            {
+                "id": "T1",
+                "status": "pending",
+                "verification": {
+                    "profiles": ["ui_admin"],
+                    "test_change": "add",
+                    "feature_commands": [
+                        {
+                            "repo": "chizy-chat-bot",
+                            "command": "npm run test:feature",
+                        }
+                    ],
+                    "regression_commands": ["npm run test:smoke"],
+                    "required_evidence": ["artifacts"],
+                },
+            }
+        ],
+    }
+    assert A.validate_tasks(data) == []
+    A.write_text(str(tmp_path), A.TASKS_PATH, json.dumps(data))
+    verification = A.task_list(str(tmp_path))[0]["verification"]
+    assert verification["profiles"] == ["ui_admin"]
+    assert verification["test_change"] == "add"
+    assert verification["feature_commands"] == [
+        {"repo": "chizy-chat-bot", "command": "npm run test:feature"}
+    ]
+    # Legacy string commands remain valid during migration.
+    assert verification["regression_commands"] == ["npm run test:smoke"]
+
+
+def test_tasks_contract_etag_ignores_status_but_detects_scope_changes(tmp_path):
+    workspace = str(tmp_path)
+    data = {
+        "version": 1,
+        "tasks": [
+            {
+                "id": "T1",
+                "status": "pending",
+                "acceptance": ["works"],
+                "verification": {
+                    "feature_commands": [
+                        {"repo": "app", "command": "npm test"}
+                    ]
+                },
+            }
+        ],
+    }
+    A.write_text(workspace, A.TASKS_PATH, json.dumps(data))
+    approved = A.tasks_contract_etag(workspace)
+
+    data["tasks"][0]["status"] = "in_progress"
+    A.write_text(workspace, A.TASKS_PATH, json.dumps(data))
+    assert A.tasks_contract_etag(workspace) == approved
+
+    data["tasks"][0]["verification"]["feature_commands"][0]["command"] = (
+        "npm test -- --changed"
+    )
+    A.write_text(workspace, A.TASKS_PATH, json.dumps(data))
+    assert A.tasks_contract_etag(workspace) != approved
+
+
+def test_validate_tasks_rejects_malformed_verification_contract():
+    errors = A.validate_tasks(
+        {
+            "version": 1,
+            "tasks": [
+                {
+                    "id": "T1",
+                    "verification": {
+                        "profiles": "ui_admin",
+                        "test_change": "rewrite",
+                    },
+                }
+            ],
+        }
+    )
+    assert any("verification.profiles" in error for error in errors)
+    assert any("verification.test_change" in error for error in errors)
+
+    command_errors = A.validate_tasks(
+        {
+            "version": 1,
+            "tasks": [
+                {
+                    "id": "T1",
+                    "verification": {
+                        "feature_commands": [
+                            {"repo": "../outside", "command": "npm test"},
+                            {"repo": "chizy-chat-bot", "command": ""},
+                        ]
+                    },
+                }
+            ],
+        }
+    )
+    assert any("safe repo slug" in error for error in command_errors)
+    assert any("non-empty 'repo'" in error for error in command_errors)
+
+
 def test_validate_tasks_flags_problems():
     dup = A.validate_tasks(
         {"version": 1, "tasks": [{"id": "T1"}, {"id": "T1"}]}
@@ -140,6 +243,18 @@ def test_planning_prompt_requires_artifacts_and_forbids_edits():
     assert A.PLAN_PATH in prompt
     assert A.TASKS_PATH in prompt
     assert "Do not implement" in prompt
+    assert '"verification"' in prompt
+    assert '"test_change"' in prompt
+    assert '"repo": "repo-slug"' in prompt
+    assert '"command": "exact focused test command"' in prompt
+    assert "Never assume the workspace root is a project root" in prompt
+    assert "do not prefix it with `cd`" in prompt
+
+
+def test_reviewer_rejects_ambiguous_multi_repo_verification_commands():
+    prompt = P.build_review_prompt()
+    assert "multi-repo verification commands" in prompt
+    assert "repository working directory" in prompt
 
 
 def test_strict_evaluator_prompt_references_approved_contract():
@@ -150,6 +265,8 @@ def test_strict_evaluator_prompt_references_approved_contract():
     assert A.PLAN_PATH in prompt
     assert A.EVIDENCE_PATH in prompt
     assert "git diff" in prompt
+    assert '"version": 2' in prompt
+    assert "criteria" in prompt and "scenarios" in prompt
 
 
 def test_generator_strict_preamble_mentions_change_request():
@@ -455,16 +572,28 @@ def test_build_task_prompts_scope_to_single_task():
         "files": ["api.py"],
         "acceptance": ["returns 200"],
         "validation": ["pytest test_api.py"],
+        "verification": {
+            "profiles": ["api"],
+            "test_change": "add",
+            "feature_commands": [
+                {"repo": "api-service", "command": "pytest test_api.py"}
+            ],
+            "regression_commands": ["pytest"],
+        },
     }
     obj = P.build_task_objective(task)
     assert "T3" in obj and "Wire the API" in obj
     assert "returns 200" in obj and "pytest test_api.py" in obj
+    assert "Profiles: api" in obj and "Test change: add" in obj
+    assert "api-service: pytest test_api.py" in obj
 
     ev = P.build_task_evaluator_prompt(
         task=task, generator_summary="done", verdict_path=A.EVIDENCE_PATH
     )
     assert "T3" in ev and "returns 200" in ev
     assert A.EVIDENCE_PATH in ev
+    assert "T3:AC-1" in ev and '"version": 2' in ev
+    assert "api-service: pytest test_api.py" in ev
     assert A.PLAN_CHANGE_REQUEST_PATH in P.TASK_GRAPH_PREAMBLE
 
 

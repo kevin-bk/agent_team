@@ -110,6 +110,7 @@ class AgentTeamPlugin(PluginBase):
             AgentTeamTask,
             AgentTeamTaskSchedule,
             AgentTeamToolOutput,
+            AgentTeamVerificationReceipt,
         )
         from agent_team.features.comm.models import (
             AgentTeamBoardChannel,
@@ -142,6 +143,7 @@ class AgentTeamPlugin(PluginBase):
             AgentTeamTaskSchedule,
             AgentTeamAttempt,
             AgentTeamEvaluation,
+            AgentTeamVerificationReceipt,
             AgentTeamJournalEntry,
             AgentTeamCommConnection,
             AgentTeamBoardChannel,

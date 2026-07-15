@@ -32,9 +32,10 @@ mode:
 |---|---|
 | `SPEC.md` | Human + engineering contract: goal, original request, context, in-scope, non-goals, constraints, **acceptance criteria**, verification expectations, open questions, assumptions, risks. |
 | `PLAN.md` | The technical approach: files/components, alternatives, steps, data/API/UI changes, verification plan, rollback, risks. |
-| `TASKS.json` | Machine-readable task graph (schema v1). Advisory by default, but **executable** when a run opts into task-graph mode (`task_graph=True`). Validated by `validate_tasks` (unique ids, known deps, acyclic, known statuses) on edit. |
+| `TASKS.json` | Machine-readable task graph (schema v1). Advisory by default, but **executable** when a run opts into task-graph mode (`task_graph=True`). Each task may declare a `verification` contract: profiles, test delta, focused/regression commands, and extra evidence sections. |
 | `PLAN_REVIEW.json` | The adversarial reviewer's verdict (`pass`/`fail`/`needs_human` + blocking issues + risk level). |
-| `EVIDENCE.json` | The evaluator's durable verification record (verdict, score, commands+exit codes, changed files, missing, risks). |
+| `EVIDENCE.json` | The evaluator's durable verification record. Schema v2 adds backend `receipt_ids`, criterion mappings, scenarios, and workspace-relative artifacts. `ui_*`/`visual` profiles require scenario + artifact evidence; `ai_*` requires scenario evidence. |
+| `VERIFICATION_RECEIPTS.json` | Evaluator-readable projection of the latest backend receipt batch. It is not authoritative; completion reloads receipt rows from the database. |
 | `PLAN_CHANGE_REQUEST.md` | An **active marker**: execution discovered the approved plan is wrong/unsafe and paused. |
 | `QUESTIONS.json` | Structured agent questions (see "Questions" below). |
 | `INTAKE.json` | The planner's risk intake (input type + 11 risk flags + reasons). **Advisory** — never required for approval; the backend derives the process *lane* from it (see "Lanes are enforced" below). |
@@ -56,6 +57,32 @@ their *format* is owned:
   are **hardcoded in the backend** and versioned. They are the wire protocol
   between the agents and the loop; letting them drift would silently break the
   parser or independent verification.
+
+`EVIDENCE.json` v2 is structurally enforced: every planned command must have a
+successful backend-minted receipt cited by id, every acceptance criterion must
+map to known evidence IDs, and required artifact paths must be non-empty files
+inside the workspace. The runner resolves commands only from the approved
+`TASKS.json` contract, runs them in the task runtime, and binds each receipt to
+the Git HEAD + dirty source fingerprint before/after execution and to the
+runtime provider/image/sandbox fingerprint. A receipt becomes stale if source
+changes before completion. Evaluator-authored `commands` remain informational
+and cannot substitute for database receipts.
+
+New plans express each feature/regression command as
+`{"repo": "assigned-repo-slug", "command": "..."}`. The runner verifies that
+the slug is assigned to the board and that its working copy exists inside the
+task workspace, then executes with that repo as `cwd`. Legacy command strings
+remain supported and run from the workspace root, but planners no longer emit
+them. Receipts record both the repo slug and workspace-relative working
+directory.
+
+Approval metadata also stores a canonical task-contract fingerprint. It ignores
+only per-task lifecycle `status` values that the backend updates while running;
+changing repo selection, commands, acceptance criteria, dependencies, or other
+scope invalidates the fingerprint and requires re-approval. Plans approved
+before this fingerprint existed must be re-approved before trusted commands can
+run.
+
 - **Read-as-text guidance** (`SPEC.md` / `PLAN.md`). The backend only checks they
   exist (`REQUIRED_FOR_APPROVAL`) and shows them in the cockpit — it does **not**
   parse their headings. Their *section structure* is therefore guidance, owned by
