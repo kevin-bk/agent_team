@@ -384,6 +384,7 @@ export function LoopPanel({
       ? (historicalDetail?.changed_file_count ?? 0)
       : (changes.data?.files.length ?? 0),
     verification: selectedReceipts.length,
+    delivery: publications.data?.length ?? 0,
     activity: activityInfo
       ? Number(!!activityInfo.planner_conversation_id) +
         Number(!!activityInfo.generator_conversation_id) +
@@ -449,15 +450,7 @@ export function LoopPanel({
           )}
 
           {view === "summary" && historicalDetail && (
-            <>
-              <ArchivedGoalSummary detail={historicalDetail} />
-              <DeliveryPanel
-                publications={publications.data ?? []}
-                canPublish={false}
-                reason={publicationReason}
-                publishing={false}
-              />
-            </>
+            <ArchivedGoalSummary detail={historicalDetail} />
           )}
 
           {view === "summary" && !historical && (
@@ -540,25 +533,6 @@ export function LoopPanel({
                 </div>
               )}
 
-              {currentGoalRun && (
-                <DeliveryPanel
-                  publications={publications.data ?? []}
-                  canPublish={!!canEdit && goalVerified}
-                  reason={publicationReason}
-                  publishing={publishGoal.isPending}
-                  onPublish={() => {
-                    publishGoal.mutate(false, {
-                      onSuccess: (result) => {
-                        if (result.ok) toast.success(result.detail || "Merge request created");
-                        else toast.error(result.detail || "Publication needs attention");
-                      },
-                      onError: (error) => toast.error(
-                        error instanceof Error ? error.message : "Could not publish goal",
-                      ),
-                    });
-                  }}
-                />
-              )}
             </>
           )}
 
@@ -625,6 +599,43 @@ export function LoopPanel({
               attempts={selectedAttempts}
               receipts={selectedReceipts}
               evidence={selectedEvidence}
+            />
+          )}
+
+          {view === "delivery" && (
+            <DeliveryPanel
+              publications={publications.data ?? []}
+              canPublish={
+                !historical
+                && !!canEdit
+                && goalVerified
+                && !publications.isLoading
+                && !publications.isError
+              }
+              reason={publicationReason}
+              loading={publications.isLoading}
+              loadError={publications.isError}
+              publishing={!historical && publishGoal.isPending}
+              onPublish={
+                !historical && currentGoalRun
+                  ? () => {
+                      publishGoal.mutate(false, {
+                        onSuccess: (result) => {
+                          if (result.ok) {
+                            toast.success(result.detail || "Merge request created");
+                          } else {
+                            toast.error(result.detail || "Publication needs attention");
+                          }
+                        },
+                        onError: (error) => toast.error(
+                          error instanceof Error
+                            ? error.message
+                            : "Could not publish goal",
+                        ),
+                      });
+                    }
+                  : undefined
+              }
             />
           )}
 

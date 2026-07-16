@@ -41,6 +41,7 @@ export type GoalView =
   | "plan"
   | "changes"
   | "verification"
+  | "delivery"
   | "activity";
 
 const VIEW_META: Array<{
@@ -52,6 +53,7 @@ const VIEW_META: Array<{
   { id: "plan", label: "Plan & spec", icon: FileText },
   { id: "changes", label: "Changes", icon: Code2 },
   { id: "verification", label: "Verification", icon: CheckCircle2 },
+  { id: "delivery", label: "Delivery", icon: Send },
   { id: "activity", label: "Activity", icon: Activity },
 ];
 
@@ -361,12 +363,16 @@ export function DeliveryPanel({
   publications,
   canPublish,
   reason,
+  loading = false,
+  loadError = false,
   publishing,
   onPublish,
 }: {
   publications: GoalPublicationDTO[];
   canPublish: boolean;
   reason?: string;
+  loading?: boolean;
+  loadError?: boolean;
   publishing: boolean;
   onPublish?: () => void;
 }) {
@@ -399,7 +405,15 @@ export function DeliveryPanel({
         )}
       </div>
 
-      {publications.length ? (
+      {loading ? (
+        <div className="flex items-center justify-center gap-2 px-4 py-8 text-[12px] text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin" /> Loading delivery status…
+        </div>
+      ) : loadError ? (
+        <p className="bg-rose-50 px-4 py-5 text-[12px] text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">
+          Delivery status could not be loaded. Refresh the page before publishing.
+        </p>
+      ) : publications.length ? (
         <div className="divide-y divide-border">
           {publications.map((publication) => (
             <div key={publication.id} className="px-4 py-3">
