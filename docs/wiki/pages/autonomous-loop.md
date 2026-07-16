@@ -24,7 +24,8 @@ controller.start() → first prompt (the objective)
    ▼   ┌──────────────────────────────────────────────────────┐
    └──►│ generator turn (AgentWorker, role=generator)          │  frames → event store → SSE
        │   ▼                                                    │
-       │ evaluator.evaluate(objective, transcript, workspace)  │  runs tests/lint/build
+       │ strict: backend runner executes approved commands     │  trusted receipts
+       │ evaluator.evaluate(objective, transcript, workspace)  │  grades evidence
        │   ▼                                                    │
        │ controller.on_attempt_finished(...) → Continue | Done │
        └──────────────────────────────────────────────────────┘
@@ -38,7 +39,7 @@ Modules under `runtime/loop/`:
 |---|---|
 | `controller.py` | **No-I/O** decision logic: first prompt, continue-vs-stop. Testable in isolation. |
 | `driver.py` | The I/O loop: run generator → evaluate → apply the controller's decision → publish status. |
-| `evaluator.py` | The independent verifier worker. |
+| `evaluator.py` | The independent verifier worker. In strict mode it starts after approved backend commands have produced receipts; legacy mode may run checks itself. |
 | `verdict.py` | The structured verdict shape, evaluator usage, legacy evidence checks, schema-v2 verification-contract and workspace-artifact validation, plus the compact evidence digest relayed into retries. |
 | `verification_runner.py` | Resolves only approved commands, executes them in the task runtime, and mints source/runtime-bound database receipts. |
 | `budget.py` | `LoopBudget` (caps) + `LoopLedger` (running token/cost/runtime accounting). |

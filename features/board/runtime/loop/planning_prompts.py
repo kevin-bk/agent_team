@@ -25,6 +25,15 @@ PHASE_REVIEW = "PHASE: REVIEW"
 PHASE_IMPLEMENT = "PHASE: IMPLEMENT"
 PHASE_VERIFY = "PHASE: VERIFY"
 
+#: Explicit role banner paired with the phase banner in every strict workflow
+#: prompt. A phase says what is happening; a role says which responsibility the
+#: current agent owns. Keeping both explicit prevents a generator from grading
+#: itself or an evaluator from silently taking over implementation work.
+ROLE_PLANNER = "ROLE: PLANNER"
+ROLE_PLAN_REVIEWER = "ROLE: PLAN REVIEWER"
+ROLE_CODING_AGENT = "ROLE: CODING AGENT"
+ROLE_INDEPENDENT_EVALUATOR = "ROLE: INDEPENDENT EVALUATOR"
+
 #: Shared escape hatch: rather than guessing a materially-impacting decision, an
 #: agent writes structured blocking questions for the human and stops. Reused by
 #: the planner and the strict/task-graph generator preambles.
@@ -208,6 +217,7 @@ def build_planning_prompt(
     conv_section = f"{conv}\n\n" if conv else ""
     return (
         f"{PHASE_PLAN}\n\n"
+        f"{ROLE_PLANNER}\n\n"
         f"{PLANNER_SYSTEM}\n\n"
         f"## Task\n{objective}\n\n"
         "## Available context\n"
@@ -273,6 +283,7 @@ def build_review_prompt(*, conventions: str | None = None) -> str:
     conv_section = f"\n\n{conv}" if conv else ""
     return (
         f"{PHASE_REVIEW}\n\n"
+        f"{ROLE_PLAN_REVIEWER}\n\n"
         f"{REVIEWER_SYSTEM}{conv_section}\n\n"
         "## Inputs\n"
         f"- `{A.SPEC_PATH}`\n- `{A.PLAN_PATH}`\n- `{A.TASKS_PATH}`\n\n"
@@ -304,6 +315,9 @@ def build_review_prompt(*, conventions: str | None = None) -> str:
 #: the generator at the approved contract and forbids silent scope expansion.
 GENERATOR_STRICT_PREAMBLE = (
     f"{PHASE_IMPLEMENT}\n\n"
+    f"{ROLE_CODING_AGENT}\n\n"
+    "You are the coding and implementation agent. You own the approved code, "
+    "test, and delivery work; you do not grade your own completion. "
     "This task runs under an approved plan. Before editing, read the approved "
     f"contract in `{A.SPEC_PATH}` and the plan in `{A.PLAN_PATH}`. Implement the "
     "plan exactly; keep changes within the approved scope. If you discover the "
@@ -365,7 +379,10 @@ def build_resume_preamble(reason: str | None = None) -> str:
 #: change-request escape hatch as whole-objective strict mode.
 TASK_GRAPH_PREAMBLE = (
     f"{PHASE_IMPLEMENT}\n\n"
-    "You are executing ONE task of an approved plan. Read the approved contract "
+    f"{ROLE_CODING_AGENT}\n\n"
+    "You are the coding and implementation agent executing ONE task of an "
+    "approved plan. You own its approved code, test, and delivery work; you do "
+    "not grade your own completion. Read the approved contract "
     f"`{A.SPEC_PATH}` and plan `{A.PLAN_PATH}` for context, but implement ONLY "
     "the current task described above — do not start other tasks or expand "
     "scope. If the approved plan is wrong, unsafe or insufficient for this task, "
@@ -531,6 +548,7 @@ def build_task_evaluator_prompt(
     criterion_ids = [f"{tid}:AC-{i}" for i in range(1, len(acceptance) + 1)]
     return (
         f"{PHASE_VERIFY}\n\n"
+        f"{ROLE_INDEPENDENT_EVALUATOR}\n\n"
         "You are an independent verifier grading a SINGLE task of an approved "
         "plan. Assume it is incomplete until proven otherwise, and verify "
         "evidence rather than trusting the agent's summary.\n\n"
@@ -618,6 +636,7 @@ def build_strict_evaluator_prompt(
     summary = (generator_summary or "").strip() or "(the agent provided no summary)"
     return (
         f"{PHASE_VERIFY}\n\n"
+        f"{ROLE_INDEPENDENT_EVALUATOR}\n\n"
         "You are an independent verifier. Assume the implementation is "
         "incomplete until proven otherwise, and verify evidence rather than "
         "trusting the agent's summary.\n\n"

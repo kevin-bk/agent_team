@@ -15,7 +15,11 @@ from agent_team.features.board.runtime.loop import planning as planning_module
 from agent_team.features.board.runtime.loop import planning_artifacts as A
 from agent_team.features.board.runtime.loop import planning_prompts as P
 from agent_team.features.board.runtime.loop import service as loop_service
-from agent_team.features.board.runtime.loop.controller import LoopController
+from agent_team.features.board.runtime.loop.controller import (
+    CODING_AGENT_ROLE_PREAMBLE,
+    LoopController,
+)
+from agent_team.features.board.runtime.loop.evaluator import build_evaluator_prompt
 from agent_team.features.board.runtime.loop.status import LoopState
 from agent_team.features.board.runtime.loop.verdict import LoopVerdict
 
@@ -322,6 +326,7 @@ def test_archive_change_request_clears_active_marker(tmp_path):
 # ── prompts ──────────────────────────────────────────────────────────────────
 def test_planning_prompt_requires_artifacts_and_forbids_edits():
     prompt = P.build_planning_prompt("Add X", task_id="t1", workspace_path="/ws")
+    assert P.ROLE_PLANNER in prompt
     assert A.SPEC_PATH in prompt
     assert A.PLAN_PATH in prompt
     assert A.TASKS_PATH in prompt
@@ -336,6 +341,7 @@ def test_planning_prompt_requires_artifacts_and_forbids_edits():
 
 def test_reviewer_rejects_ambiguous_multi_repo_verification_commands():
     prompt = P.build_review_prompt()
+    assert P.ROLE_PLAN_REVIEWER in prompt
     assert "multi-repo verification commands" in prompt
     assert "repository working directory" in prompt
 
@@ -344,6 +350,7 @@ def test_strict_evaluator_prompt_references_approved_contract():
     prompt = P.build_strict_evaluator_prompt(
         objective="obj", generator_summary="did stuff", verdict_path=A.EVIDENCE_PATH
     )
+    assert P.ROLE_INDEPENDENT_EVALUATOR in prompt
     assert A.SPEC_PATH in prompt
     assert A.PLAN_PATH in prompt
     assert A.EVIDENCE_PATH in prompt
@@ -352,9 +359,20 @@ def test_strict_evaluator_prompt_references_approved_contract():
     assert "criteria" in prompt and "scenarios" in prompt
 
 
+def test_legacy_evaluator_prompt_declares_independent_role():
+    prompt = build_evaluator_prompt("objective", "summary")
+    assert "ROLE: INDEPENDENT EVALUATOR" in prompt
+
+
 def test_generator_strict_preamble_mentions_change_request():
+    assert P.ROLE_CODING_AGENT in P.GENERATOR_STRICT_PREAMBLE
     assert A.PLAN_CHANGE_REQUEST_PATH in P.GENERATOR_STRICT_PREAMBLE
     assert A.SPEC_PATH in P.GENERATOR_STRICT_PREAMBLE
+
+
+def test_legacy_generator_opening_prompt_declares_coding_role():
+    prompt = LoopController("Do the work").start()
+    assert CODING_AGENT_ROLE_PREAMBLE in prompt
 
 
 # ── risk intake → lane (INTAKE.json) ─────────────────────────────────────────
@@ -669,10 +687,12 @@ def test_build_task_prompts_scope_to_single_task():
     assert "returns 200" in obj and "pytest test_api.py" in obj
     assert "Profiles: api" in obj and "Test change: add" in obj
     assert "api-service: pytest test_api.py" in obj
+    assert P.ROLE_CODING_AGENT in P.TASK_GRAPH_PREAMBLE
 
     ev = P.build_task_evaluator_prompt(
         task=task, generator_summary="done", verdict_path=A.EVIDENCE_PATH
     )
+    assert P.ROLE_INDEPENDENT_EVALUATOR in ev
     assert "T3" in ev and "returns 200" in ev
     assert A.EVIDENCE_PATH in ev
     assert "T3:AC-1" in ev and '"version": 2' in ev
