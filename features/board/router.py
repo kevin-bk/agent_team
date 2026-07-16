@@ -2077,7 +2077,7 @@ async def publish_goal_for_review(
     request: Request,
     db: Session = Depends(get_db),
 ):
-    """Human approval: publish the verified tree and create review requests."""
+    """Human approval: publish the current tree and create review requests."""
     ctx, err = authz.guard_task(db, request, task_id, min_role="editor")
     if err:
         return err

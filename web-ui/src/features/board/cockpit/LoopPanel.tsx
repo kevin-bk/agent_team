@@ -42,6 +42,7 @@ import type {
   TaskDTO,
 } from "@/api/types";
 import { Button } from "@/components/ui/button";
+import { useConfirm } from "@/components/ConfirmDialog";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { useBoardEventListener } from "../BoardEventsContext";
@@ -226,6 +227,7 @@ export function LoopPanel({
     task.id,
     publicationGoalId && publicationGoalId !== "live" ? publicationGoalId : "_",
   );
+  const confirm = useConfirm();
   const state: LoopState | null =
     live?.state ?? info?.loop_state ?? pinfo?.loop_state ?? null;
   const running = state === "running" || info?.is_running === true;
@@ -259,6 +261,31 @@ export function LoopPanel({
         : !canEdit
           ? "Editor access is required to publish."
           : undefined;
+
+  const publishCurrentWorkspace = async () => {
+    if (!currentGoalRun || publishGoal.isPending) return;
+    const approved = await confirm({
+      title: "Commit and create merge request?",
+      description:
+        "This will commit and push the current workspace changes, then create or retry the merge request. Continue?",
+      confirmLabel: "Commit & create MR",
+    });
+    if (!approved) return;
+    publishGoal.mutate(false, {
+      onSuccess: (result) => {
+        if (result.ok) {
+          toast.success(result.detail || "Merge request created");
+        } else {
+          toast.error(result.detail || "Publication needs attention");
+        }
+      },
+      onError: (error) => toast.error(
+        error instanceof Error
+          ? error.message
+          : "Could not publish goal",
+      ),
+    });
+  };
 
   useEffect(() => {
     setSelectedGoalRun("live");
@@ -641,22 +668,7 @@ export function LoopPanel({
               publishing={!historical && publishGoal.isPending}
               onPublish={
                 !historical && currentGoalRun
-                  ? () => {
-                      publishGoal.mutate(false, {
-                        onSuccess: (result) => {
-                          if (result.ok) {
-                            toast.success(result.detail || "Merge request created");
-                          } else {
-                            toast.error(result.detail || "Publication needs attention");
-                          }
-                        },
-                        onError: (error) => toast.error(
-                          error instanceof Error
-                            ? error.message
-                            : "Could not publish goal",
-                        ),
-                      });
-                    }
+                  ? () => void publishCurrentWorkspace()
                   : undefined
               }
             />

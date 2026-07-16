@@ -389,7 +389,7 @@ export function DeliveryPanel({
         <div className="min-w-0 flex-1">
           <h3 className="text-[13.5px] font-semibold text-foreground">Delivery</h3>
           <p className="text-[11.5px] text-muted-foreground">
-            Human-controlled publication of the exact code approved by verification
+            Human-confirmed commit, push, and merge request creation from the current workspace
           </p>
         </div>
         {onPublish && !complete && (
@@ -400,7 +400,7 @@ export function DeliveryPanel({
             title={!canPublish ? reason : undefined}
           >
             {publishing ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Send className="mr-1.5 h-3.5 w-3.5" />}
-            {hasErrors ? "Retry publication" : "Approve & create MR"}
+            {hasErrors ? "Retry publication" : "Commit & create MR"}
           </Button>
         )}
       </div>
@@ -443,7 +443,7 @@ export function DeliveryPanel({
               <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-[10.5px] text-muted-foreground">
                 <span>{publication.source_branch} → {publication.target_branch}</span>
                 {publication.commit_sha && <code>commit {publication.commit_sha.slice(0, 10)}</code>}
-                <code title={publication.tree_sha}>verified tree {publication.tree_sha.slice(0, 10)}</code>
+                <code title={publication.tree_sha}>approved tree {publication.tree_sha.slice(0, 10)}</code>
               </div>
               {publication.error && (
                 <p className="mt-2 rounded-md bg-rose-50 px-2.5 py-2 text-[11.5px] text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">

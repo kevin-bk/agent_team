@@ -527,11 +527,11 @@ class AgentTeamGoalRun(Base):
 
 
 class AgentTeamGoalPublication(Base):
-    """Human-approved publication of one verified goal into code review.
+    """Human-approved publication of one completed goal into code review.
 
     Agents may push an isolated task branch for staging deploys. This record is
-    the separate governance boundary: a human approved an exact verified Git
-    tree and the backend opened (or found) its merge/pull request.
+    the separate governance boundary: after a trusted PASS, a human approves
+    the current Git tree and the backend opens (or finds) its merge/pull request.
     """
 
     __tablename__ = "plugin_agent_team_goal_publication"
@@ -564,7 +564,7 @@ class AgentTeamGoalPublication(Base):
     repo_slug: Mapped[str] = mapped_column(String(64), nullable=False)
     source_branch: Mapped[str] = mapped_column(String(255), nullable=False)
     target_branch: Mapped[str] = mapped_column(String(255), nullable=False)
-    #: Git tree approved by the human. Stable across committing/pushing retries.
+    #: Current Git tree approved by the human for this publication attempt.
     tree_sha: Mapped[str] = mapped_column(String(64), nullable=False)
     commit_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
     remote_commit_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)

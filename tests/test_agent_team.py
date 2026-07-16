@@ -5203,7 +5203,7 @@ def test_human_publication_commits_pushes_and_records_review_request(
     assert remote_commit == publication["commit_sha"]
 
 
-def test_human_publication_blocks_workspace_drift_after_verification(
+def test_human_publication_approves_workspace_drift_after_verification(
     db, tmp_path, monkeypatch
 ):
     from pathlib import Path
@@ -5212,6 +5212,7 @@ def test_human_publication_blocks_workspace_drift_after_verification(
     from agent_team.features.board.runtime.loop.verification_runner import (
         capture_source_state,
     )
+    from agent_team.features.repos import review_service
     from agent_team.features.repos.task_copy import prepare_task_repos
 
     _src, repo, task = _prepare_pushable_task(
@@ -5249,10 +5250,25 @@ def test_human_publication_blocks_workspace_drift_after_verification(
     db.commit()
 
     (copy / "feature.txt").write_text("unverified drift\n")
-    with pytest.raises(goal_publication.PublicationError, match="changed after verification"):
-        goal_publication.publish_goal(goal.id, actor_id=None)
+    monkeypatch.setattr(
+        review_service,
+        "create_review_request",
+        lambda *_args, **_kwargs: review_service.ReviewRequestResult(
+            provider="gitlab",
+            number="20",
+            url="https://gitlab.example.com/acme/service/-/merge_requests/20",
+            title="T-20: feature",
+        ),
+    )
 
-    assert db.query(AgentTeamGoalPublication).count() == 0
+    result = goal_publication.publish_goal(goal.id, actor_id=None)
+
+    assert result["ok"] is True
+    publication = result["publications"][0]
+    assert publication["status"] == "published"
+    assert publication["request_number"] == "20"
+    assert db.query(AgentTeamGoalPublication).count() == 1
+    assert (copy / "feature.txt").read_text() == "unverified drift\n"
 
 
 def test_git_push_tool_respects_allow_push(db, tmp_path, monkeypatch):

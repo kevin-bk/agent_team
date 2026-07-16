@@ -75,23 +75,6 @@ def _latest_verdict(execution: dict) -> str | None:
     return None
 
 
-def _verified_source_sha(goal: AgentTeamGoalRun) -> str:
-    execution = goal.execution_snapshot()
-    receipts = execution.get("receipts") if isinstance(execution, dict) else []
-    for receipt in reversed(receipts or []):
-        value = str(receipt.get("source_after_sha256") or "")
-        if value:
-            return value
-    workspace = goal.workspace_snapshot()
-    value = str(workspace.get("source_sha256") or "")
-    if value:
-        return value
-    raise PublicationError(
-        "This goal has no verified source fingerprint. Run verification again "
-        "before creating a merge request."
-    )
-
-
 def _changed_repo_slugs(goal: AgentTeamGoalRun) -> list[str]:
     workspace = goal.workspace_snapshot()
     changes = workspace.get("changes") if isinstance(workspace, dict) else {}
@@ -154,7 +137,7 @@ def _mr_description(goal: AgentTeamGoalRun, repo_slug: str) -> str:
         f"- Critic verdict: `{_latest_verdict(execution) or 'unknown'}`\n"
         f"- Trusted command receipts: {len(receipts or [])}\n"
         f"- Repository: `{repo_slug}`\n\n"
-        "Created by Agent Team after explicit human approval of the verified tree."
+        "Created by Agent Team after explicit human approval of the current workspace tree."
     )
 
 
@@ -172,12 +155,12 @@ def _publish_event(task: AgentTeamTask) -> None:
 def publish_goal(
     goal_run_id: str, *, actor_id: str | None, draft: bool = False
 ) -> dict:
-    """Commit/push verified trees when needed, then create review requests.
+    """Commit/push human-approved workspace trees, then create review requests.
 
-    The first call binds every changed repository to a Git tree SHA. Retries
-    compare that tree rather than HEAD, so committing a previously dirty but
-    verified workspace does not invalidate the approval while any content drift
-    still blocks publication.
+    A trusted PASS remains the prerequisite for showing the human delivery
+    action. The confirmation approves the workspace as it exists at click time,
+    including any human edits made after verification. Each call binds the
+    current Git tree before performing external side effects.
     """
     from core.database.base import SessionLocal
 
@@ -213,14 +196,7 @@ def publish_goal(
             )
 
         existing = {row.repo_slug: row for row in list_publications(db, goal.id)}
-        verified_sha = _verified_source_sha(goal)
-        if not existing:
-            _source, current_sha = capture_source_state(task.workspace_path)
-            if current_sha != verified_sha:
-                raise PublicationError(
-                    "Workspace changed after verification. Run verification again "
-                    "before publishing."
-                )
+        _source, approved_source_sha = capture_source_state(task.workspace_path)
 
         prepared: list[tuple[AgentTeamRepo, Path, AgentTeamGoalPublication]] = []
         source_branch = task_branch_name(task)
@@ -245,11 +221,6 @@ def publish_goal(
                 dest, branch_override or repo.default_branch
             )
             row = existing.get(slug)
-            if row is not None and row.tree_sha != tree_sha:
-                raise PublicationError(
-                    f"Repository '{slug}' changed after human approval. Run "
-                    "verification again before publishing."
-                )
             if row is None:
                 row = AgentTeamGoalPublication(
                     goal_run_id=goal.id,
@@ -259,12 +230,28 @@ def publish_goal(
                     source_branch=source_branch,
                     target_branch=target_branch,
                     tree_sha=tree_sha,
-                    approved_source_sha256=verified_sha,
+                    approved_source_sha256=approved_source_sha,
                     status="pending",
                     published_by=actor_id,
                 )
                 db.add(row)
                 db.flush()
+            elif row.status != "published" and row.tree_sha != tree_sha:
+                # A fresh click is a fresh human approval of the current tree.
+                # Reset partial delivery metadata so a retry commits and pushes
+                # the newly approved content before creating the review request.
+                row.tree_sha = tree_sha
+                row.approved_source_sha256 = approved_source_sha
+                row.commit_sha = None
+                row.remote_commit_sha = None
+                row.provider = None
+                row.request_number = None
+                row.request_url = None
+                row.request_title = None
+                row.status = "pending"
+                row.pushed = False
+                row.error = None
+                row.published_by = actor_id
             prepared.append((repo, dest, row))
         # Persist the approved trees before the first irreversible external call.
         db.commit()

@@ -478,7 +478,7 @@ class GoalRunDetailDTO(GoalRunSummaryDTO):
 
 
 class GoalPublishRequest(BaseModel):
-    """Human approval to publish every changed repo in a verified goal."""
+    """Human approval to publish the current tree of every changed repo."""
 
     draft: bool = False
 
