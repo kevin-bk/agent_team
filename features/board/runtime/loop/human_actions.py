@@ -218,5 +218,6 @@ def answer_questions(
         # The planner needed a human decision, so this task is not trivial —
         # the human reviews the re-draft even on a quick-lane auto-approve board.
         allow_auto_approve=False,
+        actor_id=getattr(user, "id", None),
     )
     return "planning"

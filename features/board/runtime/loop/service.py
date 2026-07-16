@@ -97,7 +97,13 @@ def cancel_loop(task_id: str) -> bool:
 
 
 def _create_loop_run(
-    *, task_id: str, agent_alias: str, prompt: str, role: str, attempt_id: str | None
+    *,
+    task_id: str,
+    agent_alias: str,
+    prompt: str,
+    role: str,
+    attempt_id: str | None,
+    actor_id: str | None = None,
 ) -> str:
     """Create a queued run tagged with its loop role + attempt (own session).
 
@@ -121,7 +127,7 @@ def _create_loop_run(
             conversation=conv,
             agent_alias=agent_alias,
             trigger="loop",
-            actor_id=None,
+            actor_id=actor_id,
             prompt=prompt,
             role=role,
             attempt_id=attempt_id,

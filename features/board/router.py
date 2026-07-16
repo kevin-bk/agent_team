@@ -67,6 +67,7 @@ from agent_team.features.board.schemas import (
     PlanningArtifactDTO,
     PlanningArtifactEdit,
     PlanningChangeRequestCreate,
+    PlanningGuidanceCreate,
     PlanningInfoDTO,
     PlanningQuestionDTO,
     PlanningRunCreate,
@@ -1818,6 +1819,7 @@ def _planning_info(task) -> PlanningInfoDTO:
         planning_mode=task.planning_mode,
         objective=task.objective,
         is_planning=is_planning_running(task.id),
+        pause_requested=bool(meta.get("pause_requested")),
         approved=bool(meta.get("approved")),
         approved_by=meta.get("approved_by"),
         approved_at=meta.get("approved_at"),
@@ -1878,6 +1880,10 @@ async def start_task_planning(
             "approved_by": None,
             "approved_at": None,
             "auto_approved": False,
+            "pause_requested": False,
+            "planning_paused": False,
+            "planner_id": payload.planner_id,
+            "reviewer_id": payload.reviewer_id or None,
         }
     )
     task.planning_meta_json = json.dumps(meta, ensure_ascii=False)
@@ -1906,6 +1912,7 @@ async def start_task_planning(
         planner_alias=payload.planner_id,
         objective=objective,
         reviewer_alias=payload.reviewer_id or None,
+        actor_id=ctx.user.id,
     )
     return {"ok": True, "task_id": task_id}
 
@@ -1917,6 +1924,82 @@ async def get_task_planning(task_id: str, request: Request, db: Session = Depend
     if err:
         return err
     return _planning_info(ctx.task)
+
+
+@router.post("/tasks/{task_id}/planning/pause")
+async def pause_task_planning(
+    task_id: str, request: Request, db: Session = Depends(get_db)
+):
+    """Stop the active planning role and preserve its conversation/artifacts."""
+    ctx, err = authz.guard_task(db, request, task_id, min_role="editor")
+    if err:
+        return err
+    from agent_team.features.board.runtime.loop import planning
+
+    if not await planning.pause_planning_job(task_id, actor_id=ctx.user.id):
+        return bad_request("Planning is not currently running for this task.")
+    return {"ok": True, "task_id": task_id, "state": "stopping"}
+
+
+@router.post("/tasks/{task_id}/planning/guidance")
+async def resume_task_planning_with_guidance(
+    task_id: str,
+    payload: PlanningGuidanceCreate,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Resume the same planner conversation with new human guidance."""
+    ctx, err = authz.guard_task(db, request, task_id, min_role="editor")
+    if err:
+        return err
+    task = ctx.task
+    from agent_team.features.board.runtime.loop import planning
+    from agent_team.features.board.runtime.loop.status import LoopState
+
+    if planning.is_planning_running(task_id):
+        return bad_request("Planning is still stopping; wait until it is paused.")
+    if task.loop_state != LoopState.PLANNING_PAUSED.value:
+        return bad_request("Planning must be paused before guidance can be sent.")
+    meta = task.planning_meta()
+    planner_id = str(meta.get("planner_id") or "").strip()
+    if not planner_id:
+        return bad_request("No planner is set for this task; start planning again.")
+    guidance = payload.guidance.strip()
+    from agent_team.features.board.runtime import task_journal
+
+    meta.update(
+        {
+            "approved": False,
+            "pause_requested": False,
+            "planning_paused": False,
+        }
+    )
+    task.planning_meta_json = json.dumps(meta, ensure_ascii=False)
+    task_journal.record_with(
+        db,
+        task_id=task_id,
+        phase="planning",
+        type="answer",
+        title="Human added planning guidance",
+        body=guidance,
+        actor_id=ctx.user.id,
+        actor_type="human",
+    )
+    db.commit()
+
+    from agent_team.features.board.runtime.dispatch import capture_main_loop
+
+    capture_main_loop()
+    planning.start_planning_job(
+        task_id=task_id,
+        planner_alias=planner_id,
+        objective=task.objective or "",
+        reviewer_alias=meta.get("reviewer_id") or None,
+        allow_auto_approve=False,
+        guidance=guidance,
+        actor_id=ctx.user.id,
+    )
+    return {"ok": True, "task_id": task_id}
 
 
 @router.get("/tasks/{task_id}/goal-runs", response_model=list[GoalRunSummaryDTO])
@@ -2186,6 +2269,7 @@ async def request_task_planning_changes(
         # The human explicitly asked for changes — they get the final look at
         # the re-draft even on a quick-lane auto-approve board.
         allow_auto_approve=False,
+        actor_id=ctx.user.id,
     )
     return {"ok": True, "task_id": task_id}
 

@@ -51,7 +51,12 @@ import {
   useGoalActivity,
   type RoleKind,
 } from "./LoopTimeline";
-import { PlanStage, QuestionStage, ReviewStage } from "./PlanningPanel";
+import {
+  PlannerDiscussion,
+  PlanStage,
+  QuestionStage,
+  ReviewStage,
+} from "./PlanningPanel";
 import {
   ArchivedGoalSummary,
   DeliveryPanel,
@@ -132,7 +137,7 @@ function stageFor(
   restarting: boolean,
   approved: boolean,
 ): GoalStage {
-  if (state === "planning") return "plan";
+  if (state === "planning" || state === "planning_paused") return "plan";
   if (state && REVIEW_STATES.includes(state)) return "review";
   if (state === "running") return "run";
   // A question pause sits in whichever phase raised it: planning (before the
@@ -260,11 +265,14 @@ export function LoopPanel({
     setView("summary");
   }, [task.id]);
 
-  // The human approval controls belong to Plan & spec. Move there exactly
-  // when a fresh draft reaches review; later manual tab changes are preserved.
+  // Planning collaboration and approval controls belong to Plan & spec. Move
+  // there when drafting starts, a human pause lands, or a draft reaches review;
+  // later manual tab changes are preserved while the state stays unchanged.
   useEffect(() => {
-    if (stage === "review") setView("plan");
-  }, [stage]);
+    if (state === "planning" || state === "planning_paused" || stage === "review") {
+      setView("plan");
+    }
+  }, [stage, state]);
 
   const livePlanArtifacts = useMemo(
     () =>
@@ -466,6 +474,7 @@ export function LoopPanel({
                   cliAgents={cliAgents}
                   canEdit={canEdit}
                   drafting={drafting}
+                  paused={state === "planning_paused"}
                   lastError={pinfo?.last_error}
                   openImmediately={restarting}
                   onCancel={() => setRestarting(false)}
@@ -557,9 +566,23 @@ export function LoopPanel({
               cliAgents={cliAgents}
               canEdit={canEdit}
               drafting={drafting}
+              paused={state === "planning_paused"}
               lastError={pinfo?.last_error}
               openImmediately={restarting}
               onCancel={() => setRestarting(false)}
+            />
+          )}
+
+          {view === "plan" && !historical && !awaitingAnswers && (
+            drafting || state === "planning_paused"
+          ) && (
+            <PlannerDiscussion
+              task={task}
+              conversationId={info?.planner_conversation_id}
+              drafting={drafting}
+              paused={state === "planning_paused"}
+              pauseRequested={!!pinfo?.pause_requested}
+              canEdit={canEdit}
             />
           )}
 

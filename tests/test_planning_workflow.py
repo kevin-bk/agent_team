@@ -57,6 +57,7 @@ async def test_planning_job_accepts_extended_task_runtime_context(monkeypatch, t
         return SimpleNamespace(status="error")
 
     monkeypatch.setattr(planning_module, "_drive_to_completion", failed_run)
+    monkeypatch.setattr(planning_module, "_pause_requested", lambda _task_id: False)
     monkeypatch.setattr(
         planning_module.task_journal, "ingest_agent_notes", lambda **_kwargs: None
     )
@@ -70,6 +71,61 @@ async def test_planning_job_accepts_extended_task_runtime_context(monkeypatch, t
 
     assert result is LoopState.FAILED
     assert states == [LoopState.PLANNING, LoopState.FAILED]
+
+
+@pytest.mark.asyncio
+async def test_human_pause_parks_planning_without_rejecting_partial_artifacts(
+    monkeypatch, tmp_path
+):
+    states = []
+    monkeypatch.setattr(
+        planning_module,
+        "_task_workspace_and_board",
+        lambda _task_id: (str(tmp_path), "board-1", None),
+    )
+    monkeypatch.setattr(
+        planning_module,
+        "_board_planning_settings",
+        lambda _board_id: SimpleNamespace(
+            conventions="", planning_skill="", auto_approve_quick=False
+        ),
+    )
+    monkeypatch.setattr(
+        planning_module, "_agent_visible_workspace", lambda workspace, _board: workspace
+    )
+    monkeypatch.setattr(planning_module, "_board_repo_names", lambda _board_id: [])
+    monkeypatch.setattr(
+        planning_module,
+        "_persist_planning",
+        lambda _task_id, *, state, **_kwargs: states.append(state),
+    )
+    monkeypatch.setattr(planning_module, "_create_loop_run", lambda **_kwargs: "run-1")
+
+    async def cancelled_run(_run_id):
+        return SimpleNamespace(status="cancelled")
+
+    monkeypatch.setattr(planning_module, "_drive_to_completion", cancelled_run)
+    monkeypatch.setattr(planning_module, "_pause_requested", lambda _task_id: True)
+    monkeypatch.setattr(
+        planning_module.task_journal, "ingest_agent_notes", lambda **_kwargs: None
+    )
+    monkeypatch.setattr(planning_module.task_journal, "record", lambda **_kwargs: None)
+
+    result = await planning_module.run_planning_job(
+        task_id="task-1", planner_alias="planner", objective="Pilot"
+    )
+
+    assert result is LoopState.PLANNING_PAUSED
+    assert states == [LoopState.PLANNING, LoopState.PLANNING_PAUSED]
+
+
+def test_planning_guidance_prompt_resumes_same_contract_without_implementation():
+    prompt = P.build_planning_guidance_prompt("Keep the existing database schema.")
+    assert prompt.startswith("PHASE: PLAN")
+    assert "ROLE: PLANNER" in prompt
+    assert "Keep the existing database schema." in prompt
+    assert "Continue the SAME planning task" in prompt
+    assert "do not implement source changes" in prompt
 
 
 @pytest.mark.asyncio

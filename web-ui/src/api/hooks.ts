@@ -13,6 +13,7 @@ import type {
   JournalNoteBody,
   LoopResumeBody,
   PlanningAnswerBody,
+  PlanningGuidanceBody,
   PlanningRunBody,
   PlanningStartBody,
   MoveTaskBody,
@@ -872,6 +873,36 @@ export function useStartTaskPlanning(boardId: string, taskId: string) {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: qk.taskPlanning(taskId) });
       void qc.invalidateQueries({ queryKey: qk.taskGoalRuns(taskId) });
+      void qc.invalidateQueries({ queryKey: qk.taskLoop(taskId) });
+      void qc.invalidateQueries({ queryKey: qk.boardTasks(boardId) });
+    },
+  });
+}
+
+export function usePauseTaskPlanning(boardId: string, taskId: string) {
+  const { client } = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => client.pauseTaskPlanning(taskId),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: qk.taskPlanning(taskId) });
+      void qc.invalidateQueries({ queryKey: qk.taskLoop(taskId) });
+      void qc.invalidateQueries({ queryKey: qk.boardTasks(boardId) });
+    },
+  });
+}
+
+export function useResumePlanningWithGuidance(
+  boardId: string,
+  taskId: string,
+) {
+  const { client } = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: PlanningGuidanceBody) =>
+      client.resumeTaskPlanningWithGuidance(taskId, body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: qk.taskPlanning(taskId) });
       void qc.invalidateQueries({ queryKey: qk.taskLoop(taskId) });
       void qc.invalidateQueries({ queryKey: qk.boardTasks(boardId) });
     },

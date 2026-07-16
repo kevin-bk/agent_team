@@ -415,6 +415,7 @@ export interface TaskDTO {
 /** Persisted lifecycle state of a task's autonomous loop. */
 export type LoopState =
   | "planning"
+  | "planning_paused"
   | "waiting_plan_approval"
   | "plan_approved"
   | "running"
@@ -457,6 +458,8 @@ export interface PlanningInfoDTO {
   planning_mode: PlanningMode;
   objective?: string | null;
   is_planning: boolean;
+  /** A human stop request is waiting for the active planner role to settle. */
+  pause_requested?: boolean;
   approved: boolean;
   approved_by?: string | null;
   approved_at?: string | null;
@@ -589,6 +592,10 @@ export interface PlanningStartBody {
   planner_id: string;
   reviewer_id?: string | null;
   objective?: string | null;
+}
+
+export interface PlanningGuidanceBody {
+  guidance: string;
 }
 
 /** Body to approve the plan and start strict execution. */

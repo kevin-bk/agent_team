@@ -264,6 +264,24 @@ def build_planning_prompt(
     )
 
 
+def build_planning_guidance_prompt(guidance: str) -> str:
+    """Resume the same planner conversation after a human-requested pause."""
+    text = (guidance or "").strip()
+    return (
+        f"{PHASE_PLAN}\n\n"
+        f"{ROLE_PLANNER}\n\n"
+        "The human paused your planning turn to add guidance. Continue the SAME "
+        "planning task; do not implement source changes. Re-read the current "
+        "workspace and any partial planning artifacts already written. Preserve "
+        "valid work, revise what the guidance affects, and finish the required "
+        f"`{A.SPEC_PATH}`, `{A.PLAN_PATH}`, `{A.TASKS_PATH}` and "
+        f"`{A.INTAKE_PATH}` artifacts.\n\n"
+        f"## Human guidance\n{text}\n\n"
+        f"## Journal\n{JOURNAL_DISCIPLINE}\n\n"
+        f"## When you are blocked\n{ASK_QUESTIONS_INSTRUCTION}"
+    )
+
+
 #: System preamble for the optional adversarial plan reviewer.
 REVIEWER_SYSTEM = (
     "You are an adversarial plan reviewer. Your job is to prevent wasted "

@@ -32,6 +32,9 @@ class LoopState(StrEnum):
     """
 
     PLANNING = "planning"
+    #: A human stopped the active planner turn to add guidance. Partial
+    #: artifacts and the planner conversation are preserved for a later resume.
+    PLANNING_PAUSED = "planning_paused"
     #: Planning artifacts exist and the system has stopped, waiting for a human
     #: to approve them or request changes. No process is kept alive here.
     WAITING_PLAN_APPROVAL = "waiting_plan_approval"

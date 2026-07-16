@@ -31,6 +31,7 @@ import {
   type LoopInfoDTO,
   type LoopResumeBody,
   type PlanningAnswerBody,
+  type PlanningGuidanceBody,
   type PlanningInfoDTO,
   type PlanningRunBody,
   type PlanningStartBody,
@@ -476,6 +477,18 @@ export class ApiClient {
   startTaskPlanning(taskId: string, body: PlanningStartBody) {
     return this.request<{ ok: boolean; task_id: string }>(
       `/api/tasks/${taskId}/planning/start`,
+      { method: "POST", body: JSON.stringify(body) },
+    );
+  }
+  pauseTaskPlanning(taskId: string) {
+    return this.request<{ ok: boolean; task_id: string; state: string }>(
+      `/api/tasks/${taskId}/planning/pause`,
+      { method: "POST" },
+    );
+  }
+  resumeTaskPlanningWithGuidance(taskId: string, body: PlanningGuidanceBody) {
+    return this.request<{ ok: boolean; task_id: string }>(
+      `/api/tasks/${taskId}/planning/guidance`,
       { method: "POST", body: JSON.stringify(body) },
     );
   }

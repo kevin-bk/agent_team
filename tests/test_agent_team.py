@@ -4939,6 +4939,45 @@ def test_build_task_context_mentions_automatic_repo_bootstrap(db):
     assert "dependencies/setup prepared automatically by the runtime" in full
 
 
+@pytest.mark.asyncio
+async def test_pause_planning_marks_durable_request_and_cancels_active_run(
+    db, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from agent_team.features.board.runtime.loop import planning
+    from sqlalchemy.orm import sessionmaker
+
+    task = _make_task(db)
+    task.loop_state = "planning"
+    db.commit()
+    factory = sessionmaker(
+        bind=db.get_bind(), autoflush=False, autocommit=False, future=True
+    )
+    monkeypatch.setattr(planning, "SessionLocal", factory)
+    monkeypatch.setattr(
+        planning.runs_repo,
+        "get_active_loop_run",
+        lambda _db, *, task_id: SimpleNamespace(id="planner-run"),
+    )
+
+    cancelled: list[str] = []
+
+    class Backend:
+        async def cancel(self, run_id: str) -> bool:
+            cancelled.append(run_id)
+            return True
+
+    monkeypatch.setattr(planning, "get_run_backend", lambda: Backend())
+
+    assert await planning.pause_planning_job(task.id, actor_id="human-1") is True
+    db.expire_all()
+    updated = tasks_repo.get_task(db, task.id)
+    assert updated.planning_meta()["pause_requested"] is True
+    assert updated.planning_meta()["pause_requested_by"] == "human-1"
+    assert cancelled == ["planner-run"]
+
+
 def test_repo_push_policy_roundtrip(db):
     from agent_team.features.repos import repositories as repos_repo
     from agent_team.features.repos.schemas import RepoCreate, RepoUpdate

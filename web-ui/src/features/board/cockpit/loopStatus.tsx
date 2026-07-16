@@ -26,6 +26,11 @@ export const LOOP_STATE_META: Record<LoopState, StateMeta> = {
     icon: Loader2,
     active: true,
   },
+  planning_paused: {
+    label: "Planning paused",
+    tone: "bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300",
+    icon: Pencil,
+  },
   waiting_plan_approval: {
     label: "Plan ready for review",
     tone: "bg-violet-100 text-violet-700 dark:bg-violet-500/15 dark:text-violet-300",

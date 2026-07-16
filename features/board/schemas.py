@@ -337,6 +337,12 @@ class PlanningChangeRequestCreate(BaseModel):
     objective: str | None = Field(default=None, max_length=20000)
 
 
+class PlanningGuidanceCreate(BaseModel):
+    """Human guidance used to resume an intentionally paused planner."""
+
+    guidance: str = Field(min_length=1, max_length=20000)
+
+
 class PlanningRunCreate(BaseModel):
     """Approve the drafted plan and start strict execution against it."""
 
@@ -417,6 +423,8 @@ class PlanningInfoDTO(BaseModel):
     objective: str | None = None
     #: Whether a planning job is actively drafting artifacts right now.
     is_planning: bool = False
+    #: A stop request is in flight; the active role has not parked yet.
+    pause_requested: bool = False
     #: Approval metadata (backend-owned; never written by an agent).
     approved: bool = False
     approved_by: str | None = None

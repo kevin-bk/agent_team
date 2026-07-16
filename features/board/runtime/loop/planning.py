@@ -21,7 +21,9 @@ from agent_team.features.board.models import (
     RUN_ROLE_REVIEWER,
     AgentTeamTask,
 )
+from agent_team.features.board.repositories import runs as runs_repo
 from agent_team.features.board.runtime import task_journal
+from agent_team.features.board.runtime.backend import get_run_backend
 from agent_team.features.board.runtime.events import RUN_DONE
 from agent_team.features.board.runtime.loop import planning_artifacts as artifacts
 from agent_team.features.board.runtime.loop import planning_prompts
@@ -52,6 +54,73 @@ def is_planning_running(task_id: str) -> bool:
     """Whether a strict planning job is actively drafting ``task_id`` now."""
     plan = _RUNNING_PLANS.get(task_id)
     return plan is not None and not plan.task.done()
+
+
+def _pause_requested(task_id: str) -> bool:
+    with SessionLocal() as db:
+        task = db.get(AgentTeamTask, task_id)
+        return bool(task and task.planning_meta().get("pause_requested"))
+
+
+def _park_for_guidance(
+    task_id: str,
+    *,
+    planner_alias: str,
+    reviewer_alias: str | None,
+    run_id: str,
+    board_id: str,
+) -> LoopState:
+    """Preserve partial planning work and wait for human guidance."""
+    task_journal.record(
+        task_id=task_id,
+        phase="planning",
+        type="state_change",
+        title="Planning paused for human guidance",
+        actor_type="system",
+        severity="warning",
+        refs=task_journal.refs(run_id=run_id),
+    )
+    _persist_planning(
+        task_id,
+        state=LoopState.PLANNING_PAUSED,
+        meta_updates={
+            "approved": False,
+            "last_error": None,
+            "pause_requested": False,
+            "planning_paused": True,
+            "planner_id": planner_alias,
+            "reviewer_id": reviewer_alias,
+        },
+        board_id=board_id,
+    )
+    return LoopState.PLANNING_PAUSED
+
+
+async def pause_planning_job(task_id: str, *, actor_id: str | None) -> bool:
+    """Request cancellation of the active planning role and park its context."""
+    db = SessionLocal()
+    try:
+        task = db.get(AgentTeamTask, task_id)
+        if task is None or task.loop_state != LoopState.PLANNING.value:
+            return False
+        active = runs_repo.get_active_loop_run(db, task_id=task_id)
+        if active is None and not is_planning_running(task_id):
+            return False
+        meta = task.planning_meta()
+        meta.update(
+            {
+                "pause_requested": True,
+                "pause_requested_by": actor_id,
+            }
+        )
+        task.planning_meta_json = json.dumps(meta, ensure_ascii=False)
+        db.commit()
+        run_id = active.id if active is not None else None
+    finally:
+        db.close()
+    if run_id:
+        await get_run_backend().cancel(run_id)
+    return True
 
 
 def _agent_visible_workspace(host_workspace_path: str, board_id: str) -> str:
@@ -135,6 +204,8 @@ async def run_planning_job(
     objective: str,
     reviewer_alias: str | None = None,
     allow_auto_approve: bool = True,
+    guidance: str | None = None,
+    actor_id: str | None = None,
 ) -> LoopState:
     """Run the planner (and optional reviewer), then park for human approval.
 
@@ -170,17 +241,26 @@ async def run_planning_job(
     _persist_planning(
         task_id,
         state=LoopState.PLANNING,
-        meta_updates={"approved": False, "last_error": None},
+        meta_updates={
+            "approved": False,
+            "last_error": None,
+            "pause_requested": False,
+            "planning_paused": False,
+        },
         board_id=board_id,
     )
 
-    prompt = planning_prompts.build_planning_prompt(
-        objective,
-        task_id=task_id,
-        workspace_path=agent_workspace_path,
-        repo=", ".join(repo_names) if repo_names else None,
-        conventions=conventions,
-        harness_skill=harness_skill,
+    prompt = (
+        planning_prompts.build_planning_guidance_prompt(guidance)
+        if guidance and guidance.strip()
+        else planning_prompts.build_planning_prompt(
+            objective,
+            task_id=task_id,
+            workspace_path=agent_workspace_path,
+            repo=", ".join(repo_names) if repo_names else None,
+            conventions=conventions,
+            harness_skill=harness_skill,
+        )
     )
     run_id = await asyncio.to_thread(
         _create_loop_run,
@@ -189,6 +269,7 @@ async def run_planning_job(
         prompt=prompt,
         role=RUN_ROLE_PLANNER,
         attempt_id=None,
+        actor_id=actor_id,
     )
     result = await _drive_to_completion(run_id)
 
@@ -201,6 +282,15 @@ async def run_planning_job(
         actor_id=planner_alias,
         phase="planning",
     )
+
+    if _pause_requested(task_id):
+        return _park_for_guidance(
+            task_id,
+            planner_alias=planner_alias,
+            reviewer_alias=reviewer_alias,
+            run_id=run_id,
+            board_id=board_id,
+        )
 
     # The planner may stop early to ask the human blocking questions instead of
     # guessing. Honour that before treating missing artifacts as a failure: park
@@ -305,6 +395,15 @@ async def run_planning_job(
             severity="warning",
         )
 
+    if _pause_requested(task_id):
+        return _park_for_guidance(
+            task_id,
+            planner_alias=planner_alias,
+            reviewer_alias=reviewer_alias,
+            run_id=run_id,
+            board_id=board_id,
+        )
+
     review_verdict: str | None = None
     if reviewer_alias:
         review_verdict = await _run_reviewer(
@@ -323,6 +422,19 @@ async def run_planning_job(
             severity="warning" if review_verdict not in (None, "pass") else "info",
             refs=task_journal.refs(artifacts=[artifacts.PLAN_REVIEW_PATH]),
         )
+        if _pause_requested(task_id):
+            with SessionLocal() as db:
+                latest = runs_repo.get_latest_task_run_by_role(
+                    db, task_id=task_id, role=RUN_ROLE_REVIEWER
+                )
+                paused_run_id = latest.id if latest is not None else run_id
+            return _park_for_guidance(
+                task_id,
+                planner_alias=planner_alias,
+                reviewer_alias=reviewer_alias,
+                run_id=paused_run_id,
+                board_id=board_id,
+            )
 
     # ── Quick-lane auto-approval (board opt-in, first draft only) ─────────
     # A failed stamp (e.g. TASKS.json went invalid) falls through to the
@@ -480,6 +592,8 @@ def start_planning_job(
     objective: str,
     reviewer_alias: str | None = None,
     allow_auto_approve: bool = True,
+    guidance: str | None = None,
+    actor_id: str | None = None,
 ) -> asyncio.Task:
     """Launch the planning job as a background task; a double-start is a no-op.
 
@@ -499,6 +613,8 @@ def start_planning_job(
                 objective=objective,
                 reviewer_alias=reviewer_alias,
                 allow_auto_approve=allow_auto_approve,
+                guidance=guidance,
+                actor_id=actor_id,
             )
         except Exception:  # noqa: BLE001 — never let planning crash the event loop
             logger.exception("planning job failed for task %s", task_id)

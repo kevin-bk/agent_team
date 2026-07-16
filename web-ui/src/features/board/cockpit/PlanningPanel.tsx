@@ -7,6 +7,7 @@ import {
   HelpCircle,
   ListChecks,
   Loader2,
+  MessagesSquare,
   Pencil,
   Play,
   Send,
@@ -15,7 +16,9 @@ import {
   useAnswerTaskPlanning,
   useApproveAndRunTaskPlanning,
   useEditTaskPlanningArtifact,
+  usePauseTaskPlanning,
   useRequestTaskPlanningChanges,
+  useResumePlanningWithGuidance,
   useStartTaskPlanning,
 } from "@/api/hooks";
 import type {
@@ -38,6 +41,9 @@ import { Input } from "@/components/ui/input";
 import { SelectMenu } from "@/components/ui/select-menu";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
+import { Composer } from "@/features/chat/Composer";
+import { Timeline } from "@/features/chat/Timeline";
+import { useConversationRun } from "@/features/chat/useConversationRun";
 
 function agentOpt(a: AgentDTO) {
   return {
@@ -83,6 +89,7 @@ export function PlanStage({
   cliAgents,
   canEdit,
   drafting,
+  paused = false,
   lastError,
   openImmediately = false,
   onCancel,
@@ -92,6 +99,7 @@ export function PlanStage({
   cliAgents: AgentDTO[];
   canEdit: boolean;
   drafting: boolean;
+  paused?: boolean;
   lastError?: string | null;
   /** Open the setup dialog as soon as this stage mounts (e.g. "Plan a new goal"). */
   openImmediately?: boolean;
@@ -117,6 +125,20 @@ export function PlanStage({
           task list. You will review and approve before any code is written.
         </p>
         {lastError && <ErrorNote>{lastError}</ErrorNote>}
+      </div>
+    );
+  }
+  if (paused) {
+    return (
+      <div className="rounded-lg border border-amber-300 bg-amber-50 p-3.5 dark:border-amber-500/30 dark:bg-amber-500/10">
+        <div className="flex items-center gap-2 text-[13px] text-amber-900 dark:text-amber-200">
+          <MessagesSquare className="h-4 w-4" />
+          <span className="font-semibold">Planning paused for guidance</span>
+        </div>
+        <p className="mt-1 text-[12px] text-amber-800/80 dark:text-amber-300/80">
+          The conversation and partial artifacts are preserved. Open Plan &amp;
+          spec, add guidance in Planner discussion, then continue this session.
+        </p>
       </div>
     );
   }
@@ -155,6 +177,107 @@ export function PlanStage({
         lastError={lastError}
       />
     </>
+  );
+}
+
+export function PlannerDiscussion({
+  task,
+  conversationId,
+  drafting,
+  paused,
+  pauseRequested,
+  canEdit,
+}: {
+  task: TaskDTO;
+  conversationId?: string | null;
+  drafting: boolean;
+  paused: boolean;
+  pauseRequested: boolean;
+  canEdit: boolean;
+}) {
+  const { blocks, running } = useConversationRun(conversationId ?? undefined);
+  const pause = usePauseTaskPlanning(task.board_id, task.id);
+  const resume = useResumePlanningWithGuidance(task.board_id, task.id);
+  const active = !paused && (drafting || running);
+  const stopping = pauseRequested || pause.isPending;
+
+  return (
+    <section className="overflow-hidden rounded-lg border border-border bg-card">
+      <header className="flex flex-wrap items-center gap-3 border-b border-border px-4 py-3">
+        <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-sky-500/15 text-sky-600 dark:text-sky-300">
+          <MessagesSquare className="h-4 w-4" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <h3 className="text-[13.5px] font-semibold text-foreground">
+            Planner discussion
+          </h3>
+          <p className="text-[11.5px] text-muted-foreground">
+            {stopping
+              ? "Stopping at the current planner turn…"
+              : paused
+                ? "Add guidance and continue the same planning conversation"
+                : "Live transcript · stop planning before adding guidance"}
+          </p>
+        </div>
+        <span
+          className={cn(
+            "rounded px-1.5 py-0.5 text-[10.5px] font-semibold uppercase",
+            paused
+              ? "bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300"
+              : "bg-sky-100 text-sky-700 dark:bg-sky-500/15 dark:text-sky-300",
+          )}
+        >
+          {stopping ? "stopping" : paused ? "paused" : "planning"}
+        </span>
+      </header>
+
+      <div className="max-h-[430px] min-h-48 overflow-y-auto bg-surface-1/25 scrollbar-thin">
+        {!conversationId && blocks.length === 0 ? (
+          <div className="flex min-h-48 items-center justify-center gap-2 px-4 text-[12px] text-muted-foreground">
+            {active ? (
+              <>
+                <Spinner className="h-4 w-4" /> Waiting for the planner transcript…
+              </>
+            ) : (
+              "No planner conversation is available."
+            )}
+          </div>
+        ) : (
+          <Timeline blocks={blocks} running={active} agentName="Planner" />
+        )}
+      </div>
+
+      <Composer
+        running={active}
+        runningMode="stop-only"
+        stopping={stopping}
+        stopLabel="Stop & add guidance"
+        idlePlaceholder="Add context or redirect the planner…"
+        sendLabel="Continue planning"
+        disabled={!canEdit || (!paused && !active) || stopping}
+        onCancel={() => {
+          pause.mutate(undefined, {
+            onSuccess: () => toast.message("Stopping the planner…"),
+            onError: (error) => toast.error(
+              error instanceof Error ? error.message : "Could not stop planning",
+            ),
+          });
+        }}
+        onSend={async (text) => {
+          try {
+            await resume.mutateAsync({ guidance: text });
+            toast.success("Guidance sent — planning resumed");
+          } catch (error) {
+            toast.error(
+              error instanceof Error
+                ? error.message
+                : "Could not continue planning",
+            );
+            throw error;
+          }
+        }}
+      />
+    </section>
   );
 }
 
