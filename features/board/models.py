@@ -466,6 +466,66 @@ class AgentTeamTask(Base):
         return value if isinstance(value, dict) else {}
 
 
+class AgentTeamGoalRun(Base):
+    """Immutable approved contract plus the execution proof it produced.
+
+    A task may be planned and executed many times. Workspace planning files are
+    intentionally reused by the active goal, so this row snapshots an approved
+    contract before a later goal or plan revision can overwrite those files.
+    Execution/workspace snapshots are filled as the run progresses; the
+    approved plan snapshot and its fingerprint never change.
+    """
+
+    __tablename__ = "plugin_agent_team_goal_run"
+    __table_args__ = (
+        UniqueConstraint("task_id", "run_no", name="uq_agent_team_goal_run_task_no"),
+        Index("ix_agent_team_goal_run_task_status", "task_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    task_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("plugin_agent_team_task.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    run_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    objective: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    contract_etag: Mapped[str] = mapped_column(String(71), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="approved")
+    outcome: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    plan_snapshot_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    planning_meta_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    execution_snapshot_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    workspace_snapshot_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    approved_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+    def plan_snapshot(self) -> dict:
+        return _json_object(self.plan_snapshot_json)
+
+    def planning_meta(self) -> dict:
+        return _json_object(self.planning_meta_json)
+
+    def execution_snapshot(self) -> dict:
+        return _json_object(self.execution_snapshot_json)
+
+    def workspace_snapshot(self) -> dict:
+        return _json_object(self.workspace_snapshot_json)
+
+
 class AgentTeamConversation(Base):
     """One ``(task, agent)`` thread of work.
 

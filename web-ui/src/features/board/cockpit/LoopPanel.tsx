@@ -23,11 +23,15 @@ import {
   useAckTaskLoop,
   useCancelTaskLoop,
   useResumeTaskLoop,
+  useTaskChanges,
+  useTaskGoalRun,
+  useTaskGoalRuns,
   useTaskLoop,
   useTaskPlanning,
 } from "@/api/hooks";
 import type {
   AgentDTO,
+  GoalRunReceiptDTO,
   LoopAttemptDTO,
   LoopInfoDTO,
   LoopState,
@@ -46,6 +50,18 @@ import {
   type RoleKind,
 } from "./LoopTimeline";
 import { PlanStage, QuestionStage, ReviewStage } from "./PlanningPanel";
+import {
+  ArchivedGoalSummary,
+  GoalActivityPanel,
+  GoalHistoryBar,
+  GoalPackageNav,
+  HistoricalChangesPanel,
+  LiveChangesPanel,
+  PlanArchivePanel,
+  VerificationPanel,
+  historicalLoopInfo,
+  type GoalView,
+} from "./GoalPackage";
 import {
   AgentLogo,
   AgentRoster,
@@ -124,6 +140,32 @@ function stageFor(
   return "result";
 }
 
+function artifactJson(
+  artifacts: { path: string; content?: string | null }[] | undefined,
+  name: string,
+): Record<string, unknown> {
+  const raw = artifacts?.find(
+    (artifact) => (artifact.path.split("/").pop() ?? "") === name,
+  )?.content;
+  if (!raw) return {};
+  try {
+    const value = JSON.parse(raw) as unknown;
+    return value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function receiptList(value: Record<string, unknown>): GoalRunReceiptDTO[] {
+  const rows = Array.isArray(value.receipts) ? value.receipts : [];
+  return rows.filter(
+    (row): row is GoalRunReceiptDTO =>
+      !!row && typeof row === "object" && typeof (row as GoalRunReceiptDTO).command === "string",
+  );
+}
+
 /**
  * The goal cockpit for a task, as one linear wizard: draft a plan, review and
  * approve it, run it, then read the verdict. Every goal is planned first —
@@ -142,15 +184,29 @@ export function LoopPanel({
 }) {
   const loop = useTaskLoop(task.id);
   const planning = useTaskPlanning(task.id);
+  const changes = useTaskChanges(task.id);
+  const goalRuns = useTaskGoalRuns(task.id);
   const [live, clearLive] = useLoopLiveStatus(task.id);
   const cancel = useCancelTaskLoop(task.id);
   const ack = useAckTaskLoop(task.board_id, task.id);
   const resume = useResumeTaskLoop(task.board_id, task.id);
   const [restarting, setRestarting] = useState(false);
   const [activityOpen, setActivityOpen] = useState(false);
+  const [view, setView] = useState<GoalView>("summary");
+  const [selectedGoalRun, setSelectedGoalRun] = useState<"live" | string>("live");
+  const historicalGoal = useTaskGoalRun(
+    task.id,
+    selectedGoalRun === "live" ? undefined : selectedGoalRun,
+  );
 
   const info = loop.data;
   const pinfo = planning.data;
+  const runHistory = goalRuns.data ?? [];
+  const currentGoalRun = runHistory.find(
+    (item) => item.id === pinfo?.current_goal_run_id,
+  );
+  const historicalDetail = historicalGoal.data;
+  const historical = selectedGoalRun !== "live";
   const state: LoopState | null =
     live?.state ?? info?.loop_state ?? pinfo?.loop_state ?? null;
   const running = state === "running" || info?.is_running === true;
@@ -172,6 +228,44 @@ export function LoopPanel({
 
   const awaitingAnswers = state === "waiting_answers";
   const stage = stageFor(state, restarting, !!pinfo?.approved);
+  const terminal = stage === "result" && !!state && state !== "running";
+
+  useEffect(() => {
+    setSelectedGoalRun("live");
+    setView("summary");
+  }, [task.id]);
+
+  // The human approval controls belong to Plan & spec. Move there exactly
+  // when a fresh draft reaches review; later manual tab changes are preserved.
+  useEffect(() => {
+    if (stage === "review") setView("plan");
+  }, [stage]);
+
+  const livePlanArtifacts = useMemo(
+    () =>
+      (pinfo?.artifacts ?? []).filter((artifact) =>
+        ["SPEC.md", "PLAN.md", "TASKS.json", "INTAKE.json", "PLAN_REVIEW.md"].includes(
+          artifact.path.split("/").pop() ?? "",
+        ),
+      ),
+    [pinfo?.artifacts],
+  );
+  const liveReceiptManifest = useMemo(
+    () => artifactJson(pinfo?.artifacts, "VERIFICATION_RECEIPTS.json"),
+    [pinfo?.artifacts],
+  );
+  const liveReceipts = useMemo(
+    () => receiptList(liveReceiptManifest),
+    [liveReceiptManifest],
+  );
+  const liveEvidence = useMemo(
+    () => artifactJson(pinfo?.artifacts, "EVIDENCE.json"),
+    [pinfo?.artifacts],
+  );
+  const historicalInfo = useMemo(
+    () => (historicalDetail ? historicalLoopInfo(historicalDetail) : null),
+    [historicalDetail],
+  );
 
   // Which AI staffs each loop role, so the cockpit can name the planner /
   // builder / critic and highlight whoever is working right now. Hooks must run
@@ -200,6 +294,20 @@ export function LoopPanel({
       info?.planner_agent_id,
       info?.generator_agent_id,
       info?.evaluator_agent_id,
+    ],
+  );
+  const activityInfo = historical ? historicalInfo : info;
+  const activityRoleAgents = useMemo(
+    () => ({
+      plan: resolveAgent(activityInfo?.planner_agent_id),
+      build: resolveAgent(activityInfo?.generator_agent_id),
+      critic: resolveAgent(activityInfo?.evaluator_agent_id),
+    }),
+    [
+      resolveAgent,
+      activityInfo?.planner_agent_id,
+      activityInfo?.generator_agent_id,
+      activityInfo?.evaluator_agent_id,
     ],
   );
 
@@ -234,15 +342,59 @@ export function LoopPanel({
   const activeRoleLabel = info?.active_role
     ? (ROLE_LABELS[info.active_role] ?? null)
     : null;
+  const selectedAttempts = historical
+    ? (historicalDetail?.execution.attempts ?? [])
+    : attempts;
+  const selectedReceipts = historical
+    ? (historicalDetail?.execution.receipts ?? [])
+    : liveReceipts;
+  const selectedEvidence = historical
+    ? historicalDetail?.execution.evidence
+    : liveEvidence;
+  const counts: Partial<Record<GoalView, number>> = {
+    plan: historical
+      ? (historicalDetail?.artifact_count ?? 0)
+      : livePlanArtifacts.filter((artifact) => artifact.exists).length,
+    changes: historical
+      ? (historicalDetail?.changed_file_count ?? 0)
+      : (changes.data?.files.length ?? 0),
+    verification: selectedReceipts.length,
+    activity: activityInfo
+      ? Number(!!activityInfo.planner_conversation_id) +
+        Number(!!activityInfo.generator_conversation_id) +
+        activityInfo.attempts.filter((attempt) => !!attempt.critic_conversation_id).length
+      : 0,
+  };
+
+  const stepView = (next: GoalStage) => {
+    if (next === "plan" || next === "review") setView("plan");
+    else if (next === "run") setView("activity");
+    else setView("verification");
+  };
 
   return (
     <div className="min-h-0 flex-1 overflow-auto scrollbar-thin">
-      <div className="mx-auto w-full max-w-5xl px-4 py-4 lg:px-6">
-        <GoalStepper current={stage} />
+      <div className="mx-auto w-full max-w-6xl px-4 py-4 lg:px-6">
+        <GoalStepper
+          current={historical ? "result" : stage}
+          terminal={historical || terminal}
+          onStepClick={stepView}
+        />
+
+        <GoalHistoryBar
+          current={currentGoalRun}
+          runs={runHistory}
+          selected={selectedGoalRun}
+          onChange={(id) => {
+            setSelectedGoalRun(id);
+            setView("summary");
+          }}
+          loading={goalRuns.isLoading}
+        />
 
         {/* Slim status strip (state + iteration + tokens + Stop), merged into
             the header so it isn't a second boxed banner inside the flow. */}
-        {!awaitingAnswers && state && (stage === "run" || stage === "result") && (
+        {!historical && !awaitingAnswers && state && (stage === "run" || stage === "result") && (
           <div className="mt-3">
             <StatusBanner
               state={state}
@@ -262,12 +414,116 @@ export function LoopPanel({
           </div>
         )}
 
+        <GoalPackageNav value={view} onChange={setView} counts={counts} />
+
         <div className="mt-4 space-y-4">
-          {awaitingAnswers && pinfo && (
+          {historical && historicalGoal.isLoading && (
+            <div className="flex min-h-72 items-center justify-center gap-2 text-[13px] text-muted-foreground">
+              <Spinner className="h-4 w-4" /> Loading goal snapshot…
+            </div>
+          )}
+
+          {view === "summary" && historicalDetail && (
+            <ArchivedGoalSummary detail={historicalDetail} />
+          )}
+
+          {view === "summary" && !historical && (
+            <>
+              {awaitingAnswers && pinfo && (
+                <QuestionStage task={task} info={pinfo} canEdit={canEdit} />
+              )}
+
+              {!awaitingAnswers && stage === "plan" && (
+                <PlanStage
+                  task={task}
+                  agents={agents}
+                  cliAgents={cliAgents}
+                  canEdit={canEdit}
+                  drafting={drafting}
+                  lastError={pinfo?.last_error}
+                  openImmediately={restarting}
+                  onCancel={() => setRestarting(false)}
+                />
+              )}
+
+              {!awaitingAnswers && stage === "result" && state && canEdit && (
+                <ReviewActions
+                  state={state}
+                  missing={latestEval?.missing ?? ""}
+                  canResume={!!info?.can_resume}
+                  agents={agents}
+                  cliAgents={cliAgents}
+                  builderAlias={info?.generator_agent_id}
+                  criticAlias={info?.evaluator_agent_id}
+                  resuming={resume.isPending}
+                  onResume={(body) =>
+                    resume.mutate(body, {
+                      onSuccess: (r) =>
+                        r.ok
+                          ? toast.success("Resuming from where it stopped")
+                          : toast.message("Could not resume"),
+                      onError: (err) =>
+                        toast.error(
+                          err instanceof Error ? err.message : "Could not resume",
+                        ),
+                    })
+                  }
+                  onRunAgain={() => setRestarting(true)}
+                  onAck={() => {
+                    ack.mutate(undefined, {
+                      onSuccess: () => clearLive(),
+                      onError: (err) =>
+                        toast.error(
+                          err instanceof Error
+                            ? err.message
+                            : "Could not acknowledge",
+                        ),
+                    });
+                  }}
+                  acking={ack.isPending}
+                />
+              )}
+
+              {hasRoster && (
+                <AgentRoster roles={roles} activeRole={running ? info?.active_role : null} />
+              )}
+
+              {showActivity && (
+                <LiveActivityCard
+                  running={running}
+                  currentTask={activeTask?.title ?? null}
+                  activeAgent={running ? activeAgent : null}
+                  activeRoleLabel={running ? activeRoleLabel : null}
+                  onOpen={() => setActivityOpen(true)}
+                />
+              )}
+
+              {(showTasks || showTimeline) && (
+                <div className="grid gap-4 lg:grid-cols-2">
+                  {showTasks && info?.tasks && (
+                    <TaskGraphProgress tasks={info.tasks} />
+                  )}
+                  {showTimeline && <AttemptTimeline attempts={attempts} />}
+                </div>
+              )}
+            </>
+          )}
+
+          {view === "plan" && !historical && awaitingAnswers && pinfo && (
             <QuestionStage task={task} info={pinfo} canEdit={canEdit} />
           )}
 
-          {!awaitingAnswers && stage === "plan" && (
+          {view === "plan" && !historical && !awaitingAnswers && stage === "review" && pinfo && (
+            <ReviewStage
+              task={task}
+              agents={agents}
+              cliAgents={cliAgents}
+              canEdit={canEdit}
+              info={pinfo}
+            />
+          )}
+
+          {view === "plan" && !historical && !awaitingAnswers && stage === "plan" && (
             <PlanStage
               task={task}
               agents={agents}
@@ -280,82 +536,52 @@ export function LoopPanel({
             />
           )}
 
-          {!awaitingAnswers && stage === "review" && pinfo && (
-            <ReviewStage
-              task={task}
-              agents={agents}
-              cliAgents={cliAgents}
-              canEdit={canEdit}
-              info={pinfo}
+          {view === "plan" && !historical && !awaitingAnswers && stage !== "plan" && stage !== "review" && (
+            <PlanArchivePanel
+              taskId={task.id}
+              artifacts={livePlanArtifacts}
+              approvedAt={pinfo?.approved_at}
+              contractEtag={currentGoalRun?.contract_etag}
             />
           )}
 
-          {!awaitingAnswers && stage === "result" && state && canEdit && (
-            <ReviewActions
-              state={state}
-              missing={latestEval?.missing ?? ""}
-              canResume={!!info?.can_resume}
-              agents={agents}
-              cliAgents={cliAgents}
-              builderAlias={info?.generator_agent_id}
-              criticAlias={info?.evaluator_agent_id}
-              resuming={resume.isPending}
-              onResume={(body) =>
-                resume.mutate(body, {
-                  onSuccess: (r) =>
-                    r.ok
-                      ? toast.success("Resuming from where it stopped")
-                      : toast.message("Could not resume"),
-                  onError: (err) =>
-                    toast.error(
-                      err instanceof Error ? err.message : "Could not resume",
-                    ),
-                })
-              }
-              onRunAgain={() => setRestarting(true)}
-              onAck={() => {
-                ack.mutate(undefined, {
-                  // The ack clears server state without emitting a loop.status
-                  // event, so drop the live SSE snapshot too — otherwise the
-                  // banner would linger until reopened.
-                  onSuccess: () => clearLive(),
-                  onError: (err) =>
-                    toast.error(
-                      err instanceof Error
-                        ? err.message
-                        : "Could not acknowledge",
-                    ),
-                });
-              }}
-              acking={ack.isPending}
+          {view === "plan" && historicalDetail && (
+            <PlanArchivePanel
+              taskId={task.id}
+              artifacts={historicalDetail.plan.artifacts ?? []}
+              approvedAt={historicalDetail.approved_at}
+              contractEtag={historicalDetail.contract_etag}
+              title={`Approved plan package · Goal #${historicalDetail.run_no}`}
             />
           )}
 
-          {/* The verbose work transcript lives behind a single button so the page
-              stays focused on progress; one line hints at what the agent is up
-              to so a human knows it's alive. */}
-          {hasRoster && (
-            <AgentRoster roles={roles} activeRole={running ? info?.active_role : null} />
+          {view === "changes" && !historical && (
+            <LiveChangesPanel
+              taskId={task.id}
+              data={changes.data}
+              loading={changes.isLoading}
+              error={changes.isError}
+            />
+          )}
+          {view === "changes" && historicalDetail && (
+            <HistoricalChangesPanel detail={historicalDetail} />
           )}
 
-          {showActivity && (
-            <LiveActivityCard
-              running={running}
-              currentTask={activeTask?.title ?? null}
-              activeAgent={running ? activeAgent : null}
-              activeRoleLabel={running ? activeRoleLabel : null}
-              onOpen={() => setActivityOpen(true)}
+          {view === "verification" && (!historical || historicalDetail) && (
+            <VerificationPanel
+              attempts={selectedAttempts}
+              receipts={selectedReceipts}
+              evidence={selectedEvidence}
             />
           )}
 
-          {/* Live task graph + iteration history, side by side on wide screens. */}
-          {(showTasks || showTimeline) && (
-            <div className="grid gap-4 lg:grid-cols-2">
-              {showTasks && info?.tasks && (
-                <TaskGraphProgress tasks={info.tasks} />
-              )}
-              {showTimeline && <AttemptTimeline attempts={attempts} />}
-            </div>
+          {view === "activity" && activityInfo && (
+            <GoalActivityPanel
+              taskId={task.id}
+              info={activityInfo}
+              running={!historical && running}
+              roleAgents={activityRoleAgents}
+            />
           )}
         </div>
       </div>

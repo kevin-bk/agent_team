@@ -24,6 +24,8 @@ import {
   type JournalEntryDTO,
   type JournalFilters,
   type JournalNoteBody,
+  type GoalRunDetailDTO,
+  type GoalRunSummaryDTO,
   type LoopInfoDTO,
   type LoopResumeBody,
   type PlanningAnswerBody,
@@ -449,6 +451,14 @@ export class ApiClient {
   // ── strict planning (draft → approve → run) ──────────────────────
   getTaskPlanning(taskId: string) {
     return this.request<PlanningInfoDTO>(`/api/tasks/${taskId}/planning`);
+  }
+  listTaskGoalRuns(taskId: string) {
+    return this.request<GoalRunSummaryDTO[]>(`/api/tasks/${taskId}/goal-runs`);
+  }
+  getTaskGoalRun(taskId: string, goalRunId: string) {
+    return this.request<GoalRunDetailDTO>(
+      `/api/tasks/${taskId}/goal-runs/${goalRunId}`,
+    );
   }
   startTaskPlanning(taskId: string, body: PlanningStartBody) {
     return this.request<{ ok: boolean; task_id: string }>(

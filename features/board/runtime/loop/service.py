@@ -647,6 +647,32 @@ def _persist_loop_state(task_id: str, state: str) -> None:
         db.close()
 
 
+def _publish_goal_snapshot_ready(task_id: str) -> None:
+    """Invalidate cockpit proof/history only after its durable snapshot commits.
+
+    The loop emits its terminal status just before returning to this service.
+    Without this second lightweight hint, a fast browser can refetch history in
+    that small gap and cache the pre-snapshot row until the next unrelated event.
+    """
+    db = SessionLocal()
+    try:
+        task = db.get(AgentTeamTask, task_id)
+        if task is None or not task.board_id:
+            return
+        get_board_bus().publish(
+            task.board_id,
+            {
+                "type": "loop.status",
+                "board_id": task.board_id,
+                "task_id": task.id,
+                "state": task.loop_state,
+                "snapshot_ready": True,
+            },
+        )
+    finally:
+        db.close()
+
+
 def _make_status_sink(board_id: str | None):
     """Build an ``on_status`` callback: persist loop state + notify the board."""
 
@@ -842,6 +868,9 @@ def start_autonomous_loop(
 
     async def _go() -> None:
         try:
+            from agent_team.features.board.runtime import goal_runs
+
+            await asyncio.to_thread(goal_runs.mark_current_started_for_task, task_id)
             outcome = await run_autonomous_loop(
                 task_id=task_id,
                 agent_alias=agent_alias,
@@ -859,12 +888,30 @@ def start_autonomous_loop(
                 "autonomous loop finished task=%s outcome=%s attempts=%s",
                 task_id, outcome.outcome, outcome.attempts,
             )
+            try:
+                await asyncio.to_thread(
+                    goal_runs.refresh_current_goal_run,
+                    task_id,
+                    outcome=outcome.outcome,
+                )
+                await asyncio.to_thread(_publish_goal_snapshot_ready, task_id)
+            except Exception:  # noqa: BLE001 — history capture must not mask outcome
+                logger.exception("could not snapshot goal run for task %s", task_id)
         except Exception:  # noqa: BLE001 — never let the loop crash the event loop
             logger.exception("autonomous loop failed for task %s", task_id)
             try:
                 _persist_loop_state(task_id, LoopState.FAILED.value)
             except Exception:  # noqa: BLE001
                 logger.warning("could not persist FAILED state for task %s", task_id)
+            try:
+                from agent_team.features.board.runtime import goal_runs
+
+                await asyncio.to_thread(
+                    goal_runs.refresh_current_goal_run, task_id, outcome="failed"
+                )
+                await asyncio.to_thread(_publish_goal_snapshot_ready, task_id)
+            except Exception:  # noqa: BLE001
+                logger.exception("could not snapshot failed goal run for task %s", task_id)
         finally:
             current = _RUNNING_LOOPS.get(task_id)
             if current is not None and current.cancel is cancel:

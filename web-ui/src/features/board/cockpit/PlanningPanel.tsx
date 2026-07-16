@@ -447,7 +447,7 @@ export function ReviewStage({
   );
 }
 
-function ArtifactTabs({
+export function ArtifactTabs({
   taskId,
   artifacts,
   canEdit,

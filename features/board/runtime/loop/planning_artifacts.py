@@ -174,6 +174,7 @@ def all_metadata(workspace_path: str) -> list[ArtifactMeta]:
         SPEC_PATH,
         PLAN_PATH,
         TASKS_PATH,
+        INTAKE_PATH,
         PLAN_REVIEW_PATH,
         EVIDENCE_PATH,
         VERIFICATION_RECEIPTS_PATH,

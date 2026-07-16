@@ -15,6 +15,7 @@ from agent_team.features.board.models import (
     AgentTeamComment,
     AgentTeamConversation,
     AgentTeamEvaluation,
+    AgentTeamGoalRun,
     AgentTeamJournalEntry,
     AgentTeamKeySeq,
     AgentTeamRun,
@@ -39,6 +40,7 @@ _PLUGIN_MODELS = (
     AgentTeamBoard,
     AgentTeamBoardMember,
     AgentTeamTask,
+    AgentTeamGoalRun,
     AgentTeamConversation,
     AgentTeamRun,
     AgentTeamRunEvent,
@@ -109,6 +111,7 @@ def test_plugin_meta_models_and_menu():
         "plugin_agent_team_board",
         "plugin_agent_team_board_member",
         "plugin_agent_team_task",
+        "plugin_agent_team_goal_run",
         "plugin_agent_team_conversation",
         "plugin_agent_team_run",
         "plugin_agent_team_run_event",
@@ -3102,6 +3105,57 @@ def _make_task(db) -> AgentTeamTask:
     )
     db.commit()
     return task
+
+
+def test_goal_run_snapshots_are_immutable_and_numbered(db, tmp_path):
+    """A new planning session preserves the prior approved contract."""
+    from agent_team.features.board.runtime import goal_runs
+    from agent_team.features.board.runtime.loop import planning_artifacts as artifacts
+
+    task = _make_task(db)
+    task.workspace_path = str(tmp_path)
+    task.objective = "First objective"
+    task.planning_meta_json = json.dumps(
+        {
+            "planning_session_id": "session-1",
+            "approved": True,
+            "approved_at": "2026-07-16T02:00:00+00:00",
+        }
+    )
+    artifacts.write_text(task.workspace_path, artifacts.SPEC_PATH, "# First spec\n")
+    artifacts.write_text(task.workspace_path, artifacts.PLAN_PATH, "# First plan\n")
+    artifacts.write_text(
+        task.workspace_path,
+        artifacts.TASKS_PATH,
+        '{"version":1,"status":"draft","tasks":[]}',
+    )
+
+    first = goal_runs.ensure_approved_snapshot(db, task, approved_by=None)
+    db.flush()
+    same = goal_runs.ensure_approved_snapshot(db, task, approved_by=None)
+    assert same.id == first.id
+    assert first.run_no == 1
+    assert first.plan_snapshot()["artifacts"][0]["content"] == "# First spec\n"
+
+    task.objective = "Second objective"
+    task.planning_meta_json = json.dumps(
+        {
+            "planning_session_id": "session-2",
+            "approved": True,
+            "approved_at": "2026-07-16T03:00:00+00:00",
+            "current_goal_run_id": first.id,
+        }
+    )
+    artifacts.write_text(task.workspace_path, artifacts.SPEC_PATH, "# Second spec\n")
+    second = goal_runs.ensure_approved_snapshot(db, task, approved_by=None)
+    db.flush()
+
+    assert second.id != first.id
+    assert second.run_no == 2
+    assert first.status == "superseded"
+    assert first.plan_snapshot()["artifacts"][0]["content"] == "# First spec\n"
+    assert second.plan_snapshot()["artifacts"][0]["content"] == "# Second spec\n"
+    assert task.planning_meta()["current_goal_run_id"] == second.id
 
 
 def test_comments_create_list_and_soft_delete(db):

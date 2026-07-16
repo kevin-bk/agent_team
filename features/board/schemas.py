@@ -421,6 +421,8 @@ class PlanningInfoDTO(BaseModel):
     approved: bool = False
     approved_by: str | None = None
     approved_at: str | None = None
+    #: Immutable approved goal revision currently bound to this workspace.
+    current_goal_run_id: str | None = None
     #: Last adversarial reviewer verdict (``pass``/``fail``/``needs_human``).
     review_verdict: str | None = None
     #: Lane derived from the planner's risk intake (``quick``/``normal``/
@@ -435,6 +437,36 @@ class PlanningInfoDTO(BaseModel):
     artifacts: list[PlanningArtifactDTO] = Field(default_factory=list)
     #: Blocking questions an agent raised, shown as cards when waiting for answers.
     questions: list[PlanningQuestionDTO] = Field(default_factory=list)
+
+
+class GoalRunSummaryDTO(BaseModel):
+    """One immutable approved goal revision in the task's history."""
+
+    id: str
+    task_id: str
+    run_no: int
+    objective: str = ""
+    contract_etag: str
+    status: str
+    outcome: str | None = None
+    approved_by: str | None = None
+    approved_at: str | None = None
+    started_at: str | None = None
+    completed_at: str | None = None
+    created_at: str | None = None
+    artifact_count: int = 0
+    changed_file_count: int = 0
+    receipt_count: int = 0
+    verdict: str | None = None
+
+
+class GoalRunDetailDTO(GoalRunSummaryDTO):
+    """Historical plan, workspace, and proof snapshots for one goal run."""
+
+    plan: dict = Field(default_factory=dict)
+    planning_meta: dict = Field(default_factory=dict)
+    execution: dict = Field(default_factory=dict)
+    workspace: dict = Field(default_factory=dict)
 
 
 class JournalEntryDTO(BaseModel):
