@@ -22,6 +22,8 @@ import {
 import {
   useAckTaskLoop,
   useCancelTaskLoop,
+  useGoalPublications,
+  usePublishGoal,
   useResumeTaskLoop,
   useTaskChanges,
   useTaskGoalRun,
@@ -52,6 +54,7 @@ import {
 import { PlanStage, QuestionStage, ReviewStage } from "./PlanningPanel";
 import {
   ArchivedGoalSummary,
+  DeliveryPanel,
   GoalActivityPanel,
   GoalHistoryBar,
   GoalPackageNav,
@@ -207,6 +210,17 @@ export function LoopPanel({
   );
   const historicalDetail = historicalGoal.data;
   const historical = selectedGoalRun !== "live";
+  const publicationGoalId = historical
+    ? selectedGoalRun
+    : pinfo?.current_goal_run_id;
+  const publications = useGoalPublications(
+    task.id,
+    publicationGoalId === "live" ? undefined : publicationGoalId ?? undefined,
+  );
+  const publishGoal = usePublishGoal(
+    task.id,
+    publicationGoalId && publicationGoalId !== "live" ? publicationGoalId : "_",
+  );
   const state: LoopState | null =
     live?.state ?? info?.loop_state ?? pinfo?.loop_state ?? null;
   const running = state === "running" || info?.is_running === true;
@@ -229,6 +243,17 @@ export function LoopPanel({
   const awaitingAnswers = state === "waiting_answers";
   const stage = stageFor(state, restarting, !!pinfo?.approved);
   const terminal = stage === "result" && !!state && state !== "running";
+  const goalVerified = currentGoalRun?.outcome === "complete"
+    && currentGoalRun?.verdict === "pass";
+  const publicationReason = historical
+    ? "Historical goals are read-only."
+    : !currentGoalRun
+      ? "Approve and run a goal before publishing."
+      : !goalVerified
+        ? "A completed goal with a trusted PASS verdict is required."
+        : !canEdit
+          ? "Editor access is required to publish."
+          : undefined;
 
   useEffect(() => {
     setSelectedGoalRun("live");
@@ -424,7 +449,15 @@ export function LoopPanel({
           )}
 
           {view === "summary" && historicalDetail && (
-            <ArchivedGoalSummary detail={historicalDetail} />
+            <>
+              <ArchivedGoalSummary detail={historicalDetail} />
+              <DeliveryPanel
+                publications={publications.data ?? []}
+                canPublish={false}
+                reason={publicationReason}
+                publishing={false}
+              />
+            </>
           )}
 
           {view === "summary" && !historical && (
@@ -505,6 +538,26 @@ export function LoopPanel({
                   )}
                   {showTimeline && <AttemptTimeline attempts={attempts} />}
                 </div>
+              )}
+
+              {currentGoalRun && (
+                <DeliveryPanel
+                  publications={publications.data ?? []}
+                  canPublish={!!canEdit && goalVerified}
+                  reason={publicationReason}
+                  publishing={publishGoal.isPending}
+                  onPublish={() => {
+                    publishGoal.mutate(false, {
+                      onSuccess: (result) => {
+                        if (result.ok) toast.success(result.detail || "Merge request created");
+                        else toast.error(result.detail || "Publication needs attention");
+                      },
+                      onError: (error) => toast.error(
+                        error instanceof Error ? error.message : "Could not publish goal",
+                      ),
+                    });
+                  }}
+                />
               )}
             </>
           )}

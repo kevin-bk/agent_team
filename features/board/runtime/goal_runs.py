@@ -286,6 +286,8 @@ def _execution_snapshot(db: Session, task: AgentTeamTask, row: AgentTeamGoalRun)
                 "timed_out": receipt.timed_out,
                 "stdout_path": receipt.stdout_path,
                 "stderr_path": receipt.stderr_path,
+                "source_before_sha256": receipt.source_before_sha256,
+                "source_after_sha256": receipt.source_after_sha256,
                 "created_at": _iso(receipt.created_at),
             }
             for receipt in receipts
@@ -320,6 +322,9 @@ def _trim_text(value: str, remaining: int) -> tuple[str, bool]:
 
 
 def _workspace_snapshot(db: Session, task: AgentTeamTask) -> dict:
+    from agent_team.features.board.runtime.loop.verification_runner import (
+        capture_source_state,
+    )
     from agent_team.features.repos import diff_service
     from agent_team.features.repos.task_copy import task_branch_name
 
@@ -353,7 +358,14 @@ def _workspace_snapshot(db: Session, task: AgentTeamTask) -> dict:
             "modified": modified,
             "truncated": bool(diff.get("truncated") or o_truncated or m_truncated),
         }
-    return {"version": 1, "changes": changes, "diffs": diffs}
+    source, source_sha256 = capture_source_state(task.workspace_path)
+    return {
+        "version": 1,
+        "changes": changes,
+        "diffs": diffs,
+        "source": source,
+        "source_sha256": source_sha256,
+    }
 
 
 def refresh_current_goal_run(task_id: str, *, outcome: str | None = None) -> None:

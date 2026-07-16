@@ -97,6 +97,14 @@ export function BoardEventsProvider({
           }
           void qc.invalidateQueries({ queryKey: qk.boardTasks(boardId) });
           break;
+        case "goal.publication":
+          if (e.task_id) {
+            void qc.invalidateQueries({ queryKey: qk.taskGoalRuns(e.task_id) });
+            void qc.invalidateQueries({
+              queryKey: ["goal-publications", e.task_id],
+            });
+          }
+          break;
       }
       for (const fn of listeners.current) fn(e);
     });

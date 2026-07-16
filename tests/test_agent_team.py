@@ -15,6 +15,7 @@ from agent_team.features.board.models import (
     AgentTeamComment,
     AgentTeamConversation,
     AgentTeamEvaluation,
+    AgentTeamGoalPublication,
     AgentTeamGoalRun,
     AgentTeamJournalEntry,
     AgentTeamKeySeq,
@@ -48,6 +49,7 @@ _PLUGIN_MODELS = (
     AgentTeamActivity,
     AgentTeamRepo,
     AgentTeamBoardRepo,
+    AgentTeamGoalPublication,
     AgentTeamToolOutput,
     AgentTeamAutopilot,
     AgentTeamAttempt,
@@ -119,6 +121,7 @@ def test_plugin_meta_models_and_menu():
         "plugin_agent_team_activity",
         "plugin_agent_team_repo",
         "plugin_agent_team_board_repo",
+        "plugin_agent_team_goal_publication",
         "plugin_agent_team_tool_output",
         "plugin_agent_team_autopilot",
         "plugin_agent_team_task_schedule",
@@ -5079,6 +5082,138 @@ def test_prepare_task_repos_reattaches_task_branch_on_existing_copy(
         capture_output=True, text=True,
     ).stdout.strip()
     assert branch == task_branch_name(task)
+
+
+def test_human_publication_commits_pushes_and_records_review_request(
+    db, tmp_path, monkeypatch
+):
+    """A PASS binds the dirty verified tree before commit/push/MR creation."""
+    from pathlib import Path
+
+    from agent_team.features.board.runtime import goal_publication
+    from agent_team.features.board.runtime.loop.verification_runner import (
+        capture_source_state,
+    )
+    from agent_team.features.repos import review_service
+    from agent_team.features.repos.task_copy import prepare_task_repos, task_branch_name
+
+    src, repo, task = _prepare_pushable_task(
+        db, tmp_path, monkeypatch, allow_push=True
+    )
+    prepare_task_repos(db, task)
+    copy = Path(task.workspace_path) / repo.slug
+    (copy / "feature.txt").write_text("verified change\n")
+    _source, source_sha = capture_source_state(task.workspace_path)
+
+    goal = AgentTeamGoalRun(
+        task_id=task.id,
+        run_no=1,
+        objective="Add a medium feature",
+        contract_etag="sha256:" + "a" * 64,
+        status="complete",
+        outcome="complete",
+        execution_snapshot_json=json.dumps(
+            {
+                "attempts": [{"evaluations": [{"verdict": "pass"}]}],
+                "receipts": [{"source_after_sha256": source_sha}],
+            }
+        ),
+        workspace_snapshot_json=json.dumps(
+            {
+                "changes": {
+                    "files": [{"repo": repo.slug, "path": "feature.txt"}]
+                },
+                "source_sha256": source_sha,
+            }
+        ),
+    )
+    db.add(goal)
+    db.flush()
+    task.planning_meta_json = json.dumps({"current_goal_run_id": goal.id})
+    db.commit()
+
+    monkeypatch.setattr(
+        review_service,
+        "create_review_request",
+        lambda *_args, **_kwargs: review_service.ReviewRequestResult(
+            provider="gitlab",
+            number="19",
+            url="https://gitlab.example.com/acme/service/-/merge_requests/19",
+            title="T-19: feature",
+        ),
+    )
+
+    result = goal_publication.publish_goal(goal.id, actor_id=None)
+
+    assert result["ok"] is True
+    publication = result["publications"][0]
+    assert publication["status"] == "published"
+    assert publication["pushed"] is True
+    assert publication["request_number"] == "19"
+    assert publication["commit_sha"] == publication["remote_commit_sha"]
+    branch = task_branch_name(task)
+    import subprocess
+
+    remote_commit = subprocess.run(
+        ["git", "rev-parse", f"refs/heads/{branch}"],
+        cwd=str(src),
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert remote_commit == publication["commit_sha"]
+
+
+def test_human_publication_blocks_workspace_drift_after_verification(
+    db, tmp_path, monkeypatch
+):
+    from pathlib import Path
+
+    from agent_team.features.board.runtime import goal_publication
+    from agent_team.features.board.runtime.loop.verification_runner import (
+        capture_source_state,
+    )
+    from agent_team.features.repos.task_copy import prepare_task_repos
+
+    _src, repo, task = _prepare_pushable_task(
+        db, tmp_path, monkeypatch, allow_push=True
+    )
+    prepare_task_repos(db, task)
+    copy = Path(task.workspace_path) / repo.slug
+    (copy / "feature.txt").write_text("verified change\n")
+    _source, source_sha = capture_source_state(task.workspace_path)
+    goal = AgentTeamGoalRun(
+        task_id=task.id,
+        run_no=1,
+        objective="Add a medium feature",
+        contract_etag="sha256:" + "b" * 64,
+        status="complete",
+        outcome="complete",
+        execution_snapshot_json=json.dumps(
+            {
+                "attempts": [{"evaluations": [{"verdict": "pass"}]}],
+                "receipts": [{"source_after_sha256": source_sha}],
+            }
+        ),
+        workspace_snapshot_json=json.dumps(
+            {
+                "changes": {
+                    "files": [{"repo": repo.slug, "path": "feature.txt"}]
+                },
+                "source_sha256": source_sha,
+            }
+        ),
+    )
+    db.add(goal)
+    db.flush()
+    task.planning_meta_json = json.dumps({"current_goal_run_id": goal.id})
+    db.commit()
+
+    (copy / "feature.txt").write_text("unverified drift\n")
+    with pytest.raises(goal_publication.PublicationError, match="changed after verification"):
+        goal_publication.publish_goal(goal.id, actor_id=None)
+
+    assert db.query(AgentTeamGoalPublication).count() == 0
 
 
 def test_git_push_tool_respects_allow_push(db, tmp_path, monkeypatch):

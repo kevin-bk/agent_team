@@ -6,16 +6,21 @@ import {
   ChevronRight,
   Circle,
   Code2,
+  ExternalLink,
   FileDiff,
   FileText,
   Gauge,
+  GitBranch,
   History,
   ListChecks,
   Loader2,
+  Send,
 } from "@/components/icons";
 import { DiffStatBadge, DiffView } from "@/components/DiffView";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import type {
+  GoalPublicationDTO,
   GoalRunDetailDTO,
   GoalRunReceiptDTO,
   GoalRunSummaryDTO,
@@ -349,6 +354,97 @@ export function ArchivedGoalSummary({ detail }: { detail: GoalRunDetailDTO }) {
         <Metric label="Tasks done" value={tasks.length ? `${done}/${tasks.length}` : "—"} />
       </div>
     </div>
+  );
+}
+
+export function DeliveryPanel({
+  publications,
+  canPublish,
+  reason,
+  publishing,
+  onPublish,
+}: {
+  publications: GoalPublicationDTO[];
+  canPublish: boolean;
+  reason?: string;
+  publishing: boolean;
+  onPublish?: () => void;
+}) {
+  const hasErrors = publications.some((publication) => publication.status === "error");
+  const complete = publications.length > 0 && publications.every(
+    (publication) => publication.status === "published",
+  );
+  return (
+    <section className="overflow-hidden rounded-lg border border-border bg-card">
+      <div className="flex flex-wrap items-center gap-3 border-b border-border px-4 py-3">
+        <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-500/15 text-blue-600 dark:text-blue-300">
+          <Send className="h-4 w-4" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <h3 className="text-[13.5px] font-semibold text-foreground">Delivery</h3>
+          <p className="text-[11.5px] text-muted-foreground">
+            Human-controlled publication of the exact code approved by verification
+          </p>
+        </div>
+        {onPublish && !complete && (
+          <Button
+            size="sm"
+            disabled={!canPublish || publishing}
+            onClick={onPublish}
+            title={!canPublish ? reason : undefined}
+          >
+            {publishing ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Send className="mr-1.5 h-3.5 w-3.5" />}
+            {hasErrors ? "Retry publication" : "Approve & create MR"}
+          </Button>
+        )}
+      </div>
+
+      {publications.length ? (
+        <div className="divide-y divide-border">
+          {publications.map((publication) => (
+            <div key={publication.id} className="px-4 py-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <GitBranch className="h-3.5 w-3.5 text-muted-foreground" />
+                <span className="text-[12.5px] font-semibold text-foreground">{publication.repo_slug}</span>
+                <span className={cn("rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase", statusTone(publication.status))}>
+                  {publication.status}
+                </span>
+                {publication.pushed && (
+                  <span className="rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-sky-700 dark:bg-sky-500/15 dark:text-sky-300">
+                    pushed
+                  </span>
+                )}
+                {publication.request_url && (
+                  <a
+                    href={publication.request_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="ml-auto inline-flex items-center gap-1 text-[11.5px] font-semibold text-primary hover:underline"
+                  >
+                    {publication.provider === "github" ? "PR" : "MR"} #{publication.request_number}
+                    <ExternalLink className="h-3 w-3" />
+                  </a>
+                )}
+              </div>
+              <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-[10.5px] text-muted-foreground">
+                <span>{publication.source_branch} → {publication.target_branch}</span>
+                {publication.commit_sha && <code>commit {publication.commit_sha.slice(0, 10)}</code>}
+                <code title={publication.tree_sha}>verified tree {publication.tree_sha.slice(0, 10)}</code>
+              </div>
+              {publication.error && (
+                <p className="mt-2 rounded-md bg-rose-50 px-2.5 py-2 text-[11.5px] text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">
+                  {publication.error}
+                </p>
+              )}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="px-4 py-5 text-[12px] text-muted-foreground">
+          {reason || "No delivery record yet. Verification must pass before publication."}
+        </p>
+      )}
+    </section>
   );
 }
 

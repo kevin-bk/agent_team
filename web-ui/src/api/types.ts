@@ -510,6 +510,8 @@ export interface GoalRunReceiptDTO {
   timed_out: boolean;
   stdout_path: string;
   stderr_path: string;
+  source_before_sha256?: string;
+  source_after_sha256?: string;
   created_at?: string | null;
 }
 
@@ -544,6 +546,34 @@ export interface GoalRunDetailDTO extends GoalRunSummaryDTO {
   planning_meta: Record<string, unknown>;
   execution: GoalRunExecutionSnapshot;
   workspace: GoalRunWorkspaceSnapshot;
+}
+
+export interface GoalPublicationDTO {
+  id: string;
+  goal_run_id: string;
+  task_id: string;
+  repo_slug: string;
+  source_branch: string;
+  target_branch: string;
+  tree_sha: string;
+  commit_sha?: string | null;
+  remote_commit_sha?: string | null;
+  provider?: string | null;
+  request_number?: string | null;
+  request_url?: string | null;
+  request_title?: string | null;
+  status: "pending" | "published" | "error" | string;
+  pushed: boolean;
+  error?: string | null;
+  published_by?: string | null;
+  published_at?: string | null;
+  created_at?: string | null;
+}
+
+export interface GoalPublishResultDTO {
+  ok: boolean;
+  publications: GoalPublicationDTO[];
+  detail?: string | null;
 }
 
 /** Body to answer an agent's blocking questions and resume the paused phase. */

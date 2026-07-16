@@ -469,6 +469,40 @@ class GoalRunDetailDTO(GoalRunSummaryDTO):
     workspace: dict = Field(default_factory=dict)
 
 
+class GoalPublishRequest(BaseModel):
+    """Human approval to publish every changed repo in a verified goal."""
+
+    draft: bool = False
+
+
+class GoalPublicationDTO(BaseModel):
+    id: str
+    goal_run_id: str
+    task_id: str
+    repo_slug: str
+    source_branch: str
+    target_branch: str
+    tree_sha: str
+    commit_sha: str | None = None
+    remote_commit_sha: str | None = None
+    provider: str | None = None
+    request_number: str | None = None
+    request_url: str | None = None
+    request_title: str | None = None
+    status: str
+    pushed: bool = False
+    error: str | None = None
+    published_by: str | None = None
+    published_at: str | None = None
+    created_at: str | None = None
+
+
+class GoalPublishResultDTO(BaseModel):
+    ok: bool
+    publications: list[GoalPublicationDTO] = Field(default_factory=list)
+    detail: str | None = None
+
+
 class JournalEntryDTO(BaseModel):
     """One entry in a task's semantic journal, for the cockpit timeline."""
 

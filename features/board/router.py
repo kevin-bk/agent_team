@@ -45,6 +45,9 @@ from agent_team.features.board.schemas import (
     CsvImportPreview,
     CsvImportResult,
     CsvImportRow,
+    GoalPublicationDTO,
+    GoalPublishRequest,
+    GoalPublishResultDTO,
     GoalRunDetailDTO,
     GoalRunSummaryDTO,
     JiraImportBody,
@@ -1952,6 +1955,71 @@ async def get_task_goal_run(
     if row is None or row.task_id != task_id:
         return not_found("Goal run not found")
     return GoalRunDetailDTO(**goal_runs.serialize_detail(row))
+
+
+@router.get(
+    "/tasks/{task_id}/goal-runs/{goal_run_id}/publications",
+    response_model=list[GoalPublicationDTO],
+)
+async def list_goal_publications(
+    task_id: str,
+    goal_run_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Read-only commit and merge/pull request records for one goal."""
+    _, err = authz.guard_task(db, request, task_id, min_role="viewer")
+    if err:
+        return err
+    from agent_team.features.board.models import AgentTeamGoalRun
+    from agent_team.features.board.runtime import goal_publication
+
+    goal = db.get(AgentTeamGoalRun, goal_run_id)
+    if goal is None or goal.task_id != task_id:
+        return not_found("Goal run not found")
+    return [
+        GoalPublicationDTO(**goal_publication.serialize_publication(row))
+        for row in goal_publication.list_publications(db, goal.id)
+    ]
+
+
+@router.post(
+    "/tasks/{task_id}/goal-runs/{goal_run_id}/publish",
+    response_model=GoalPublishResultDTO,
+)
+async def publish_goal_for_review(
+    task_id: str,
+    goal_run_id: str,
+    payload: GoalPublishRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Human approval: publish the verified tree and create review requests."""
+    ctx, err = authz.guard_task(db, request, task_id, min_role="editor")
+    if err:
+        return err
+    from agent_team.features.board.models import AgentTeamGoalRun
+    from agent_team.features.board.runtime import goal_publication
+
+    goal = db.get(AgentTeamGoalRun, goal_run_id)
+    if goal is None or goal.task_id != task_id:
+        return not_found("Goal run not found")
+    try:
+        result = await asyncio.to_thread(
+            goal_publication.publish_goal,
+            goal.id,
+            actor_id=ctx.user.id,
+            draft=payload.draft,
+        )
+    except goal_publication.PublicationError as exc:
+        return bad_request(str(exc))
+    return GoalPublishResultDTO(
+        ok=bool(result.get("ok")),
+        publications=[
+            GoalPublicationDTO(**row) for row in result.get("publications") or []
+        ],
+        detail=result.get("detail"),
+    )
 
 
 @router.put("/tasks/{task_id}/planning/artifacts/{artifact_name}")

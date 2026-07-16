@@ -26,6 +26,8 @@ import {
   type JournalNoteBody,
   type GoalRunDetailDTO,
   type GoalRunSummaryDTO,
+  type GoalPublicationDTO,
+  type GoalPublishResultDTO,
   type LoopInfoDTO,
   type LoopResumeBody,
   type PlanningAnswerBody,
@@ -458,6 +460,17 @@ export class ApiClient {
   getTaskGoalRun(taskId: string, goalRunId: string) {
     return this.request<GoalRunDetailDTO>(
       `/api/tasks/${taskId}/goal-runs/${goalRunId}`,
+    );
+  }
+  listGoalPublications(taskId: string, goalRunId: string) {
+    return this.request<GoalPublicationDTO[]>(
+      `/api/tasks/${taskId}/goal-runs/${goalRunId}/publications`,
+    );
+  }
+  publishGoal(taskId: string, goalRunId: string, draft = false) {
+    return this.request<GoalPublishResultDTO>(
+      `/api/tasks/${taskId}/goal-runs/${goalRunId}/publish`,
+      { method: "POST", body: JSON.stringify({ draft }) },
     );
   }
   startTaskPlanning(taskId: string, body: PlanningStartBody) {
