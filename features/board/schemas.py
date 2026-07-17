@@ -49,6 +49,10 @@ class BoardUpdate(BaseModel):
     planning_auto_approve_quick: bool | None = None
     #: Automatic reviewer-driven planner re-drafts (0 disables; bounded for safety).
     planning_review_max_redrafts: int | None = Field(default=None, ge=0, le=10)
+    #: Immutable backend-owned policy release. Null/"" clears the binding.
+    policy_bundle_id: str | None = Field(default=None, max_length=32)
+    planning_max_tasks: int | None = Field(default=None, ge=1, le=500)
+    planning_max_total_attempts: int | None = Field(default=None, ge=1, le=5000)
     #: Isolated-runtime override for this board (see ``RuntimeProfile`` /
     #: ``config.OVERLAY_FIELDS``): provider/runtime_strategy/image/cpu/memory_mb/
     #: idle_timeout_minutes/strict_isolation/workspace_mode/... Empty = env default.
@@ -97,6 +101,10 @@ class BoardDTO(BaseModel):
     planning_auto_approve_quick: bool = False
     #: Automatic reviewer-driven planner re-drafts (0 disables).
     planning_review_max_redrafts: int = 0
+    policy_bundle_id: str | None = None
+    policy_bundle_sha256: str | None = None
+    planning_max_tasks: int = 25
+    planning_max_total_attempts: int = 30
     #: Isolated-runtime override for this board (owner-only; may embed tuning that
     #: overlays the env defaults). Empty object = use the process env defaults.
     runtime_profile: dict = Field(default_factory=dict)
@@ -126,6 +134,24 @@ class SkillPackDTO(BaseModel):
     description: str
     version: str | None = None
     source: str | None = None
+
+
+class ProjectPolicyBundleCreate(BaseModel):
+    """Parsed policy documents plus hashes of the original authoring files."""
+
+    source_ref: str = Field(min_length=1, max_length=255)
+    documents: dict
+    file_hashes: dict[str, str]
+
+
+class ProjectPolicyBundleDTO(BaseModel):
+    id: str
+    project_key: str
+    schema_version: int
+    source_ref: str
+    file_hashes: dict[str, str]
+    bundle_sha256: str
+    created_at: str | None
 
 
 class BoardMemberDTO(BaseModel):
@@ -321,6 +347,10 @@ class LoopInfoDTO(BaseModel):
     #: remembered run params and is parked in a resumable state). Drives the
     #: cockpit's "Resume" action.
     can_resume: bool = False
+    #: Concrete reason for a stopped run when no evaluator verdict exists
+    #: (typically the latest generator/evaluator infrastructure error). This
+    #: prevents the cockpit from presenting an empty, misleading review gate.
+    attention_reason: str | None = None
     attempts: list[LoopAttemptDTO] = Field(default_factory=list)
     #: Live task-graph progress from ``TASKS.json`` (empty when not executing
     #: task-by-task). The on-disk file is the source of truth; this mirrors it.
@@ -372,6 +402,16 @@ class PlanningRunCreate(BaseModel):
     max_tokens: int | None = Field(default=None, ge=0)
     max_cost_usd: float | None = Field(default=None, ge=0)
     max_wall_seconds: int | None = Field(default=None, ge=0)
+    #: Explicit human acceptance of policy risk-lane changes (e.g. new DB
+    #: migrations). Without it, an enforced run fails closed when the candidate
+    #: touches a ``risk_triggers`` path.
+    accept_risk_lane: bool = False
+
+
+class PlanningApproveCreate(BaseModel):
+    """Optional approve payload (plain approve, without starting execution)."""
+
+    accept_risk_lane: bool = False
 
 
 class LoopResumeCreate(BaseModel):

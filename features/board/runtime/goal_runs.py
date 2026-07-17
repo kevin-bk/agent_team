@@ -136,6 +136,10 @@ def ensure_approved_snapshot(
         **meta,
         "planning_session_id": session_id,
         "artifact_etags": meta.get("artifact_etags") or {},
+        "policy_bundle": meta.get("policy_bundle"),
+        "graph_limits": meta.get("graph_limits"),
+        "skill_packs": meta.get("skill_packs") or [],
+        "approved_source": meta.get("approved_source"),
     }
     row = AgentTeamGoalRun(
         task_id=task.id,
@@ -276,6 +280,16 @@ def _execution_snapshot(db: Session, task: AgentTeamTask, row: AgentTeamGoalRun)
         runs.insert(insert_at, reviewer_run)
     evidence = artifacts.read_json(task.workspace_path, artifacts.EVIDENCE_PATH) or {}
     final_tasks = artifacts.read_json(task.workspace_path, artifacts.TASKS_PATH) or {}
+    def _usage_known(run: AgentTeamRun) -> bool:
+        return bool(
+            run.input_tokens
+            or run.output_tokens
+            or run.total_tokens
+            or run.cost_usd is not None
+            or run.cli_usage_text
+        )
+
+    usage_complete = all(_usage_known(run) for run in runs)
     return {
         "version": 1,
         "attempts": [
@@ -305,6 +319,12 @@ def _execution_snapshot(db: Session, task: AgentTeamTask, row: AgentTeamGoalRun)
                 "stderr_path": receipt.stderr_path,
                 "source_before_sha256": receipt.source_before_sha256,
                 "source_after_sha256": receipt.source_after_sha256,
+                "policy_bundle": {
+                    "id": receipt.policy_bundle_id,
+                    "sha256": receipt.policy_bundle_sha256,
+                }
+                if receipt.policy_bundle_id
+                else None,
                 "created_at": _iso(receipt.created_at),
             }
             for receipt in receipts
@@ -317,14 +337,30 @@ def _execution_snapshot(db: Session, task: AgentTeamTask, row: AgentTeamGoalRun)
                 "role": run.role,
                 "agent_id": run.agent_alias,
                 "status": run.status,
-                "tokens": run.total_tokens,
-                "cost_usd": run.cost_usd or 0,
+                "tokens": run.total_tokens if _usage_known(run) else "unknown",
+                "cost_usd": run.cost_usd if run.cost_usd is not None else "unknown",
             }
             for run in runs
             if run.role != "chat"
         ],
-        "total_tokens": sum(run.total_tokens or 0 for run in runs),
-        "total_cost_usd": sum(run.cost_usd or 0 for run in runs),
+        "total_tokens": (
+            sum(run.total_tokens or 0 for run in runs) if usage_complete else "unknown"
+        ),
+        "total_cost_usd": (
+            sum(run.cost_usd or 0 for run in runs)
+            if usage_complete and all(run.cost_usd is not None for run in runs)
+            else "unknown"
+        ),
+        "graph_budget": {
+            "attempts_used": len(attempts),
+            "max_total_attempts": (row.planning_meta().get("graph_limits") or {}).get(
+                "max_total_attempts"
+            ),
+            "tasks_used": len(final_tasks.get("tasks") or []),
+            "max_tasks": (row.planning_meta().get("graph_limits") or {}).get(
+                "max_tasks"
+            ),
+        },
         "final_tasks": final_tasks,
         "evidence": evidence,
     }
@@ -383,6 +419,11 @@ def _workspace_snapshot(db: Session, task: AgentTeamTask) -> dict:
         "source": source,
         "source_sha256": source_sha256,
     }
+
+
+def build_workspace_snapshot(db: Session, task: AgentTeamTask) -> dict:
+    """Public read-only candidate snapshot used by reviewer packets."""
+    return _workspace_snapshot(db, task)
 
 
 def refresh_current_goal_run(task_id: str, *, outcome: str | None = None) -> None:

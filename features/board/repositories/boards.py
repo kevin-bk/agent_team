@@ -82,6 +82,13 @@ def task_counts_by_board(db: Session, board_ids: list[str]) -> dict[str, int]:
 def serialize_board(
     board: AgentTeamBoard, *, task_count: int = 0, my_role: str | None = None
 ) -> BoardDTO:
+    # The digest comes from the lazy ``policy_bundle`` relationship. This
+    # serializer is also used with detached rows, where a lazy load raises
+    # instead of returning None — expose only the binding id in that case.
+    try:
+        policy = board.policy_bundle if board.policy_bundle_id else None
+    except Exception:  # noqa: BLE001 — detached row: relationship unavailable
+        policy = None
     return BoardDTO(
         id=board.id,
         slug=board.slug,
@@ -107,6 +114,12 @@ def serialize_board(
                 10,
                 int(getattr(board, "planning_review_max_redrafts", 0) or 0),
             ),
+        ),
+        policy_bundle_id=getattr(board, "policy_bundle_id", None),
+        policy_bundle_sha256=(policy.bundle_sha256 if policy is not None else None),
+        planning_max_tasks=int(getattr(board, "planning_max_tasks", 25) or 25),
+        planning_max_total_attempts=int(
+            getattr(board, "planning_max_total_attempts", 30) or 30
         ),
         # Runtime profile may carry infra tuning; expose only to owners who edit
         # it in board settings (mirrors agent_mcp handling).

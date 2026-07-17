@@ -21,6 +21,7 @@ aborting a run.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import shutil
@@ -82,6 +83,44 @@ def list_available_packs() -> list[dict]:
         for meta, store in _catalog().values()
     ]
     return sorted(rows, key=lambda p: p["name"])
+
+
+def _directory_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    for item in sorted(p for p in path.rglob("*") if p.is_file()):
+        rel = item.relative_to(path).as_posix().encode()
+        digest.update(len(rel).to_bytes(8, "big"))
+        digest.update(rel)
+        with item.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    return digest.hexdigest()
+
+
+def pinned_manifest(names: Sequence[str]) -> list[dict]:
+    """Resolve immutable name/version/content identity for an enforced run."""
+    catalog = _catalog()
+    rows: list[dict] = []
+    for name in sorted(set(names)):
+        entry = catalog.get(name)
+        if entry is None:
+            raise ValueError(f"skill pack {name!r} is unavailable")
+        meta, store = entry
+        path = store.find_dir(name)  # type: ignore[attr-defined]
+        if not path or not Path(path).is_dir():
+            raise ValueError(f"skill pack {name!r} has no materializable release")
+        version = str(getattr(meta, "version", "") or "")
+        if not version:
+            raise ValueError(f"skill pack {name!r} has no immutable version")
+        rows.append(
+            {
+                "name": name,
+                "version": version,
+                "digest": _directory_sha256(Path(path)),
+                "source": str(getattr(store, "name", "") or ""),
+            }
+        )
+    return rows
 
 
 def _clear_managed_dirs(ws: Path) -> None:

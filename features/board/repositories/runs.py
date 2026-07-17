@@ -25,6 +25,7 @@ def create_run(
     prompt: str,
     role: str = RUN_ROLE_CHAT,
     attempt_id: str | None = None,
+    workspace_override_path: str | None = None,
 ) -> AgentTeamRun:
     run = AgentTeamRun(
         human_key=next_human_key(db, RUN_KEY_PREFIX),
@@ -38,6 +39,7 @@ def create_run(
         prompt=prompt,
         role=role,
         attempt_id=attempt_id,
+        workspace_override_path=workspace_override_path,
     )
     db.add(run)
     db.flush()

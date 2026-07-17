@@ -56,6 +56,18 @@ class ApprovedCommand:
     command: str
 
 
+def policy_cwd(approved: ApprovedCommand) -> str:
+    """Logical repo-relative cwd of an approved command, as policy declares it.
+
+    ``working_directory`` equals the repo slug itself for the root case
+    (planner cwd ``.``) — ``removeprefix("<repo>/")`` alone would leave the
+    slug intact and never match a policy ``cwd: "."`` allowlist row.
+    """
+    if not approved.repo or approved.working_directory == approved.repo:
+        return "."
+    return approved.working_directory.removeprefix(f"{approved.repo}/")
+
+
 @dataclass(frozen=True)
 class ReceiptBatch:
     """The authoritative receipt batch minted for one evaluator invocation."""
@@ -100,7 +112,8 @@ def approved_commands(tasks: list[dict]) -> list[ApprovedCommand]:
                 if isinstance(normalized, dict):
                     repo = normalized["repo"]
                     command = normalized["command"]
-                    working_directory = repo
+                    cwd = normalized.get("cwd", ".")
+                    working_directory = repo if cwd == "." else f"{repo}/{cwd}"
                 elif isinstance(normalized, str):
                     repo = None
                     command = normalized
@@ -165,9 +178,12 @@ def _execution_cwd(
             if getattr(sandbox, "is_remote", False)
             else workspace_path
         )
+    relative = approved.working_directory.removeprefix(f"{approved.repo}/")
     if getattr(sandbox, "is_remote", False):
-        return posixpath.join(profile.workspace_mount_path, approved.repo)
-    return str(task_copy_path(workspace_path, approved.repo))
+        root = posixpath.join(profile.workspace_mount_path, approved.repo)
+        return root if relative == approved.repo else posixpath.join(root, relative)
+    root = task_copy_path(workspace_path, approved.repo)
+    return str(root if relative == approved.repo else root / relative)
 
 
 def capture_source_state(workspace_path: str) -> tuple[dict[str, Any], str]:
@@ -182,7 +198,14 @@ def capture_source_state(workspace_path: str) -> tuple[dict[str, Any], str]:
 
 
 def _runtime_details(
-    profile, sandbox: object | None, *, contract_etag: str
+    profile,
+    sandbox: object | None,
+    *,
+    contract_etag: str,
+    board_id: str,
+    task_id: str,
+    attempt_id: str | None,
+    batch_id: str,
 ) -> dict[str, Any]:
     details = {
         "provider": profile.provider,
@@ -196,6 +219,10 @@ def _runtime_details(
         "host_platform": platform.platform(),
         "runner_version": 1,
         "approved_tasks_contract_etag": contract_etag,
+        "board_id": board_id,
+        "task_id": task_id,
+        "attempt_id": attempt_id,
+        "verification_batch_id": batch_id,
     }
     canonical = json.dumps(details, sort_keys=True, separators=(",", ":"))
     details["fingerprint_sha256"] = hashlib.sha256(canonical.encode()).hexdigest()
@@ -259,6 +286,7 @@ def _persist_observed(
     workspace_path: str,
     batch_id: str,
     observations: list[_ObservedCommand],
+    policy_bundle: dict[str, str] | None,
 ) -> list[dict[str, Any]]:
     manifest_rows: list[dict[str, Any]] = []
     with SessionLocal() as db:
@@ -305,6 +333,8 @@ def _persist_observed(
                 source_before_sha256=observed.source_before_sha256,
                 source_after_sha256=observed.source_after_sha256,
                 runtime=runtime,
+                policy_bundle_id=(policy_bundle or {}).get("id"),
+                policy_bundle_sha256=(policy_bundle or {}).get("sha256"),
             )
             manifest_rows.append(receipt_to_dict(row))
         db.commit()
@@ -313,6 +343,8 @@ def _persist_observed(
 
 def receipt_to_dict(row) -> dict[str, Any]:
     """Return the safe evaluator/gate view of a persisted receipt."""
+    runtime = row.runtime()
+    expected_exit = int(runtime.get("policy_expected_exit", 0))
     return {
         "id": row.id,
         "batch_id": row.batch_id,
@@ -321,7 +353,11 @@ def receipt_to_dict(row) -> dict[str, Any]:
         "working_directory": row.working_directory,
         "command": row.command,
         "exit_code": row.exit_code,
-        "status": "pass" if row.exit_code == 0 and not row.timed_out else "fail",
+        "status": (
+            "pass"
+            if row.exit_code == expected_exit and not row.timed_out
+            else "fail"
+        ),
         "duration_ms": row.duration_ms,
         "timed_out": row.timed_out,
         "stdout_sha256": row.stdout_sha256,
@@ -330,7 +366,13 @@ def receipt_to_dict(row) -> dict[str, Any]:
         "stderr_path": row.stderr_path,
         "source_before_sha256": row.source_before_sha256,
         "source_after_sha256": row.source_after_sha256,
-        "runtime": row.runtime(),
+        "runtime": runtime,
+        "policy_bundle": {
+            "id": row.policy_bundle_id,
+            "sha256": row.policy_bundle_sha256,
+        }
+        if row.policy_bundle_id
+        else None,
         "created_at": row.created_at.isoformat() if row.created_at else None,
     }
 
@@ -381,6 +423,33 @@ async def run_approved_commands(
             "TASKS.json content does not match the human-approved task contract; "
             "re-approval is required"
         )
+    policy_identity = None
+    command_policies: dict[str, dict] = {}
+    # Re-resolve through task -> board on every batch. This catches a board
+    # rebind, a corrupted stored digest, and command drift after approval.
+    from agent_team.features.board.runtime import project_policy
+
+    with SessionLocal() as db:
+        try:
+            context = project_policy.enforced_context(db, task_id)
+            if context is not None:
+                _task, bundle = context
+                project_policy.assert_commands_allowed(bundle, tasks)
+                policy_identity = project_policy.identity(bundle).as_dict()
+                for approved in approved_commands(tasks):
+                    row = project_policy.command_policy(
+                        bundle,
+                        approved.command,
+                        cwd=policy_cwd(approved),
+                        repo=approved.repo,
+                    )
+                    if row is None:
+                        raise project_policy.PolicyError(
+                            f"verification command is not allowlisted: {approved.command!r}"
+                        )
+                    command_policies[approved.command_id] = row
+        except project_policy.PolicyError as exc:
+            raise VerificationContractError(str(exc)) from exc
     commands = approved_commands(tasks)
     if not commands:
         return None
@@ -407,10 +476,17 @@ async def run_approved_commands(
         )
 
     runtime = _runtime_details(
-        profile, sandbox, contract_etag=approved_tasks_contract_etag
+        profile,
+        sandbox,
+        contract_etag=approved_tasks_contract_etag,
+        board_id=board_id,
+        task_id=task_id,
+        attempt_id=attempt_id,
+        batch_id=batch_id,
     )
     try:
         for approved in commands:
+            command_policy = command_policies.get(approved.command_id)
             before, before_sha = capture_source_state(workspace_path)
             if sandbox is None:
                 exit_code, duration_ms, timed_out = -1, 0, False
@@ -426,7 +502,13 @@ async def run_approved_commands(
                     result = await sandbox.exec_shell(
                         approved.command,
                         cwd=cwd,
-                        timeout_seconds=_timeout_seconds(profile),
+                        timeout_seconds=min(
+                            _timeout_seconds(profile),
+                            int(
+                                (command_policy or {}).get("timeout_s")
+                                or _timeout_seconds(profile)
+                            ),
+                        ),
                     )
                     exit_code = int(result.exit_code)
                     duration_ms = int(result.duration_ms)
@@ -459,6 +541,11 @@ async def run_approved_commands(
                         "repo": approved.repo,
                         "working_directory": approved.working_directory,
                         "execution_cwd": cwd if sandbox is not None else None,
+                        "policy_command_id": (command_policy or {}).get("id"),
+                        "policy_expected_exit": int(
+                            (command_policy or {}).get("expected_exit", 0)
+                        ),
+                        "policy_timeout_s": (command_policy or {}).get("timeout_s"),
                     },
                 )
             )
@@ -474,6 +561,7 @@ async def run_approved_commands(
         workspace_path=workspace_path,
         batch_id=batch_id,
         observations=observations,
+        policy_bundle=policy_identity,
     )
     _write_manifest(workspace_path, batch_id=batch_id, receipts=receipts)
     _source, current_sha = capture_source_state(workspace_path)

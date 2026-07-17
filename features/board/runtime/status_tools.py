@@ -71,6 +71,12 @@ def _resolve_column(columns: list[dict], requested: str) -> dict | None:
 
 def get_status_tools(agent_alias: str, settings: dict[str, str]) -> list[Any]:
     """Create the ``set_task_status`` tool for an agent (empty if langchain absent)."""
+    # Enforced aliases set this in their agent configuration. Lifecycle changes
+    # then stay exclusively in the strict backend completion gate; ordinary
+    # agents retain the historical convenience tool.
+    disabled = str(settings.get("agent_team_disable_set_task_status", "")).strip().lower()
+    if disabled in {"1", "true", "yes", "on"}:
+        return []
     try:
         from langchain_core.tools import tool
     except ImportError:
