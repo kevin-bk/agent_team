@@ -78,6 +78,12 @@ class TurnContext:
     #: Per-agent MCP config (``{"mcpServers": {...}}``) for a direct-CLI worker,
     #: or ``None`` for none. Only the owned ACP engine forwards this to the CLI.
     mcp_config: dict | None = None
+    #: True when ``workspace_path`` is a disposable per-run override (e.g. the
+    #: strict evaluator's review copy). Sandboxed workers must then provision a
+    #: per-run sandbox keyed by ``run_id`` and tear it down after the turn —
+    #: the per-task sandbox's mounts are fixed at creation and must keep
+    #: pointing at the durable task workspace.
+    ephemeral_workspace: bool = False
     #: Secret values to mask in streamed tool-call frames (e.g. MCP auth tokens).
     secrets: list[str] = field(default_factory=list)
 
