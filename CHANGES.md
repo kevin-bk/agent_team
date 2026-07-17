@@ -136,3 +136,38 @@ stay in lockstep.
   comes from a lazy relationship, but the serializer is also used with
   detached rows (and its comment claimed no relationship existed). Guarded the
   lazy access; detached rows expose only the binding id.
+
+---
+
+## 4. Strict evaluator isolation: backend review packet + disposable reviewer workspace
+
+**Features**
+
+- Strict evaluator prompts no longer take any builder narrative. The backend
+  builds the review packet itself: approved contract etags, base vs candidate
+  heads, source digest, bounded diffs, untracked manifest, trusted receipt
+  ids, policy identity and pinned skill digests.
+- The evaluator agent runs against a disposable copy of the task workspace
+  (`workspace_override_path`, never accepted from the public run API);
+  builder journal/narrative files are removed from the copy and per-agent MCP
+  config is withheld from reviewer/evaluator roles. Only a parseable verdict
+  artifact is promoted back; all other reviewer writes are discarded with the
+  copy.
+
+**Bugs → root cause → fix**
+
+- *The disposable workspace was silently a no-op in the exact mode enforced
+  boards require (OpenSandbox strict)*: task sandboxes are keyed by `task_id`
+  and their mounts are fixed at creation, so the evaluator reused the
+  builder's sandbox and saw the original workspace — or worse, a fresh task
+  sandbox would permanently mount the disposable directory and then have it
+  `rmtree`d from under it. Runs with a workspace override now execute in an
+  ephemeral sandbox keyed by `run_id` (`TurnContext.ephemeral_workspace`) that
+  is killed — not paused — after the turn, in both the sidecar-ACP and
+  sandboxed-CLI workers (+ regression test).
+- *Copying the workspace crashed on dependency-seed symlinks*: `node_modules`
+  links point into the runtime image and dangle on the host; `copytree` was
+  following them. It now copies links as links (`symlinks=True`).
+- *The strict uid could not list the review copy*: `mkdtemp` creates the root
+  0700 while the sandbox accesses the mount as "other". The root is widened to
+  0755 at creation (ordinary workspaces already carry the read bit).

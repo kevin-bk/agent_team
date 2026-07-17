@@ -33,6 +33,13 @@ from agent_team.features.board.runtime.sandbox.config import (
 from agent_team.features.board.runtime.sandbox.local import LocalSandbox
 from agent_team.features.board.runtime.sandbox.manager import SandboxManager
 
+
+@pytest.fixture(autouse=True)
+def _isolate_project_dependency_seed_env(monkeypatch):
+    """Local operator seed mappings must not leak into unrelated unit tests."""
+    monkeypatch.delenv("AGENT_TEAM_RUNTIME_DEPENDENCY_SEEDS", raising=False)
+
+
 # ─── config ──────────────────────────────────────────────────────────────
 
 
@@ -62,6 +69,52 @@ _RUNTIME_ENV = [
     "AGENT_TEAM_RUNTIME_IDLE_MINUTES",
     "AGENT_TEAM_RUNTIME_STRICT",
 ]
+
+
+def test_dependency_seed_mapping_accepts_only_image_seed_paths(monkeypatch):
+    from agent_team.features.board.runtime.sandbox import service as svc
+
+    monkeypatch.setenv(
+        "AGENT_TEAM_RUNTIME_DEPENDENCY_SEEDS",
+        '{"demo-app":"/opt/agent-team/project-deps/demo-app/node_modules",'
+        '"../escape":"/opt/agent-team/project-deps/escape",'
+        '"host":"/home/user/node_modules"}',
+    )
+
+    assert svc._dependency_seed_mapping() == {
+        "demo-app": "/opt/agent-team/project-deps/demo-app/node_modules"
+    }
+
+
+async def test_dependency_seed_is_linked_inside_each_sandbox(monkeypatch):
+    from agent_team.features.board.runtime.sandbox import service as svc
+
+    monkeypatch.setenv(
+        "AGENT_TEAM_RUNTIME_DEPENDENCY_SEEDS",
+        '{"demo-app":"/opt/agent-team/project-deps/demo-app/node_modules"}',
+    )
+
+    class _SeedSandbox:
+        def __init__(self):
+            self.commands = []
+
+        async def exec_shell(self, command, **kwargs):
+            self.commands.append((command, kwargs))
+            return ExecResult(stdout="", stderr="", exit_code=0)
+
+    sandbox = _SeedSandbox()
+    await svc._provision_dependency_seeds(
+        sandbox,
+        RuntimeProfile(
+            provider="opensandbox", workspace_mount_path="/private-workspace"
+        ),
+    )
+
+    command, kwargs = sandbox.commands[0]
+    assert "/private-workspace/demo-app/node_modules" in command
+    assert "/opt/agent-team/project-deps/demo-app/node_modules" in command
+    assert "ln -s" in command
+    assert kwargs["timeout_seconds"] == 30
 
 
 # ─── board runtime overlay validation ──────────────────────────────────────
@@ -318,6 +371,27 @@ async def test_opensandbox_lifecycle(monkeypatch):
     assert rt.state == "closed"
 
 
+def test_opensandbox_api_key_can_load_from_runtime_secret(monkeypatch, tmp_path):
+    secret = tmp_path / "opensandbox.key"
+    secret.write_text("shared-secret\n", encoding="utf-8")
+    monkeypatch.delenv("OPENSANDBOX_API_KEY", raising=False)
+    monkeypatch.delenv("OPEN_SANDBOX_API_KEY", raising=False)
+    monkeypatch.setenv("OPEN_SANDBOX_API_KEY_FILE", str(secret))
+
+    rt = osb.OpenSandboxRuntime(image="img:test")
+
+    assert rt.api_key == "shared-secret"
+
+
+def test_opensandbox_api_key_file_fails_closed(monkeypatch, tmp_path):
+    monkeypatch.delenv("OPENSANDBOX_API_KEY", raising=False)
+    monkeypatch.delenv("OPEN_SANDBOX_API_KEY", raising=False)
+    monkeypatch.setenv("OPEN_SANDBOX_API_KEY_FILE", str(tmp_path / "missing.key"))
+
+    with pytest.raises(osb.SandboxAuthError, match="API key file is unavailable"):
+        osb.OpenSandboxRuntime(image="img:test")
+
+
 async def test_opensandbox_build_volumes(monkeypatch):
     sdk = _fake_sdk()
     mount = VolumeMount(
@@ -537,6 +611,53 @@ async def test_sandboxed_worker_emits_and_pauses(monkeypatch):
     assert "text_delta" in kinds
     assert result.final_text == "All done."
     assert paused["v"] is True
+
+
+async def test_sandboxed_worker_ephemeral_workspace_gets_own_sandbox(monkeypatch):
+    """A per-run workspace override must not reuse (or pause) the task sandbox.
+
+    Task-sandbox mounts are fixed at creation, so an override workspace is only
+    visible in a fresh per-run sandbox, and that sandbox must be torn down —
+    not paused — once the turn ends.
+    """
+    from agent_team.features.board.runtime.workers import sandboxed_cli as sc
+    from agent_team.features.board.runtime.workers.base import TurnContext
+
+    fake = _FakeSandbox()
+    seen = {"prepare_key": None, "killed": None, "paused": False}
+
+    async def _prepare(**kwargs):
+        seen["prepare_key"] = kwargs["task_id"]
+        return fake
+
+    async def _kill(task_id):
+        seen["killed"] = task_id
+
+    async def _pause(task_id, **kwargs):
+        seen["paused"] = True
+
+    monkeypatch.setattr(sc, "prepare_task_sandbox", _prepare)
+    monkeypatch.setattr(sc, "kill_task_sandbox", _kill)
+    monkeypatch.setattr(sc, "pause_task_sandbox", _pause)
+    monkeypatch.setattr(
+        sc, "resolve_profile", lambda *a, **k: RuntimeProfile(provider="opensandbox")
+    )
+
+    worker = sc.SandboxedCliWorker(engine="claude")
+    ctx = TurnContext(
+        run_id="r-eph", agent_alias="cli:claude", prompt="review",
+        workspace_path="/tmp/ws-review-copy", thread_id="th-eph",
+        task_id="TASK-9", ephemeral_workspace=True,
+    )
+
+    async def emit(t, d):
+        pass
+
+    result = await worker.run_turn(ctx, emit, asyncio.Event())
+    assert result.final_text == "All done."
+    assert seen["prepare_key"] == "r-eph"  # keyed by run, not task
+    assert seen["killed"] == "r-eph"
+    assert seen["paused"] is False
 
 
 async def test_sandboxed_worker_strict_no_host_fallback(monkeypatch):
@@ -964,6 +1085,25 @@ def test_mount_backend_supports_pvc_claim():
     plan = build_plan(acc)
     assert plan.mounts[0].kind == "pvc"
     assert plan.mounts[0].pvc_claim == "at-codex-acc2"
+    assert plan.mounts[0].pvc_create_if_not_exists is False
+
+
+def test_ai_code_source_prefers_configured_credential_volume(monkeypatch):
+    from agent_team.features.board.runtime.credentials.ai_code_source import (
+        resolve_account_for_provider,
+    )
+
+    monkeypatch.setenv(
+        "AGENT_TEAM_RUNTIME_CLAUDE_CREDENTIAL_VOLUME",
+        "agent-team-claude-auth",
+    )
+
+    account = resolve_account_for_provider("claude")
+
+    assert account is not None
+    assert account.name == "runtime-volume-claude"
+    assert account.backend == "mount"
+    assert account.material_ref() == {"pvc_claim": "agent-team-claude-auth"}
 
 
 def test_mount_backend_missing_material_raises():
@@ -1465,6 +1605,33 @@ async def test_prepare_sidecar_forwards_host_codex_acp_override(
     assert codex_config["approval_policy"] == "never"
 
 
+async def test_prepare_sidecar_preserves_explicit_empty_codex_args(
+    monkeypatch, tmp_path
+):
+    from agent_team.features.board.runtime.sandbox import service as svc
+
+    mgr = _CapturingManager()
+    monkeypatch.setattr(svc, "get_manager", lambda profile=None: mgr)
+
+    async def _no_reattach(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(svc, "_try_reattach_sandbox", _no_reattach)
+    monkeypatch.setattr(svc, "_store_task_sandbox_id", lambda *_a: None)
+    monkeypatch.setenv("AI_CODE_CODEX_ACP_ARGS", "")
+    monkeypatch.setenv("AI_CODE_CODEX_ACP_COMMAND", "codex-acp")
+
+    await svc.prepare_task_sandbox(
+        task_id="T-empty-codex",
+        host_workspace_path=str(tmp_path / "T-empty-codex"),
+        profile=RuntimeProfile(provider="opensandbox", runtime_strategy="acp_sidecar"),
+    )
+
+    env = mgr.captured["extra_env"]
+    assert env["AI_CODE_CODEX_ACP_COMMAND"] == "codex-acp"
+    assert env["AI_CODE_CODEX_ACP_ARGS"] == ""
+
+
 async def test_prepare_local_provider_keeps_app_db_store(monkeypatch, tmp_path):
     from agent_team.features.board.runtime.sandbox import service as svc
 
@@ -1790,8 +1957,6 @@ async def test_pause_restores_workspace_ownership_before_pausing(monkeypatch):
 
     sb = _SB()
     monkeypatch.setattr(svc, "_manager", _Mgr(sb))
-    monkeypatch.setattr(svc.os, "getuid", lambda: 1234)
-    monkeypatch.setattr(svc.os, "getgid", lambda: 5678)
     svc._busy_counts.clear()
     svc._busy_counts["T-OWN"] = 1
 
@@ -1802,12 +1967,56 @@ async def test_pause_restores_workspace_ownership_before_pausing(monkeypatch):
     assert events == [
         (
             "exec",
-            "chown -R 1234:5678 '/custom workspace/.agent-team' "
-            "2>/dev/null || true",
+            "chmod -R a+rwX '/custom workspace' 2>/dev/null || true",
         ),
         ("pause", ""),
     ]
     assert sb.state == "paused"
+
+
+def test_prepare_host_workspace_permissions_is_scoped_and_symlink_safe(tmp_path):
+    from agent_team.features.board.runtime.sandbox import service as svc
+
+    workspace = tmp_path / "T-1"
+    nested = workspace / "repo"
+    nested.mkdir(parents=True, mode=0o750)
+    source = nested / "settings.ts"
+    source.write_text("export const value = 1\n", encoding="utf-8")
+    source.chmod(0o640)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("private\n", encoding="utf-8")
+    outside.chmod(0o600)
+    (workspace / "outside-link").symlink_to(outside)
+
+    svc._prepare_host_workspace_permissions(str(workspace))
+
+    assert workspace.stat().st_mode & 0o002
+    assert nested.stat().st_mode & 0o003 == 0o003
+    assert source.stat().st_mode & 0o002
+    assert outside.stat().st_mode & 0o777 == 0o600
+
+
+def test_prepare_host_workspace_permissions_skips_already_writable_foreign_file(
+    tmp_path, monkeypatch
+):
+    from agent_team.features.board.runtime.sandbox import service as svc
+
+    workspace = tmp_path / "T-foreign"
+    workspace.mkdir(mode=0o777)
+    workspace.chmod(0o777)
+    foreign = workspace / "settings.local.json"
+    foreign.write_text("{}\n", encoding="utf-8")
+    foreign.chmod(0o666)
+    real_chmod = svc.os.chmod
+
+    def _chmod(path, mode):
+        if str(path) == str(foreign):
+            raise PermissionError("simulated foreign owner")
+        return real_chmod(path, mode)
+
+    monkeypatch.setattr(svc.os, "chmod", _chmod)
+
+    svc._prepare_host_workspace_permissions(str(workspace))
 
 
 async def test_repair_workspace_ownership_opens_then_releases_sandbox(monkeypatch):

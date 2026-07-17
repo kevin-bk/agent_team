@@ -10,8 +10,12 @@ its loop ``role`` and ``attempt_id``.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
+import shutil
+import subprocess
+import tempfile
 import uuid
 from dataclasses import dataclass
 from typing import NamedTuple
@@ -104,6 +108,7 @@ def _create_loop_run(
     role: str,
     attempt_id: str | None,
     actor_id: str | None = None,
+    workspace_override_path: str | None = None,
 ) -> str:
     """Create a queued run tagged with its loop role + attempt (own session).
 
@@ -131,6 +136,7 @@ def _create_loop_run(
             prompt=prompt,
             role=role,
             attempt_id=attempt_id,
+            workspace_override_path=workspace_override_path,
         )
         run_id = run.id
         db.commit()
@@ -410,6 +416,38 @@ def _downgrade_unverified_pass(
     )
 
 
+def _build_strict_review_prompt(
+    *,
+    objective: str,
+    graph_task: dict | None,
+    conventions: str,
+    profiles: list[str],
+    review_packet: dict,
+) -> str:
+    """Render strict reviewer input without a builder-narrative parameter."""
+    if graph_task is not None:
+        prompt = planning_prompts.build_task_evaluator_prompt(
+            task=graph_task,
+            generator_summary="",
+            verdict_path=artifacts.EVIDENCE_PATH,
+            conventions=conventions,
+        )
+    else:
+        prompt = planning_prompts.build_strict_evaluator_prompt(
+            objective=objective,
+            generator_summary="",
+            verdict_path=artifacts.EVIDENCE_PATH,
+            conventions=conventions,
+            profiles=profiles,
+        )
+    return prompt + (
+        "\n\n## Backend-owned review packet\n"
+        "Use this packet and approved artifacts as authoritative. Do not seek or "
+        "trust builder summaries, transcripts, or journal entries.\n"
+        f"```json\n{json.dumps(review_packet, sort_keys=True)}\n```\n"
+    )
+
+
 class WorkerEvaluator:
     """Grades an attempt by running a separate evaluator agent over the task.
 
@@ -448,6 +486,9 @@ class WorkerEvaluator:
         trusted_batch: verification_runner.ReceiptBatch | None = None
         runner_required = False
         if self._strict:
+            # Rehash again immediately before any reviewer/evaluator agent is
+            # launched, including contracts with no shell commands.
+            await asyncio.to_thread(_assert_enforced_contract, self._task_id)
             tasks = (
                 [self._graph_task]
                 if self._graph_task is not None
@@ -474,19 +515,30 @@ class WorkerEvaluator:
                         self._task_id,
                     )
         if self._strict and self._graph_task is not None:
-            prompt = planning_prompts.build_task_evaluator_prompt(
-                task=self._graph_task,
-                generator_summary=generator_summary,
-                verdict_path=artifacts.EVIDENCE_PATH,
-                conventions=self._conventions,
+            review_packet = await asyncio.to_thread(
+                _build_review_packet,
+                self._task_id,
+                trusted_batch.batch_id if trusted_batch is not None else None,
             )
-        elif self._strict:
-            prompt = planning_prompts.build_strict_evaluator_prompt(
+            prompt = _build_strict_review_prompt(
                 objective=objective,
-                generator_summary=generator_summary,
-                verdict_path=artifacts.EVIDENCE_PATH,
+                graph_task=self._graph_task,
                 conventions=self._conventions,
                 profiles=contract.profiles,
+                review_packet=review_packet,
+            )
+        elif self._strict:
+            review_packet = await asyncio.to_thread(
+                _build_review_packet,
+                self._task_id,
+                trusted_batch.batch_id if trusted_batch is not None else None,
+            )
+            prompt = _build_strict_review_prompt(
+                objective=objective,
+                graph_task=None,
+                conventions=self._conventions,
+                profiles=contract.profiles,
+                review_packet=review_packet,
             )
         else:
             # Unique per evaluation so a leftover file from a prior attempt can
@@ -514,6 +566,19 @@ class WorkerEvaluator:
                     "yourself. You may still use browser/MCP checks for scenarios "
                     "and artifacts.\n"
                 )
+        review_workspace = (
+            tempfile.mkdtemp(
+                prefix=f".agent-team-review-{self._task_id}-",
+                dir=os.path.dirname(os.path.realpath(workspace_path)),
+            )
+            if self._strict
+            else None
+        )
+        if review_workspace:
+            # mkdtemp creates 0700; the strict sandbox uid accesses the mount
+            # as "other" and needs the read bit that ordinary task workspaces
+            # already carry (write/traverse bits are added at mount prepare).
+            os.chmod(review_workspace, 0o755)
         run_id = await asyncio.to_thread(
             _create_loop_run,
             task_id=self._task_id,
@@ -523,6 +588,7 @@ class WorkerEvaluator:
             # Tag the critic run with the attempt it judges so the cockpit can
             # surface the critic's verification transcript next to the verdict.
             attempt_id=attempt_id,
+            workspace_override_path=review_workspace,
         )
         result = await _drive_to_completion(run_id)
         # The evaluator can also leave journal notes (risks it spotted, etc.).
@@ -534,9 +600,30 @@ class WorkerEvaluator:
             phase="verification",
         )
         if result.status != RUN_DONE:
+            if review_workspace:
+                await asyncio.to_thread(shutil.rmtree, review_workspace, True)
             return None  # could not evaluate → fail-open
         if self._strict:
-            verdict = await asyncio.to_thread(_verdict_from_evidence, workspace_path)
+            verdict = await asyncio.to_thread(
+                _verdict_from_evidence, review_workspace or workspace_path
+            )
+            if verdict is not None and review_workspace:
+                # Promote only the validated verdict artifact. All diagnostic
+                # source writes remain in the disposable snapshot.
+                evidence_text = await asyncio.to_thread(
+                    artifacts.read_text,
+                    review_workspace,
+                    artifacts.EVIDENCE_PATH,
+                )
+                if evidence_text is not None:
+                    await asyncio.to_thread(
+                        artifacts.write_text,
+                        workspace_path,
+                        artifacts.EVIDENCE_PATH,
+                        evidence_text,
+                    )
+            if review_workspace:
+                await asyncio.to_thread(shutil.rmtree, review_workspace, True)
             if verdict is None:
                 verdict = parse_verdict(result.final_answer)
         else:
@@ -580,6 +667,19 @@ class WorkerEvaluator:
                     trusted_receipts=trusted_receipts,
                     current_source_sha256=current_source_sha256,
                 )
+                source_for_policy, _ = await asyncio.to_thread(
+                    verification_runner.capture_source_state, workspace_path
+                )
+                try:
+                    issues.extend(
+                        await asyncio.to_thread(
+                            _strict_policy_issues,
+                            self._task_id,
+                            source_for_policy,
+                        )
+                    )
+                except Exception as exc:  # fail closed when enforcement is broken
+                    issues.append(f"policy gate unavailable: {exc}")
                 if issues:
                     return _downgrade_unverified_pass(verdict, issues)
             elif not has_verification_evidence(verdict):
@@ -598,6 +698,206 @@ def _task_workspace_and_board(task_id: str) -> tuple[str, str | None, str]:
         return task.workspace_path, task.board_id, approved_contract_etag
     finally:
         db.close()
+
+
+def _assert_enforced_contract(task_id: str) -> dict | None:
+    """Rehash the backend-owned enforced contract; return policy identity."""
+    from agent_team.features.board.runtime import project_policy
+
+    with SessionLocal() as db:
+        context = project_policy.enforced_context(db, task_id)
+        if context is None:
+            return None
+        task, bundle = context
+        from agent_team.features.board.runtime import skills as skills_runtime
+
+        names = list(task.board.skill_ids())
+        if task.board.planning_skill:
+            names.append(task.board.planning_skill)
+        current_skills = skills_runtime.pinned_manifest(names)
+        if current_skills != (task.planning_meta().get("skill_packs") or []):
+            raise ValueError("skill pack release changed after approval; re-approval required")
+        if task.board.planning_auto_approve_quick:
+            raise ValueError("enforced board must disable quick auto-approval")
+        from agent_team.features.board.models import AgentTeamAutopilot
+
+        autopilot = db.get(AgentTeamAutopilot, task.board_id)
+        if autopilot is not None and autopilot.enabled:
+            raise ValueError("enforced board must disable autopilot")
+        profile = resolve_profile(task.id, task.board_id)
+        if not (
+            profile.provider == "opensandbox"
+            and profile.runtime_strategy == "acp_sidecar"
+            and profile.strict_isolation
+            and not profile.allow_fallback
+        ):
+            raise ValueError(
+                "enforced board requires OpenSandbox ACP sidecar strict/no-fallback"
+            )
+        return project_policy.identity(bundle).as_dict()
+
+
+def _strict_policy_issues(task_id: str, source: dict) -> list[str]:
+    """Return backend path-gate findings for the current candidate."""
+    from agent_team.features.board.runtime import project_policy
+
+    with SessionLocal() as db:
+        context = project_policy.enforced_context(db, task_id)
+        if context is None:
+            return []
+        task, bundle = context
+        approved_source = task.planning_meta().get("approved_source")
+        if not isinstance(approved_source, dict):
+            return ["policy path gate has no approved source snapshot"]
+        from agent_team.features.board.runtime import turn_recovery
+
+        delta = turn_recovery.compare_snapshots(
+            task.workspace_path, approved_source, source
+        )
+        changed = delta.get("changed_files") or []
+        repo_paths = [
+            str(repo.get("path") or ".")
+            for repo in source.get("repos") or []
+            if isinstance(repo, dict)
+        ]
+        approved_heads = {
+            str(repo.get("path") or "."): str(repo.get("head") or "")
+            for repo in approved_source.get("repos") or []
+            if isinstance(repo, dict)
+        }
+        policy_repo = str(
+            bundle.documents()["project.yaml"]["source"]["repo_logical_id"]
+        )
+        target_repo = policy_repo if policy_repo in repo_paths else (
+            "." if "." in repo_paths else ""
+        )
+        if not target_repo:
+            return [f"policy target repo {policy_repo!r} is not present in source snapshot"]
+        target_prefix = "" if target_repo == "." else f"{target_repo}/"
+        candidates = []
+        for row in changed:
+            full_path = str(row.get("path") or "")
+            if target_prefix and not full_path.startswith(target_prefix):
+                continue
+            path = full_path[len(target_prefix) :] if target_prefix else full_path
+            repo_rel = target_repo
+            added = row.get("change") == "added"
+            old_head = approved_heads.get(repo_rel, "")
+            if not added and old_head:
+                repo_root = (
+                    task.workspace_path
+                    if repo_rel == "."
+                    else os.path.join(task.workspace_path, repo_rel)
+                )
+                existed = subprocess.run(
+                    ["git", "cat-file", "-e", f"{old_head}:{path}"],
+                    cwd=repo_root,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                ).returncode == 0
+                added = not existed and os.path.exists(os.path.join(repo_root, path))
+            candidates.append(
+                {
+                    "path": path,
+                    "git_state": "untracked" if added else "modified",
+                }
+            )
+        violations = project_policy.path_violations(bundle, candidates)
+        issues = [
+            f"policy path violation: {row['path']} ({row['reason']})"
+            for row in violations
+        ]
+        issues.extend(
+            project_policy.risk_lane_issues(bundle, task.planning_meta(), candidates)
+        )
+        if delta.get("snapshot_truncated"):
+            issues.append("policy path comparison was truncated")
+        return issues
+
+
+def _approved_graph_limits(task_id: str) -> dict:
+    with SessionLocal() as db:
+        task = get_task(db, task_id)
+        if task is None:
+            return {}
+        value = task.planning_meta().get("graph_limits")
+        return value if isinstance(value, dict) else {}
+
+
+def _bounded_review_diffs(raw: object, *, max_chars: int = 250_000) -> dict:
+    """Keep the reviewer packet bounded while retaining every changed-file key."""
+    if not isinstance(raw, dict):
+        return {}
+    remaining = max_chars
+    result: dict[str, dict] = {}
+    for key, value in raw.items():
+        row = value if isinstance(value, dict) else {}
+        item = {k: v for k, v in row.items() if k not in {"original", "modified"}}
+        for field in ("original", "modified"):
+            text = str(row.get(field) or "")
+            kept = text[:remaining]
+            remaining -= len(kept)
+            item[field] = kept
+            if len(kept) < len(text):
+                item["truncated"] = True
+        result[str(key)] = item
+    return result
+
+
+def _build_review_packet(task_id: str, receipt_batch_id: str | None) -> dict:
+    """Build reviewer truth from backend state, excluding builder narrative."""
+    from agent_team.features.board.runtime import goal_runs, project_policy
+
+    with SessionLocal() as db:
+        task = get_task(db, task_id)
+        if task is None:
+            raise ValueError("task not found")
+        workspace = goal_runs.build_workspace_snapshot(db, task)
+        bundle = project_policy.bound_bundle(db, task.board_id, required=False)
+        receipts = (
+            verification_runner.load_receipt_batch(task_id, receipt_batch_id)
+            if receipt_batch_id
+            else []
+        )
+        meta = task.planning_meta()
+        source = workspace.get("source") or {}
+        approved_source = meta.get("approved_source") or {}
+        return {
+            "version": 1,
+            "contract": {
+                "artifact_etags": meta.get("artifact_etags") or {},
+                "tasks_contract_etag": meta.get("tasks_contract_etag"),
+            },
+            "candidate": {
+                "base_heads": {
+                    str(repo.get("path") or "."): repo.get("head")
+                    for repo in approved_source.get("repos") or []
+                    if isinstance(repo, dict)
+                },
+                "candidate_heads": {
+                    str(repo.get("path") or "."): repo.get("head")
+                    for repo in source.get("repos") or []
+                    if isinstance(repo, dict)
+                },
+                "source_sha256": workspace.get("source_sha256"),
+                "changes": workspace.get("changes") or {},
+                "diffs": _bounded_review_diffs(workspace.get("diffs")),
+                "untracked_manifest": {
+                    str(repo.get("path") or "."): sorted(
+                        path
+                        for path, sig in (repo.get("dirty") or {}).items()
+                        if isinstance(sig, dict) and sig.get("git_state") == "untracked"
+                    )
+                    for repo in source.get("repos") or []
+                    if isinstance(repo, dict)
+                },
+            },
+            "receipt_batch_ids": [receipt_batch_id] if receipt_batch_id else [],
+            "receipt_ids": [row["id"] for row in receipts],
+            "policy_bundle": project_policy.identity(bundle).as_dict() if bundle else None,
+            "skill_packs": meta.get("skill_packs") or [],
+        }
 
 
 class BoardPlanningSettings(NamedTuple):
@@ -750,6 +1050,24 @@ async def run_autonomous_loop(
     workspace_path, board_id, _approved_contract_etag = await asyncio.to_thread(
         _task_workspace_and_board, task_id
     )
+    if strict:
+        try:
+            await asyncio.to_thread(_assert_enforced_contract, task_id)
+        except Exception as exc:  # fail closed into a visible human gate
+            await asyncio.to_thread(
+                task_journal.record,
+                task_id=task_id,
+                phase="approval",
+                type="risk",
+                title="Execution blocked — approved contract is stale",
+                body=str(exc),
+                actor_type="system",
+                severity="blocking",
+            )
+            await asyncio.to_thread(
+                _persist_loop_state, task_id, LoopState.WAITING_FOR_HUMAN.value
+            )
+            return LoopOutcome("needs_human", 0)
     # The board's planning house rules ride into every strict phase prompt
     # (generator preamble + evaluator) so a team's stated best practices govern
     # execution too, not just the plan draft.
@@ -803,6 +1121,8 @@ async def run_autonomous_loop(
             extra_parts.append(resume_note.strip())
         extra = "\n\n".join(p for p in extra_parts if p) or None
 
+        graph_limits = await asyncio.to_thread(_approved_graph_limits, task_id)
+        max_total_attempts = graph_limits.get("max_total_attempts")
         return await run_task_graph(
             task_id=task_id,
             objective=objective,
@@ -810,6 +1130,9 @@ async def run_autonomous_loop(
             run_generator=generator,
             make_evaluator=make_evaluator,
             max_attempts_per_task=max_attempts,
+            max_total_attempts=(
+                int(max_total_attempts) if max_total_attempts is not None else None
+            ),
             budget=budget,
             cancel=cancel,
             on_status=on_status,

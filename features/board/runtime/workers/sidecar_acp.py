@@ -27,6 +27,7 @@ from agent_team.features.board.runtime.sandbox import sidecar_protocol as proto
 from agent_team.features.board.runtime.sandbox.base import SandboxError
 from agent_team.features.board.runtime.sandbox.config import RuntimeProfile
 from agent_team.features.board.runtime.sandbox.service import (
+    kill_task_sandbox,
     open_sidecar_channel,
     pause_task_sandbox,
     prepare_task_sandbox,
@@ -68,7 +69,13 @@ class SidecarAcpWorker:
         self, ctx: TurnContext, emit: EmitFn, cancel: asyncio.Event
     ) -> TurnResult:
         profile = self.profile or resolve_profile(ctx.task_id, ctx.board_id)
-        task_key = ctx.task_id or ctx.run_id
+        # A per-run workspace override must never reuse the task sandbox: its
+        # mounts were fixed at creation on the durable task workspace, so the
+        # override would silently not be visible in it (or, worse, a fresh task
+        # sandbox would permanently mount the disposable directory).
+        task_key = (
+            ctx.run_id if ctx.ephemeral_workspace else (ctx.task_id or ctx.run_id)
+        )
 
         try:
             sandbox = await prepare_task_sandbox(
@@ -93,10 +100,13 @@ class SidecarAcpWorker:
                 ctx, emit, cancel, profile, ws_url, ws_headers, sandbox
             )
         finally:
-            await pause_task_sandbox(
-                task_key,
-                workspace_mount_path=profile.workspace_mount_path,
-            )
+            if ctx.ephemeral_workspace:
+                await kill_task_sandbox(task_key)
+            else:
+                await pause_task_sandbox(
+                    task_key,
+                    workspace_mount_path=profile.workspace_mount_path,
+                )
 
     async def _drive(
         self,

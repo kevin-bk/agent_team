@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import shutil
 from datetime import UTC, datetime
 
 from agent_team.features.board.board_events import get_board_bus
@@ -121,6 +123,7 @@ class LocalRunBackend:
             usage=usage,
             mcp_config=context.get("mcp_config"),
             secrets=context.get("secrets") or [],
+            ephemeral_workspace=bool(context.get("ephemeral_workspace")),
         )
         try:
             worker = resolve_worker(agent_alias, WorkerRole.CHAT, board_id=board_id)
@@ -443,7 +446,7 @@ def _load_run_context(run_id: str) -> dict | None:
             # Per-agent MCP config: this CLI alias may have its own MCP servers
             # configured on the board. The owned ACP engine forwards them to the
             # CLI; any auth/header/env values become secrets to mask in output.
-            if board is not None:
+            if board is not None and run.role not in {"reviewer", "evaluator"}:
                 cfg = board.agent_mcp_for(run.agent_alias)
                 if cfg.get("mcpServers"):
                     mcp_config = cfg
@@ -499,13 +502,42 @@ def _load_run_context(run_id: str) -> dict | None:
                 repos=repos,
                 workspace_display_path=workspace_display_path,
             )
+        run_workspace = task.workspace_path
+        if run.workspace_override_path:
+            source = os.path.realpath(task.workspace_path)
+            override = os.path.realpath(run.workspace_override_path)
+            expected_prefix = f".agent-team-review-{task.id}-"
+            if (
+                os.path.dirname(override) != os.path.dirname(source)
+                or not os.path.basename(override).startswith(expected_prefix)
+            ):
+                raise ValueError("invalid backend review workspace override")
+            # symlinks=True: copy links as links. Dependency-seed links (e.g.
+            # node_modules -> /opt/agent-team/project-deps/...) resolve only
+            # inside the runtime image; following them on the host would fail.
+            shutil.copytree(source, override, symlinks=True, dirs_exist_ok=True)
+            # Reviewer truth arrives in its prompt/packet. Remove mutable
+            # narrative surfaces copied from the builder workspace.
+            for rel in (
+                ".agent-team/JOURNAL.md",
+                ".agent-team/JOURNAL_NOTES.jsonl",
+            ):
+                try:
+                    os.remove(os.path.join(override, rel))
+                except FileNotFoundError:
+                    pass
+            run_workspace = override
         return {
             "agent_alias": run.agent_alias,
             "thread_id": run.thread_id,
             "input_text": input_text,
             "task_id": run.task_id,
             "board_id": task.board_id,
-            "workspace_path": task.workspace_path,
+            "workspace_path": run_workspace,
+            # Task sandboxes are keyed by task_id and their mounts are fixed at
+            # creation, so a per-run workspace override must run in its own
+            # disposable sandbox instead of reusing (or poisoning) the task one.
+            "ephemeral_workspace": bool(run.workspace_override_path),
             "actor_id": run.actor_id,
             "mcp_config": mcp_config,
             "secrets": secrets,

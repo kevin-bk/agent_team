@@ -2192,7 +2192,7 @@ async def test_run_task_graph_executes_tasks_in_dependency_order(db, monkeypatch
 
 
 async def test_run_task_graph_blocks_task_that_never_passes(db, monkeypatch, tmp_path):
-    """A task that exhausts its attempt cap is marked blocked and escalates."""
+    """A capped task is blocked, then an explicit graph resume retries it."""
     import json as _json
 
     from agent_team.features.board.runtime.loop import driver
@@ -2240,8 +2240,27 @@ async def test_run_task_graph_blocks_task_that_never_passes(db, monkeypatch, tmp
     assert outcome.outcome == "needs_human"
     assert A.task_list(ws)[0]["status"] == "blocked"
 
+    class PassEvaluator:
+        async def evaluate(self, **_kwargs):
+            return Verdict(LoopVerdict.PASS, score=1.0)
 
-async def test_run_loop_caps_when_never_passing(db, monkeypatch):
+    resumed = await run_task_graph(
+        task_id=task.id,
+        objective="build",
+        workspace_path=ws,
+        run_generator=fake_generator,
+        make_evaluator=lambda _t: PassEvaluator(),
+        max_attempts_per_task=2,
+        final_verify=False,
+    )
+
+    assert resumed.outcome == "complete"
+    assert A.task_list(ws)[0]["status"] == "complete"
+
+
+async def test_run_loop_stops_immediately_when_evaluator_returns_no_verdict(
+    db, monkeypatch
+):
     from agent_team.features.board.runtime.loop import driver
     from agent_team.features.board.runtime.loop.driver import GeneratorTurn, run_loop
     from sqlalchemy.orm import sessionmaker
@@ -2264,7 +2283,7 @@ async def test_run_loop_caps_when_never_passing(db, monkeypatch):
         async def evaluate(
             self, *, objective, generator_summary, workspace_path, attempt_id=None
         ):
-            raise RuntimeError("judge exploded")
+            return None
 
     outcome = await run_loop(
         task_id=task.id,
@@ -2275,11 +2294,9 @@ async def test_run_loop_caps_when_never_passing(db, monkeypatch):
         max_attempts=3,
     )
 
-    # Fail-open: a broken judge never wedges the loop; the budget caps it.
-    assert outcome.outcome == "capped"
-    assert outcome.attempts == 3
-    # Capping without a verified pass is process friction — auto-logged so it
-    # surfaces on the board's Friction page.
+    # The builder must not be re-run without any actionable reviewer feedback.
+    assert outcome.outcome == "needs_human"
+    assert outcome.attempts == 1
     from agent_team.features.board.repositories import journal as journal_repo
 
     rows = journal_repo.list_board_friction(db, board.id)
@@ -2287,7 +2304,8 @@ async def test_run_loop_caps_when_never_passing(db, monkeypatch):
     entry, ftask = rows[0]
     assert entry.type == "friction"
     assert ftask.id == task.id
-    assert "capped" in entry.title
+    assert "no verdict" in entry.title
+    assert entry.meta().get("reason") == "evaluator_no_verdict"
 
 
 def test_friction_is_a_first_class_journal_type(db):
@@ -5412,6 +5430,22 @@ def test_engine_runtime_reads_env(monkeypatch):
     # well past any env-derived default), so it is not read from the environment.
     assert rt.timeout_seconds == dacp._DIRECT_ACP_TURN_TIMEOUT_SECONDS
     assert rt.label == "Claude ACP"
+
+
+def test_engine_runtime_allows_baked_adapter_with_no_args(monkeypatch):
+    from agent_team.features.board.runtime import direct_acp as dacp
+    from agent_team.features.board.runtime.acp.engines import engine_runtime
+
+    monkeypatch.setenv("AI_CODE_CLAUDE_ACP_COMMAND", "claude-agent-acp")
+    monkeypatch.setenv("AI_CODE_CLAUDE_ACP_ARGS", "")
+
+    sidecar_rt = engine_runtime("claude")
+    assert sidecar_rt.command == "claude-agent-acp"
+    assert sidecar_rt.args == []
+
+    direct_rt = dacp._engine_runtime("claude")
+    assert direct_rt.command == "claude-agent-acp"
+    assert direct_rt.args == []
 
 
 def test_codex_acp_defaults_use_current_package_and_disable_inner_sandbox(
