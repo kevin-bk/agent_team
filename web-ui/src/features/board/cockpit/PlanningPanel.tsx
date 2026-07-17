@@ -15,6 +15,7 @@ import {
 import {
   useAnswerTaskPlanning,
   useApproveAndRunTaskPlanning,
+  useBoard,
   useEditTaskPlanningArtifact,
   usePauseTaskPlanning,
   useRequestTaskPlanningChanges,
@@ -808,6 +809,13 @@ function ApprovalBar({
   const [taskByTask, setTaskByTask] = useState(true);
   const useGraph = taskCount > 0 && taskByTask;
 
+  // Boards bound to an enforced policy bundle fail closed when the candidate
+  // touches a risk-lane path (risk_triggers, e.g. new DB migrations) unless the
+  // human approval explicitly accepted that risk.
+  const { data: board } = useBoard(task.board_id);
+  const enforced = Boolean(board?.policy_bundle_id);
+  const [acceptRiskLane, setAcceptRiskLane] = useState(false);
+
   const run = useApproveAndRunTaskPlanning(task.board_id, task.id);
   const requestChanges = useRequestTaskPlanningChanges(task.id);
 
@@ -863,6 +871,26 @@ function ApprovalBar({
           </span>
         </label>
       )}
+      {enforced && (
+        <label className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-2.5 text-[12.5px]">
+          <input
+            type="checkbox"
+            checked={acceptRiskLane}
+            onChange={(e) => setAcceptRiskLane(e.target.checked)}
+            className="mt-0.5 h-4 w-4 accent-primary"
+          />
+          <span>
+            <span className="font-semibold text-foreground">
+              Accept risk-lane changes
+            </span>{" "}
+            <span className="text-muted-foreground">
+              — allow this run to touch policy risk-trigger paths (e.g. new DB
+              migrations / schema). Unchecked, such changes stop for human
+              re-approval.
+            </span>
+          </span>
+        </label>
+      )}
       <div className="grid grid-cols-3 gap-3">
         <Field label="Max tokens" hint="opt">
           <Input
@@ -909,6 +937,7 @@ function ApprovalBar({
                 max_wall_seconds: maxMinutes
                   ? (posInt(maxMinutes) ?? 0) * 60
                   : null,
+                accept_risk_lane: enforced ? acceptRiskLane : false,
               },
               {
                 onSuccess: () => toast.success("Approved — running the plan"),

@@ -39,7 +39,16 @@ export function BoardEventsProvider({
 
   useEffect(() => {
     if (!boardId) return;
-    return subscribeBoardEvents(boardId, getToken, (e) => {
+    const onReconnect = () => {
+      // The stream was down (server restart / network drop); any number of
+      // events were missed. Refetch everything once so open views catch up —
+      // reconnects are rare enough that a full invalidation is cheap.
+      void qc.invalidateQueries();
+    };
+    return subscribeBoardEvents(
+      boardId,
+      getToken,
+      (e) => {
       switch (e.type) {
         case "task.created":
         case "task.updated":
@@ -106,8 +115,10 @@ export function BoardEventsProvider({
           }
           break;
       }
-      for (const fn of listeners.current) fn(e);
-    });
+        for (const fn of listeners.current) fn(e);
+      },
+      onReconnect,
+    );
   }, [boardId, getToken, qc]);
 
   const ctx = useRef<BoardEventsCtx>({
