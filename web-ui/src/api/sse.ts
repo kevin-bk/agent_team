@@ -108,15 +108,22 @@ export interface BoardEvent {
 
 /**
  * Subscribe to a board's realtime event feed (`/api/boards/{id}/stream`).
- * Events are small hints; the caller re-reads through the normal API. The
- * connection auto-reconnects on transient errors. Returns an abort fn.
+ * Events are small hints; the caller re-reads through the normal API.
+ *
+ * The connection retries forever — a server restart/deploy must never leave an
+ * open tab permanently without live updates. `onReconnect` fires when the
+ * stream re-opens after a drop so the caller can refetch whatever it missed
+ * while disconnected (e.g. a loop that finished during the outage).
+ * Returns an abort fn.
  */
 export function subscribeBoardEvents(
   boardId: string,
   getToken: TokenGetter,
   onEvent: (e: BoardEvent) => void,
+  onReconnect?: () => void,
 ): () => void {
   const ctrl = new AbortController();
+  let dropped = false;
   void fetchEventSource(apiUrl(`/api/boards/${boardId}/stream`), {
     method: "GET",
     signal: ctrl.signal,
@@ -124,11 +131,16 @@ export function subscribeBoardEvents(
     headers: { Accept: EventStreamContentType },
     async onopen(res) {
       const ct = res.headers.get("content-type") ?? "";
-      if (res.ok && ct.includes(EventStreamContentType)) return;
-      if (res.status === 401 || res.status === 429 || res.status >= 500) {
-        throw new RetriableError(`board stream open failed: ${res.status}`);
+      if (res.ok && ct.includes(EventStreamContentType)) {
+        if (dropped) {
+          dropped = false;
+          onReconnect?.();
+        }
+        return;
       }
-      throw new FatalError(`board stream failed: ${res.status}`);
+      // Anything else (401 while the app restarts, 404 from a booting proxy,
+      // 5xx…) is worth another try: this is an idempotent hint feed.
+      throw new RetriableError(`board stream open failed: ${res.status}`);
     },
     onmessage(msg) {
       if (!msg.data) return;
@@ -138,9 +150,10 @@ export function subscribeBoardEvents(
         /* ignore keep-alive comments / partial frames */
       }
     },
-    onerror(err) {
-      if (err instanceof FatalError) throw err;
-      return 2000;
+    onerror() {
+      // Network drop or non-OK open (server restart) — back off and retry.
+      dropped = true;
+      return 3000;
     },
     async fetch(input, init) {
       const token = await getToken();
@@ -149,7 +162,7 @@ export function subscribeBoardEvents(
       return fetch(input, { ...init, headers });
     },
   }).catch(() => {
-    /* fatal — give up quietly; views still work via manual refetch */
+    /* aborted by the caller — nothing to clean up */
   });
   return () => ctrl.abort();
 }

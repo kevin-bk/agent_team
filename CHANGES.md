@@ -171,3 +171,32 @@ stay in lockstep.
 - *The strict uid could not list the review copy*: `mkdtemp` creates the root
   0700 while the sandbox accesses the mount as "other". The root is widened to
   0755 at creation (ordinary workspaces already carry the read bit).
+
+---
+
+## 5. Cockpit UI: policy binding, risk-lane approval, attention reason, resilient board stream
+
+**Features**
+
+- Board Settings selects a policy bundle (shows digest) and the graph caps;
+  advisory mode is labelled explicitly when no bundle is bound.
+- The approve-and-run panel shows an "Accept risk-lane changes" checkbox on
+  policy-bound boards (default off = fail closed); the plain approve API
+  accepts the same flag.
+- Stops without an evaluator verdict render as **Needs attention** with the
+  concrete `attention_reason` (latest agent/runtime error) instead of an
+  empty "Needs review" gate; the destructive exit is labelled "Close without
+  verification".
+
+**Bugs → root cause → fix**
+
+- *Open tabs stopped updating after a server restart until F5*: the board SSE
+  subscription treated several reconnect responses as fatal and gave up
+  permanently ("give up quietly"), and the app sets
+  `refetchOnWindowFocus: false` globally — so once the stream died there was
+  no recovery path at all; a loop finishing during the outage never surfaced.
+  The board stream now retries forever (3s backoff, every failure is
+  retriable for this idempotent hint feed) and fires an `onReconnect` hook
+  that invalidates the React-Query cache once so open views catch up on
+  everything missed while disconnected.
+- Static bundle rebuilt (`build:agent-team`) and copied into the plugin.

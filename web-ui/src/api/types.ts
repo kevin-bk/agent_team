@@ -294,6 +294,11 @@ export interface BoardDTO {
   planning_auto_approve_quick?: boolean;
   /** Maximum automatic planner re-drafts after reviewer fail (0 disables). */
   planning_review_max_redrafts?: number;
+  /** Immutable backend-owned policy release; absent means advisory mode. */
+  policy_bundle_id?: string | null;
+  policy_bundle_sha256?: string | null;
+  planning_max_tasks?: number;
+  planning_max_total_attempts?: number;
   /** Isolated-runtime override (owner-only; empty = env defaults). */
   runtime_profile?: BoardRuntimeProfile;
   archived: boolean;
@@ -625,6 +630,11 @@ export interface PlanningRunBody {
   max_tokens?: number | null;
   max_cost_usd?: number | null;
   max_wall_seconds?: number | null;
+  /**
+   * Explicit human acceptance of policy risk-lane changes (e.g. new DB
+   * migrations). Enforced runs fail closed on risk_triggers paths without it.
+   */
+  accept_risk_lane?: boolean;
 }
 
 /**
@@ -717,6 +727,9 @@ export interface PatchBoardBody {
   planning_auto_approve_quick?: boolean;
   /** Maximum automatic planner re-drafts after reviewer fail (0 disables). */
   planning_review_max_redrafts?: number;
+  policy_bundle_id?: string | null;
+  planning_max_tasks?: number;
+  planning_max_total_attempts?: number;
   /** Isolated-runtime override; empty object = use the env defaults. */
   runtime_profile?: BoardRuntimeProfile;
   archived?: boolean;
@@ -729,6 +742,16 @@ export interface PatchBoardBody {
   jira_mappings?: Record<string, Record<string, string>>;
   jira_sync_filter?: JiraSyncFilter;
   jira_sync_status?: boolean;
+}
+
+export interface ProjectPolicyBundleDTO {
+  id: string;
+  project_key: string;
+  schema_version: number;
+  source_ref: string;
+  file_hashes: Record<string, string>;
+  bundle_sha256: string;
+  created_at: string | null;
 }
 
 export interface CreateTaskBody {
@@ -1095,6 +1118,8 @@ export interface LoopInfoDTO {
   active_agent_id?: string | null;
   /** Whether a stopped run can be resumed from where it left off. */
   can_resume?: boolean;
+  /** Latest concrete agent/runtime error when no evaluator verdict exists. */
+  attention_reason?: string | null;
   attempts: LoopAttemptDTO[];
   /** Live task-graph progress from TASKS.json (empty unless executing task-by-task). */
   tasks?: LoopTaskDTO[];

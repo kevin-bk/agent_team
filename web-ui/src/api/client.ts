@@ -51,6 +51,7 @@ import {
   type ProfileDTO,
   type BoardRepoDTO,
   type BoardReposResponse,
+  type ProjectPolicyBundleDTO,
   type BoardChannelDTO,
   type BoardChannelResponse,
   type BoardChannelUpsertBody,
@@ -387,6 +388,9 @@ export class ApiClient {
   listSkills() {
     return this.request<SkillPackDTO[]>("/api/skills");
   }
+  listProjectPolicyBundles() {
+    return this.request<ProjectPolicyBundleDTO[]>("/api/project-policy-bundles");
+  }
   getAutopilot(boardId: string) {
     return this.request<AutopilotDTO>(`/api/boards/${boardId}/autopilot`);
   }
@@ -492,10 +496,10 @@ export class ApiClient {
       { method: "POST", body: JSON.stringify(body) },
     );
   }
-  approveTaskPlanning(taskId: string) {
+  approveTaskPlanning(taskId: string, body?: { accept_risk_lane?: boolean }) {
     return this.request<PlanningInfoDTO>(
       `/api/tasks/${taskId}/planning/approve`,
-      { method: "POST" },
+      { method: "POST", ...(body ? { body: JSON.stringify(body) } : {}) },
     );
   }
   requestTaskPlanningChanges(taskId: string, feedback?: string) {

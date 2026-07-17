@@ -1,7 +1,7 @@
 import { ArrowDown, ArrowUp, Plus, Trash2 } from "@/components/icons";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { useSkills, useUpdateBoard } from "@/api/hooks";
+import { useProjectPolicyBundles, useSkills, useUpdateBoard } from "@/api/hooks";
 import type { BoardColumn, BoardDTO, BoardRuntimeProfile } from "@/api/types";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { Button } from "@/components/ui/button";
@@ -108,6 +108,7 @@ export function BoardSettingsDialog({
   const update = useUpdateBoard(board.id);
   const confirm = useConfirm();
   const skills = useSkills();
+  const policyBundles = useProjectPolicyBundles();
   const [name, setName] = useState(board.name);
   const [description, setDescription] = useState(board.description ?? "");
   const [columns, setColumns] = useState<BoardColumn[]>(board.columns);
@@ -122,6 +123,11 @@ export function BoardSettingsDialog({
   const [reviewMaxRedrafts, setReviewMaxRedrafts] = useState(
     board.planning_review_max_redrafts ?? 0,
   );
+  const [policyBundleId, setPolicyBundleId] = useState(board.policy_bundle_id ?? "");
+  const [maxTasks, setMaxTasks] = useState(board.planning_max_tasks ?? 25);
+  const [maxTotalAttempts, setMaxTotalAttempts] = useState(
+    board.planning_max_total_attempts ?? 30,
+  );
   const [rt, setRt] = useState<RuntimeDraft>(() => toRuntimeDraft(board.runtime_profile));
 
   // Reset the draft whenever the dialog (re)opens for a board.
@@ -135,6 +141,9 @@ export function BoardSettingsDialog({
       setPlanningSkill(board.planning_skill ?? "");
       setAutoApproveQuick(board.planning_auto_approve_quick ?? false);
       setReviewMaxRedrafts(board.planning_review_max_redrafts ?? 0);
+      setPolicyBundleId(board.policy_bundle_id ?? "");
+      setMaxTasks(board.planning_max_tasks ?? 25);
+      setMaxTotalAttempts(board.planning_max_total_attempts ?? 30);
       setRt(toRuntimeDraft(board.runtime_profile));
     }
   }, [open, board]);
@@ -203,6 +212,12 @@ export function BoardSettingsDialog({
         planning_review_max_redrafts: Math.max(
           0,
           Math.min(10, Math.trunc(reviewMaxRedrafts || 0)),
+        ),
+        policy_bundle_id: policyBundleId || null,
+        planning_max_tasks: Math.max(1, Math.min(500, Math.trunc(maxTasks || 25))),
+        planning_max_total_attempts: Math.max(
+          1,
+          Math.min(5000, Math.trunc(maxTotalAttempts || 30)),
         ),
         runtime_profile: fromRuntimeDraft(rt),
       });
@@ -307,6 +322,53 @@ export function BoardSettingsDialog({
                 onChange={(e) => setPlanningConventions(e.target.value)}
               />
             </label>
+            <label className="grid gap-1.5">
+              <span className="text-[12.5px] font-medium text-muted-foreground">
+                Project policy bundle
+              </span>
+              <select
+                value={policyBundleId}
+                onChange={(e) => setPolicyBundleId(e.target.value)}
+                className="h-9 rounded-md border border-input bg-transparent px-2 text-[14px] text-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring"
+              >
+                <option value="">No bundle (advisory only)</option>
+                {(policyBundles.data ?? []).map((bundle) => (
+                  <option key={bundle.id} value={bundle.id}>
+                    {bundle.project_key} · {bundle.bundle_sha256.slice(0, 12)}
+                  </option>
+                ))}
+              </select>
+              <span className="text-[12.5px] text-muted-foreground/80">
+                Binding an immutable bundle enables command, path, digest and
+                provenance gates. Changing it invalidates existing approvals.
+              </span>
+            </label>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="grid gap-1.5">
+                <span className="text-[12.5px] font-medium text-muted-foreground">
+                  Maximum plan tasks
+                </span>
+                <Input
+                  type="number"
+                  min={1}
+                  max={500}
+                  value={maxTasks}
+                  onChange={(e) => setMaxTasks(Number(e.target.value))}
+                />
+              </label>
+              <label className="grid gap-1.5">
+                <span className="text-[12.5px] font-medium text-muted-foreground">
+                  Maximum total attempts
+                </span>
+                <Input
+                  type="number"
+                  min={1}
+                  max={5000}
+                  value={maxTotalAttempts}
+                  onChange={(e) => setMaxTotalAttempts(Number(e.target.value))}
+                />
+              </label>
+            </div>
             <label className="grid gap-1.5">
               <span className="text-[12.5px] font-medium text-muted-foreground">
                 Planning skill
