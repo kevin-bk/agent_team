@@ -1,0 +1,2 @@
+-- migrate: skip_if_column_exists plugin_agent_team_verification_receipt policy_bundle_sha256
+ALTER TABLE plugin_agent_team_verification_receipt ADD COLUMN policy_bundle_sha256 VARCHAR(64);

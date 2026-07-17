@@ -33,6 +33,8 @@ def create_receipt(
     source_before_sha256: str,
     source_after_sha256: str,
     runtime: dict,
+    policy_bundle_id: str | None = None,
+    policy_bundle_sha256: str | None = None,
 ) -> AgentTeamVerificationReceipt:
     row = AgentTeamVerificationReceipt(
         task_id=task_id,
@@ -54,6 +56,8 @@ def create_receipt(
         source_before_sha256=source_before_sha256,
         source_after_sha256=source_after_sha256,
         runtime_json=json.dumps(runtime, sort_keys=True),
+        policy_bundle_id=policy_bundle_id,
+        policy_bundle_sha256=policy_bundle_sha256,
     )
     db.add(row)
     db.flush()

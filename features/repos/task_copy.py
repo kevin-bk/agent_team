@@ -10,6 +10,7 @@ other tasks. No credentials are involved (the source is local).
 
 from __future__ import annotations
 
+import fnmatch
 import logging
 import os
 import re
@@ -38,6 +39,77 @@ _LEGACY_HOST_REMOTE = "host"
 #: Fallback commit identity when a repo configures none.
 _DEFAULT_COMMITTER_NAME = "Agent Team"
 _DEFAULT_COMMITTER_EMAIL = "agent-team@local"
+
+
+def _deny_read_patterns(db: Session, board_id: str) -> list[str]:
+    """Return the board's immutable deny-read patterns, if policy is bound."""
+    from agent_team.features.board.runtime.project_policy import bound_bundle
+
+    bundle = bound_bundle(db, board_id, required=False)
+    if bundle is None:
+        return []
+    return list(bundle.documents()["paths.yaml"]["deny_read"])
+
+
+def _sanitize_deny_read_paths(repo_dir: Path, patterns: list[str]) -> list[str]:
+    """Remove denied paths from a task worktree without creating Git changes.
+
+    Canonical clones remain complete and host-only.  In the agent-visible task
+    copy, tracked denied files are marked ``skip-worktree`` before removal so
+    they cannot be read and their deliberate absence does not pollute the task
+    diff.  Untracked denied paths are simply removed.  Symlinks are unlinked,
+    never followed.
+    """
+    if not patterns or not (repo_dir / ".git").exists():
+        return []
+
+    code, tracked_raw, err = _run_git("-C", str(repo_dir), "ls-files", "-z")
+    if code != 0:
+        raise RuntimeError(f"cannot enumerate tracked paths for sanitization: {err}")
+    tracked = {path for path in tracked_raw.split("\0") if path}
+
+    denied: set[str] = set()
+    denied_dirs: set[str] = set()
+    for current, dirs, files in os.walk(repo_dir, topdown=True, followlinks=False):
+        if current == str(repo_dir):
+            dirs[:] = [name for name in dirs if name != ".git"]
+        kept_dirs: list[str] = []
+        for name in dirs:
+            absolute = os.path.join(current, name)
+            relative = os.path.relpath(absolute, repo_dir).replace(os.sep, "/")
+            if any(fnmatch.fnmatchcase(relative, pattern) for pattern in patterns):
+                denied.add(relative)
+                denied_dirs.add(relative)
+            else:
+                kept_dirs.append(name)
+        dirs[:] = kept_dirs
+        for name in files:
+            absolute = os.path.join(current, name)
+            relative = os.path.relpath(absolute, repo_dir).replace(os.sep, "/")
+            if any(fnmatch.fnmatchcase(relative, pattern) for pattern in patterns):
+                denied.add(relative)
+
+    tracked_denied = sorted(
+        path
+        for path in tracked
+        if path in denied
+        or any(path.startswith(f"{directory}/") for directory in denied_dirs)
+    )
+    for offset in range(0, len(tracked_denied), 200):
+        batch = tracked_denied[offset : offset + 200]
+        code, _out, err = _run_git(
+            "-C", str(repo_dir), "update-index", "--skip-worktree", "--", *batch
+        )
+        if code != 0:
+            raise RuntimeError(f"cannot hide denied tracked paths: {err}")
+
+    for relative in sorted(denied, key=lambda path: (path.count("/"), path), reverse=True):
+        target = repo_dir / relative
+        if target.is_symlink() or target.is_file():
+            target.unlink(missing_ok=True)
+        elif target.is_dir():
+            shutil.rmtree(target)
+    return sorted(denied)
 
 
 def _run_git(*args: str, timeout: float = _GIT_TIMEOUT) -> tuple[int, str, str]:
@@ -249,6 +321,7 @@ def prepare_task_repos(db: Session, task: AgentTeamTask) -> list[dict]:
     """
     prepared: list[dict] = []
     work_branch = task_branch_name(task)
+    deny_read = _deny_read_patterns(db, task.board_id)
     for repo, branch_override, bp_allow_push, is_wiki in repos_for_board(db, task.board_id):
         canonical = canonical_path(repo.owner_id, repo.slug)
         if not (canonical / ".git").exists():
@@ -293,6 +366,15 @@ def prepare_task_repos(db: Session, task: AgentTeamTask) -> list[dict]:
         can_push = bool(repo.allow_push and bp_allow_push)
         _configure_push_to_host(dest, repo, task, can_push=can_push)
         _install_pre_push_hook(dest, [base_branch] if base_branch else [])
+        sanitized = _sanitize_deny_read_paths(dest, deny_read)
+        if sanitized:
+            logger.info(
+                "task %s: sanitized %d deny-read path(s) from %s: %s",
+                task.human_key,
+                len(sanitized),
+                repo.slug,
+                ", ".join(sanitized[:20]),
+            )
         prepared.append(
             {
                 "slug": repo.slug,

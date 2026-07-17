@@ -226,6 +226,19 @@ class AgentTeamBoard(Base):
     planning_review_max_redrafts: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0
     )
+    #: Immutable backend-owned policy release used by strict/enforced runs.
+    #: Null preserves the historical advisory behaviour for existing boards.
+    policy_bundle_id: Mapped[str | None] = mapped_column(
+        String(32),
+        ForeignKey("plugin_agent_team_project_policy_bundle.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    #: Backend-owned graph safety limits. They are snapshotted at approval.
+    planning_max_tasks: Mapped[int] = mapped_column(Integer, nullable=False, default=25)
+    planning_max_total_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=30
+    )
     # ── Jira sync (per-board, Phase 1: one-way pull) ──────────────────────
     #: Master switch — when False the board ignores all Jira config.
     jira_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -259,6 +272,7 @@ class AgentTeamBoard(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
+    policy_bundle: Mapped[AgentTeamProjectPolicyBundle | None] = relationship()
 
     def columns(self) -> list[dict]:
         """Return decoded column definitions, falling back to the defaults."""
@@ -334,6 +348,37 @@ class AgentTeamBoard(Base):
         except (json.JSONDecodeError, TypeError):
             return {}
         return value if isinstance(value, dict) else {}
+
+
+class AgentTeamProjectPolicyBundle(Base):
+    """Immutable project policy used for backend enforcement.
+
+    The task workspace may contain a readable copy, but approval and execution
+    always resolve this row through the board binding. ``documents_json`` holds
+    the parsed project/evidence/paths documents; original file hashes preserve
+    provenance without teaching the generic plugin how to parse YAML.
+    """
+
+    __tablename__ = "plugin_agent_team_project_policy_bundle"
+    __table_args__ = (
+        UniqueConstraint("project_key", "bundle_sha256", name="uq_at_policy_key_sha"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    project_key: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_ref: Mapped[str] = mapped_column(String(255), nullable=False)
+    documents_json: Mapped[str] = mapped_column(Text, nullable=False)
+    file_hashes_json: Mapped[str] = mapped_column(Text, nullable=False)
+    bundle_sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+    def documents(self) -> dict:
+        return _json_object(self.documents_json)
+
+    def file_hashes(self) -> dict:
+        return _json_object(self.file_hashes_json)
 
 
 class AgentTeamBoardMember(Base):
@@ -672,6 +717,9 @@ class AgentTeamRun(Base):
     )
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="queued", index=True)
     prompt: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    #: Disposable backend-created workspace used by reviewer/evaluator roles.
+    #: Never accepted from the public run API.
+    workspace_override_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     final_answer: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -943,6 +991,8 @@ class AgentTeamVerificationReceipt(Base):
     source_before_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     source_after_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     runtime_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    policy_bundle_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    policy_bundle_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
     def source_before(self) -> dict:

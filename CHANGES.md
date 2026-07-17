@@ -78,3 +78,61 @@ stay in lockstep.
   returned `needs_human`. Starting a graph (an explicit human Resume) now
   resets both `in_progress` and `blocked` unfinished tasks to `pending`;
   completed tasks stay untouched.
+
+---
+
+## 3. Enforced project policy: immutable bundles, allowlists, gates, provenance
+
+**Features**
+
+- `AgentTeamProjectPolicyBundle`: immutable, backend-owned policy release
+  (parsed `project.yaml` / `evidence.yaml` / `paths.yaml` + original file
+  SHA-256s + bundle digest). Admin API to upload/list; boards bind one bundle
+  (`policy_bundle_id`) — no binding keeps the historical advisory behaviour.
+- Fail-closed validation: single `project_key`, `schema_version: 1`, enforced
+  `evidence`/`paths`, structured command allowlist (argv + logical cwd +
+  timeout, no shell metacharacters), relative-glob path lists (`deny_read`,
+  `protected_write`, `allowed_write`, `append_only`, `risk_triggers`).
+- Approval snapshot: artifact etags, TASKS contract etag, policy identity,
+  graph caps (`planning_max_tasks`, `planning_max_total_attempts`), pinned
+  skill-pack digests and the approved source state. Rehash gates re-validate
+  before execution, before the trusted runner and before every evaluator.
+- Runtime command gate: every planned verification command must match the
+  bundle allowlist (argv template + cwd) at approval AND per batch at runtime;
+  receipts carry policy id/digest provenance; policy timeout caps exec time.
+- Deny-read sanitization: task repo copies drop policy-denied paths
+  (tracked ones via `skip-worktree` so the diff stays clean); enforced
+  workspaces are re-scanned fail-closed before approval and evaluation.
+- Risk lane: changes matching `paths.yaml risk_triggers` (e.g. new DB
+  migrations/schema) require explicit human acceptance stamped at approval
+  (`accept_risk_lane` on approve / approve-and-run; system quick-lane
+  approvals can never grant it). Without it the path gate downgrades the
+  verdict and routes to human re-approval.
+- Strict aliases can disable the generic `set_task_status` tool; goal
+  snapshots report attempts/caps and report missing usage/cost as `unknown`
+  instead of a fabricated 0; loop API exposes `attention_reason` so the
+  cockpit can distinguish "needs review" from infrastructure stops.
+
+**Bugs → root cause → fix**
+
+- *T-4: evaluator failed three straight attempts with "runner failed to
+  produce a receipt"*: the runtime allowlist lookup recomputed a command's cwd
+  with `working_directory.removeprefix(f"{repo}/")`; for repo-root commands
+  `working_directory` IS the repo slug (no slash), so the prefix strip was a
+  no-op and the gate compared `cwd="spf-baseapp"`-style values against the
+  policy's `cwd="."` — no match → `PolicyError` → the whole receipt batch
+  aborted before executing anything. Extracted `policy_cwd()` mapping the
+  repo-root case back to `"."` (+ regression test).
+- *Answering execution questions wedged enforced runs at "SPEC.md changed
+  after approval"*: the answer flow intentionally appends human-approved
+  clarifications to SPEC.md, which the enforced rehash gate read as
+  post-approval drift. The answer handler (a journaled human action) now
+  re-stamps the SPEC etag after appending clarifications.
+- *`approve_plan` returned HTTP 500 for an unavailable skill pack*:
+  `skills.pinned_manifest` raises plain `ValueError`, which escaped the
+  `PolicyError`-only handler. The gate now catches `ValueError` (PolicyError
+  subclasses it) and surfaces an actionable approval error.
+- *`serialize_board` could raise `DetachedInstanceError`*: the policy digest
+  comes from a lazy relationship, but the serializer is also used with
+  detached rows (and its comment claimed no relationship existed). Guarded the
+  lazy access; detached rows expose only the binding id.
