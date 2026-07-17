@@ -24,9 +24,14 @@ import {
   type JournalEntryDTO,
   type JournalFilters,
   type JournalNoteBody,
+  type GoalRunDetailDTO,
+  type GoalRunSummaryDTO,
+  type GoalPublicationDTO,
+  type GoalPublishResultDTO,
   type LoopInfoDTO,
   type LoopResumeBody,
   type PlanningAnswerBody,
+  type PlanningGuidanceBody,
   type PlanningInfoDTO,
   type PlanningRunBody,
   type PlanningStartBody,
@@ -450,9 +455,40 @@ export class ApiClient {
   getTaskPlanning(taskId: string) {
     return this.request<PlanningInfoDTO>(`/api/tasks/${taskId}/planning`);
   }
+  listTaskGoalRuns(taskId: string) {
+    return this.request<GoalRunSummaryDTO[]>(`/api/tasks/${taskId}/goal-runs`);
+  }
+  getTaskGoalRun(taskId: string, goalRunId: string) {
+    return this.request<GoalRunDetailDTO>(
+      `/api/tasks/${taskId}/goal-runs/${goalRunId}`,
+    );
+  }
+  listGoalPublications(taskId: string, goalRunId: string) {
+    return this.request<GoalPublicationDTO[]>(
+      `/api/tasks/${taskId}/goal-runs/${goalRunId}/publications`,
+    );
+  }
+  publishGoal(taskId: string, goalRunId: string, draft = false) {
+    return this.request<GoalPublishResultDTO>(
+      `/api/tasks/${taskId}/goal-runs/${goalRunId}/publish`,
+      { method: "POST", body: JSON.stringify({ draft }) },
+    );
+  }
   startTaskPlanning(taskId: string, body: PlanningStartBody) {
     return this.request<{ ok: boolean; task_id: string }>(
       `/api/tasks/${taskId}/planning/start`,
+      { method: "POST", body: JSON.stringify(body) },
+    );
+  }
+  pauseTaskPlanning(taskId: string) {
+    return this.request<{ ok: boolean; task_id: string; state: string }>(
+      `/api/tasks/${taskId}/planning/pause`,
+      { method: "POST" },
+    );
+  }
+  resumeTaskPlanningWithGuidance(taskId: string, body: PlanningGuidanceBody) {
+    return this.request<{ ok: boolean; task_id: string }>(
+      `/api/tasks/${taskId}/planning/guidance`,
       { method: "POST", body: JSON.stringify(body) },
     );
   }

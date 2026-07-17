@@ -26,6 +26,7 @@ _VERDICT_SHAPE = (
 #: Instruction prepended to an evaluator turn. The strict JSON contract is what
 #: :func:`~...loop.verdict.parse_verdict` reads back from either the file or text.
 EVALUATOR_SYSTEM = (
+    "ROLE: INDEPENDENT EVALUATOR\n\n"
     "You are an independent verifier. Another agent attempted the task below; "
     "your job is to decide whether it is genuinely complete. Be skeptical: assume "
     "the work is incomplete or broken until proven otherwise by concrete "

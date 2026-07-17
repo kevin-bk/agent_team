@@ -41,6 +41,16 @@ OUTCOME_STALLED = "stalled"
 #: wall (e.g. the generator producing nothing every turn) stops fast.
 DEFAULT_MAX_ZERO_STREAK = 3
 
+#: Legacy/non-strict loops do not receive the strict planning preamble, so the
+#: opening prompt must still tell the model which responsibility it owns. Run
+#: metadata already records ``generator``; this banner makes the role visible
+#: to the agent itself as well.
+CODING_AGENT_ROLE_PREAMBLE = (
+    "ROLE: CODING AGENT\n\n"
+    "You are the coding and implementation agent. Own the requested code, test, "
+    "and delivery work; do not grade your own completion."
+)
+
 
 @dataclass(frozen=True)
 class Continue:
@@ -101,11 +111,12 @@ class LoopController:
             plan_ref = f"{self._preamble}\n\n"
         elif self._plan_path:
             plan_ref = (
+                f"{CODING_AGENT_ROLE_PREAMBLE}\n\n"
                 f"A detailed implementation plan has been written to `{self._plan_path}`. "
                 "Read it first and implement every step in it.\n\n"
             )
         else:
-            plan_ref = ""
+            plan_ref = f"{CODING_AGENT_ROLE_PREAMBLE}\n\n"
         return (
             f"{objective}\n\n"
             f"{plan_ref}"

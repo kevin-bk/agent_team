@@ -15,6 +15,8 @@ from agent_team.features.board.models import (
     AgentTeamComment,
     AgentTeamConversation,
     AgentTeamEvaluation,
+    AgentTeamGoalPublication,
+    AgentTeamGoalRun,
     AgentTeamJournalEntry,
     AgentTeamKeySeq,
     AgentTeamRun,
@@ -39,6 +41,7 @@ _PLUGIN_MODELS = (
     AgentTeamBoard,
     AgentTeamBoardMember,
     AgentTeamTask,
+    AgentTeamGoalRun,
     AgentTeamConversation,
     AgentTeamRun,
     AgentTeamRunEvent,
@@ -46,6 +49,7 @@ _PLUGIN_MODELS = (
     AgentTeamActivity,
     AgentTeamRepo,
     AgentTeamBoardRepo,
+    AgentTeamGoalPublication,
     AgentTeamToolOutput,
     AgentTeamAutopilot,
     AgentTeamAttempt,
@@ -109,6 +113,7 @@ def test_plugin_meta_models_and_menu():
         "plugin_agent_team_board",
         "plugin_agent_team_board_member",
         "plugin_agent_team_task",
+        "plugin_agent_team_goal_run",
         "plugin_agent_team_conversation",
         "plugin_agent_team_run",
         "plugin_agent_team_run_event",
@@ -116,6 +121,7 @@ def test_plugin_meta_models_and_menu():
         "plugin_agent_team_activity",
         "plugin_agent_team_repo",
         "plugin_agent_team_board_repo",
+        "plugin_agent_team_goal_publication",
         "plugin_agent_team_tool_output",
         "plugin_agent_team_autopilot",
         "plugin_agent_team_task_schedule",
@@ -3104,6 +3110,57 @@ def _make_task(db) -> AgentTeamTask:
     return task
 
 
+def test_goal_run_snapshots_are_immutable_and_numbered(db, tmp_path):
+    """A new planning session preserves the prior approved contract."""
+    from agent_team.features.board.runtime import goal_runs
+    from agent_team.features.board.runtime.loop import planning_artifacts as artifacts
+
+    task = _make_task(db)
+    task.workspace_path = str(tmp_path)
+    task.objective = "First objective"
+    task.planning_meta_json = json.dumps(
+        {
+            "planning_session_id": "session-1",
+            "approved": True,
+            "approved_at": "2026-07-16T02:00:00+00:00",
+        }
+    )
+    artifacts.write_text(task.workspace_path, artifacts.SPEC_PATH, "# First spec\n")
+    artifacts.write_text(task.workspace_path, artifacts.PLAN_PATH, "# First plan\n")
+    artifacts.write_text(
+        task.workspace_path,
+        artifacts.TASKS_PATH,
+        '{"version":1,"status":"draft","tasks":[]}',
+    )
+
+    first = goal_runs.ensure_approved_snapshot(db, task, approved_by=None)
+    db.flush()
+    same = goal_runs.ensure_approved_snapshot(db, task, approved_by=None)
+    assert same.id == first.id
+    assert first.run_no == 1
+    assert first.plan_snapshot()["artifacts"][0]["content"] == "# First spec\n"
+
+    task.objective = "Second objective"
+    task.planning_meta_json = json.dumps(
+        {
+            "planning_session_id": "session-2",
+            "approved": True,
+            "approved_at": "2026-07-16T03:00:00+00:00",
+            "current_goal_run_id": first.id,
+        }
+    )
+    artifacts.write_text(task.workspace_path, artifacts.SPEC_PATH, "# Second spec\n")
+    second = goal_runs.ensure_approved_snapshot(db, task, approved_by=None)
+    db.flush()
+
+    assert second.id != first.id
+    assert second.run_no == 2
+    assert first.status == "superseded"
+    assert first.plan_snapshot()["artifacts"][0]["content"] == "# First spec\n"
+    assert second.plan_snapshot()["artifacts"][0]["content"] == "# Second spec\n"
+    assert task.planning_meta()["current_goal_run_id"] == second.id
+
+
 def test_comments_create_list_and_soft_delete(db):
     from agent_team.features.board.repositories import comments as comments_repo
 
@@ -4882,6 +4939,45 @@ def test_build_task_context_mentions_automatic_repo_bootstrap(db):
     assert "dependencies/setup prepared automatically by the runtime" in full
 
 
+@pytest.mark.asyncio
+async def test_pause_planning_marks_durable_request_and_cancels_active_run(
+    db, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from agent_team.features.board.runtime.loop import planning
+    from sqlalchemy.orm import sessionmaker
+
+    task = _make_task(db)
+    task.loop_state = "planning"
+    db.commit()
+    factory = sessionmaker(
+        bind=db.get_bind(), autoflush=False, autocommit=False, future=True
+    )
+    monkeypatch.setattr(planning, "SessionLocal", factory)
+    monkeypatch.setattr(
+        planning.runs_repo,
+        "get_active_loop_run",
+        lambda _db, *, task_id: SimpleNamespace(id="planner-run"),
+    )
+
+    cancelled: list[str] = []
+
+    class Backend:
+        async def cancel(self, run_id: str) -> bool:
+            cancelled.append(run_id)
+            return True
+
+    monkeypatch.setattr(planning, "get_run_backend", lambda: Backend())
+
+    assert await planning.pause_planning_job(task.id, actor_id="human-1") is True
+    db.expire_all()
+    updated = tasks_repo.get_task(db, task.id)
+    assert updated.planning_meta()["pause_requested"] is True
+    assert updated.planning_meta()["pause_requested_by"] == "human-1"
+    assert cancelled == ["planner-run"]
+
+
 def test_repo_push_policy_roundtrip(db):
     from agent_team.features.repos import repositories as repos_repo
     from agent_team.features.repos.schemas import RepoCreate, RepoUpdate
@@ -5025,6 +5121,154 @@ def test_prepare_task_repos_reattaches_task_branch_on_existing_copy(
         capture_output=True, text=True,
     ).stdout.strip()
     assert branch == task_branch_name(task)
+
+
+def test_human_publication_commits_pushes_and_records_review_request(
+    db, tmp_path, monkeypatch
+):
+    """A PASS binds the dirty verified tree before commit/push/MR creation."""
+    from pathlib import Path
+
+    from agent_team.features.board.runtime import goal_publication
+    from agent_team.features.board.runtime.loop.verification_runner import (
+        capture_source_state,
+    )
+    from agent_team.features.repos import review_service
+    from agent_team.features.repos.task_copy import prepare_task_repos, task_branch_name
+
+    src, repo, task = _prepare_pushable_task(
+        db, tmp_path, monkeypatch, allow_push=True
+    )
+    prepare_task_repos(db, task)
+    copy = Path(task.workspace_path) / repo.slug
+    (copy / "feature.txt").write_text("verified change\n")
+    _source, source_sha = capture_source_state(task.workspace_path)
+
+    goal = AgentTeamGoalRun(
+        task_id=task.id,
+        run_no=1,
+        objective="Add a medium feature",
+        contract_etag="sha256:" + "a" * 64,
+        status="complete",
+        outcome="complete",
+        execution_snapshot_json=json.dumps(
+            {
+                "attempts": [{"evaluations": [{"verdict": "pass"}]}],
+                "receipts": [{"source_after_sha256": source_sha}],
+            }
+        ),
+        workspace_snapshot_json=json.dumps(
+            {
+                "changes": {
+                    "files": [{"repo": repo.slug, "path": "feature.txt"}]
+                },
+                "source_sha256": source_sha,
+            }
+        ),
+    )
+    db.add(goal)
+    db.flush()
+    task.planning_meta_json = json.dumps({"current_goal_run_id": goal.id})
+    db.commit()
+
+    monkeypatch.setattr(
+        review_service,
+        "create_review_request",
+        lambda *_args, **_kwargs: review_service.ReviewRequestResult(
+            provider="gitlab",
+            number="19",
+            url="https://gitlab.example.com/acme/service/-/merge_requests/19",
+            title="T-19: feature",
+        ),
+    )
+
+    result = goal_publication.publish_goal(goal.id, actor_id=None)
+
+    assert result["ok"] is True
+    publication = result["publications"][0]
+    assert publication["status"] == "published"
+    assert publication["pushed"] is True
+    assert publication["request_number"] == "19"
+    assert publication["commit_sha"] == publication["remote_commit_sha"]
+    branch = task_branch_name(task)
+    import subprocess
+
+    remote_commit = subprocess.run(
+        ["git", "rev-parse", f"refs/heads/{branch}"],
+        cwd=str(src),
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert remote_commit == publication["commit_sha"]
+
+
+def test_human_publication_approves_workspace_drift_after_verification(
+    db, tmp_path, monkeypatch
+):
+    from pathlib import Path
+
+    from agent_team.features.board.runtime import goal_publication
+    from agent_team.features.board.runtime.loop.verification_runner import (
+        capture_source_state,
+    )
+    from agent_team.features.repos import review_service
+    from agent_team.features.repos.task_copy import prepare_task_repos
+
+    _src, repo, task = _prepare_pushable_task(
+        db, tmp_path, monkeypatch, allow_push=True
+    )
+    prepare_task_repos(db, task)
+    copy = Path(task.workspace_path) / repo.slug
+    (copy / "feature.txt").write_text("verified change\n")
+    _source, source_sha = capture_source_state(task.workspace_path)
+    goal = AgentTeamGoalRun(
+        task_id=task.id,
+        run_no=1,
+        objective="Add a medium feature",
+        contract_etag="sha256:" + "b" * 64,
+        status="complete",
+        outcome="complete",
+        execution_snapshot_json=json.dumps(
+            {
+                "attempts": [{"evaluations": [{"verdict": "pass"}]}],
+                "receipts": [{"source_after_sha256": source_sha}],
+            }
+        ),
+        workspace_snapshot_json=json.dumps(
+            {
+                "changes": {
+                    "files": [{"repo": repo.slug, "path": "feature.txt"}]
+                },
+                "source_sha256": source_sha,
+            }
+        ),
+    )
+    db.add(goal)
+    db.flush()
+    task.planning_meta_json = json.dumps({"current_goal_run_id": goal.id})
+    db.commit()
+
+    (copy / "feature.txt").write_text("unverified drift\n")
+    monkeypatch.setattr(
+        review_service,
+        "create_review_request",
+        lambda *_args, **_kwargs: review_service.ReviewRequestResult(
+            provider="gitlab",
+            number="20",
+            url="https://gitlab.example.com/acme/service/-/merge_requests/20",
+            title="T-20: feature",
+        ),
+    )
+
+    result = goal_publication.publish_goal(goal.id, actor_id=None)
+
+    assert result["ok"] is True
+    publication = result["publications"][0]
+    assert publication["status"] == "published"
+    assert publication["request_number"] == "20"
+    assert db.query(AgentTeamGoalPublication).count() == 1
+    assert (copy / "feature.txt").read_text() == "unverified drift\n"
 
 
 def test_git_push_tool_respects_allow_push(db, tmp_path, monkeypatch):

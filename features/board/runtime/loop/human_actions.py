@@ -77,6 +77,15 @@ def approve_plan(
     task.planning_meta_json = json.dumps(meta, ensure_ascii=False)
     task.loop_state = LoopState.PLAN_APPROVED.value
 
+    # Snapshot the approved contract before a later re-plan/new goal can
+    # overwrite the shared workspace artifacts. Re-approving the same contract
+    # in the same planning session safely reuses the existing row.
+    from agent_team.features.board.runtime import goal_runs
+
+    goal_run = goal_runs.ensure_approved_snapshot(
+        db, task, approved_by=getattr(user, "id", None)
+    )
+
     task_journal.record_with(
         db,
         task_id=task.id,
@@ -88,7 +97,11 @@ def approve_plan(
         refs=task_journal.refs(
             artifacts=[artifacts.SPEC_PATH, artifacts.PLAN_PATH, artifacts.TASKS_PATH]
         ),
-        metadata={"artifact_etags": meta.get("artifact_etags", {})},
+        metadata={
+            "artifact_etags": meta.get("artifact_etags", {}),
+            "goal_run_id": goal_run.id,
+            "goal_run_no": goal_run.run_no,
+        },
     )
     db.commit()
 
@@ -205,5 +218,6 @@ def answer_questions(
         # The planner needed a human decision, so this task is not trivial —
         # the human reviews the re-draft even on a quick-lane auto-approve board.
         allow_auto_approve=False,
+        actor_id=getattr(user, "id", None),
     )
     return "planning"

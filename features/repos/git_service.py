@@ -203,6 +203,23 @@ def push_branch(repo: AgentTeamRepo, work_dir: str, branch: str) -> GitOpResult:
     return GitOpResult(ok, "push", msg)
 
 
+def remote_branch_sha(repo: AgentTeamRepo, branch: str) -> str | None:
+    """Return the remote branch tip using managed credentials, if it exists."""
+    with _auth(repo) as (extra, env):
+        code, out, _err = _run_git(
+            *extra,
+            "ls-remote",
+            _effective_url(repo),
+            f"refs/heads/{branch}",
+            env=env,
+            timeout=_CLONE_TIMEOUT,
+        )
+    if code != 0 or not out.strip():
+        return None
+    sha = out.split(None, 1)[0].strip()
+    return sha if re.fullmatch(r"[0-9a-fA-F]{40,64}", sha) else None
+
+
 def repo_status(repo: AgentTeamRepo) -> dict:
     """Return ``{is_git, branch, last_commit}`` for the canonical clone."""
     dest = canonical_path(repo.owner_id, repo.slug)

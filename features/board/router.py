@@ -7,6 +7,7 @@ import json
 import shutil
 from datetime import UTC
 from pathlib import Path
+from uuid import uuid4
 
 from fastapi import APIRouter, Body, Depends, File, Request, UploadFile
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -44,6 +45,11 @@ from agent_team.features.board.schemas import (
     CsvImportPreview,
     CsvImportResult,
     CsvImportRow,
+    GoalPublicationDTO,
+    GoalPublishRequest,
+    GoalPublishResultDTO,
+    GoalRunDetailDTO,
+    GoalRunSummaryDTO,
     JiraImportBody,
     JiraPreviewBody,
     JiraPreviewItem,
@@ -62,6 +68,7 @@ from agent_team.features.board.schemas import (
     PlanningArtifactDTO,
     PlanningArtifactEdit,
     PlanningChangeRequestCreate,
+    PlanningGuidanceCreate,
     PlanningInfoDTO,
     PlanningQuestionDTO,
     PlanningRunCreate,
@@ -1794,10 +1801,14 @@ def _planning_info(task) -> PlanningInfoDTO:
 
     meta = task.planning_meta()
     dtos: list[PlanningArtifactDTO] = []
-    # Editable artifacts plus the change-request note carry their text so the
-    # cockpit can render/edit them (the note is read-only, shown as an alert).
+    # Planning/proof artifacts carry their text so the cockpit can keep the
+    # whole goal package reviewable after the lifecycle advances. Only the
+    # explicit editable set can be changed; the rest remain read-only.
     readable = set(artifacts.EDITABLE_ARTIFACTS.values()) | {
+        artifacts.INTAKE_PATH,
         artifacts.PLAN_REVIEW_PATH,
+        artifacts.EVIDENCE_PATH,
+        artifacts.VERIFICATION_RECEIPTS_PATH,
         artifacts.PLAN_CHANGE_REQUEST_PATH,
         artifacts.QUESTIONS_PATH,
     }
@@ -1827,9 +1838,11 @@ def _planning_info(task) -> PlanningInfoDTO:
         planning_mode=task.planning_mode,
         objective=task.objective,
         is_planning=is_planning_running(task.id),
+        pause_requested=bool(meta.get("pause_requested")),
         approved=bool(meta.get("approved")),
         approved_by=meta.get("approved_by"),
         approved_at=meta.get("approved_at"),
+        current_goal_run_id=meta.get("current_goal_run_id"),
         review_verdict=meta.get("review_verdict"),
         plan_review=PlanReviewDTO(**review_data) if review_data is not None else None,
         review_attempts=int(meta.get("review_attempts") or 0),
@@ -1881,6 +1894,21 @@ async def start_task_planning(
     task.objective = objective
     task.execution_mode = TASK_EXEC_MODE_AUTONOMOUS
     task.planning_mode = PLANNING_MODE_STRICT
+    meta = task.planning_meta()
+    meta.update(
+        {
+            "planning_session_id": uuid4().hex,
+            "approved": False,
+            "approved_by": None,
+            "approved_at": None,
+            "auto_approved": False,
+            "pause_requested": False,
+            "planning_paused": False,
+            "planner_id": payload.planner_id,
+            "reviewer_id": payload.reviewer_id or None,
+        }
+    )
+    task.planning_meta_json = json.dumps(meta, ensure_ascii=False)
 
     from agent_team.features.board.runtime import task_journal
 
@@ -1906,6 +1934,7 @@ async def start_task_planning(
         planner_alias=payload.planner_id,
         objective=objective,
         reviewer_alias=payload.reviewer_id or None,
+        actor_id=ctx.user.id,
     )
     return {"ok": True, "task_id": task_id}
 
@@ -1917,6 +1946,185 @@ async def get_task_planning(task_id: str, request: Request, db: Session = Depend
     if err:
         return err
     return _planning_info(ctx.task)
+
+
+@router.post("/tasks/{task_id}/planning/pause")
+async def pause_task_planning(
+    task_id: str, request: Request, db: Session = Depends(get_db)
+):
+    """Stop the active planning role and preserve its conversation/artifacts."""
+    ctx, err = authz.guard_task(db, request, task_id, min_role="editor")
+    if err:
+        return err
+    from agent_team.features.board.runtime.loop import planning
+
+    if not await planning.pause_planning_job(task_id, actor_id=ctx.user.id):
+        return bad_request("Planning is not currently running for this task.")
+    return {"ok": True, "task_id": task_id, "state": "stopping"}
+
+
+@router.post("/tasks/{task_id}/planning/guidance")
+async def resume_task_planning_with_guidance(
+    task_id: str,
+    payload: PlanningGuidanceCreate,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Resume the same planner conversation with new human guidance."""
+    ctx, err = authz.guard_task(db, request, task_id, min_role="editor")
+    if err:
+        return err
+    task = ctx.task
+    from agent_team.features.board.runtime.loop import planning
+    from agent_team.features.board.runtime.loop.status import LoopState
+
+    if planning.is_planning_running(task_id):
+        return bad_request("Planning is still stopping; wait until it is paused.")
+    if task.loop_state != LoopState.PLANNING_PAUSED.value:
+        return bad_request("Planning must be paused before guidance can be sent.")
+    meta = task.planning_meta()
+    planner_id = str(meta.get("planner_id") or "").strip()
+    if not planner_id:
+        return bad_request("No planner is set for this task; start planning again.")
+    guidance = payload.guidance.strip()
+    from agent_team.features.board.runtime import task_journal
+
+    meta.update(
+        {
+            "approved": False,
+            "pause_requested": False,
+            "planning_paused": False,
+        }
+    )
+    task.planning_meta_json = json.dumps(meta, ensure_ascii=False)
+    task_journal.record_with(
+        db,
+        task_id=task_id,
+        phase="planning",
+        type="answer",
+        title="Human added planning guidance",
+        body=guidance,
+        actor_id=ctx.user.id,
+        actor_type="human",
+    )
+    db.commit()
+
+    from agent_team.features.board.runtime.dispatch import capture_main_loop
+
+    capture_main_loop()
+    planning.start_planning_job(
+        task_id=task_id,
+        planner_alias=planner_id,
+        objective=task.objective or "",
+        reviewer_alias=meta.get("reviewer_id") or None,
+        allow_auto_approve=False,
+        guidance=guidance,
+        actor_id=ctx.user.id,
+    )
+    return {"ok": True, "task_id": task_id}
+
+
+@router.get("/tasks/{task_id}/goal-runs", response_model=list[GoalRunSummaryDTO])
+async def list_task_goal_runs(
+    task_id: str, request: Request, db: Session = Depends(get_db)
+):
+    """Newest-first immutable history of approved contracts for this task."""
+    _, err = authz.guard_task(db, request, task_id, min_role="viewer")
+    if err:
+        return err
+    from agent_team.features.board.runtime import goal_runs
+
+    return [
+        GoalRunSummaryDTO(**goal_runs.serialize_summary(row))
+        for row in goal_runs.list_goal_runs(db, task_id)
+    ]
+
+
+@router.get(
+    "/tasks/{task_id}/goal-runs/{goal_run_id}", response_model=GoalRunDetailDTO
+)
+async def get_task_goal_run(
+    task_id: str,
+    goal_run_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Return the approved plan plus captured changes and proof for one run."""
+    _, err = authz.guard_task(db, request, task_id, min_role="viewer")
+    if err:
+        return err
+    from agent_team.features.board.models import AgentTeamGoalRun
+    from agent_team.features.board.runtime import goal_runs
+
+    row = db.get(AgentTeamGoalRun, goal_run_id)
+    if row is None or row.task_id != task_id:
+        return not_found("Goal run not found")
+    return GoalRunDetailDTO(**goal_runs.serialize_detail(row))
+
+
+@router.get(
+    "/tasks/{task_id}/goal-runs/{goal_run_id}/publications",
+    response_model=list[GoalPublicationDTO],
+)
+async def list_goal_publications(
+    task_id: str,
+    goal_run_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Read-only commit and merge/pull request records for one goal."""
+    _, err = authz.guard_task(db, request, task_id, min_role="viewer")
+    if err:
+        return err
+    from agent_team.features.board.models import AgentTeamGoalRun
+    from agent_team.features.board.runtime import goal_publication
+
+    goal = db.get(AgentTeamGoalRun, goal_run_id)
+    if goal is None or goal.task_id != task_id:
+        return not_found("Goal run not found")
+    return [
+        GoalPublicationDTO(**goal_publication.serialize_publication(row))
+        for row in goal_publication.list_publications(db, goal.id)
+    ]
+
+
+@router.post(
+    "/tasks/{task_id}/goal-runs/{goal_run_id}/publish",
+    response_model=GoalPublishResultDTO,
+)
+async def publish_goal_for_review(
+    task_id: str,
+    goal_run_id: str,
+    payload: GoalPublishRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Human approval: publish the current tree and create review requests."""
+    ctx, err = authz.guard_task(db, request, task_id, min_role="editor")
+    if err:
+        return err
+    from agent_team.features.board.models import AgentTeamGoalRun
+    from agent_team.features.board.runtime import goal_publication
+
+    goal = db.get(AgentTeamGoalRun, goal_run_id)
+    if goal is None or goal.task_id != task_id:
+        return not_found("Goal run not found")
+    try:
+        result = await asyncio.to_thread(
+            goal_publication.publish_goal,
+            goal.id,
+            actor_id=ctx.user.id,
+            draft=payload.draft,
+        )
+    except goal_publication.PublicationError as exc:
+        return bad_request(str(exc))
+    return GoalPublishResultDTO(
+        ok=bool(result.get("ok")),
+        publications=[
+            GoalPublicationDTO(**row) for row in result.get("publications") or []
+        ],
+        detail=result.get("detail"),
+    )
 
 
 @router.put("/tasks/{task_id}/planning/artifacts/{artifact_name}")
@@ -2083,6 +2291,7 @@ async def request_task_planning_changes(
         # The human explicitly asked for changes — they get the final look at
         # the re-draft even on a quick-lane auto-approve board.
         allow_auto_approve=False,
+        actor_id=ctx.user.id,
     )
     return {"ok": True, "task_id": task_id}
 

@@ -13,6 +13,7 @@ import type {
   JournalNoteBody,
   LoopResumeBody,
   PlanningAnswerBody,
+  PlanningGuidanceBody,
   PlanningRunBody,
   PlanningStartBody,
   MoveTaskBody,
@@ -74,6 +75,11 @@ export const qk = {
   taskActivity: (taskId: string) => ["task-activity", taskId] as const,
   taskLoop: (taskId: string) => ["task-loop", taskId] as const,
   taskPlanning: (taskId: string) => ["task-planning", taskId] as const,
+  taskGoalRuns: (taskId: string) => ["task-goal-runs", taskId] as const,
+  taskGoalRun: (taskId: string, goalRunId: string) =>
+    ["task-goal-run", taskId, goalRunId] as const,
+  goalPublications: (taskId: string, goalRunId: string) =>
+    ["goal-publications", taskId, goalRunId] as const,
   taskJournal: (taskId: string) => ["task-journal", taskId] as const,
   users: (q: string) => ["users", q] as const,
   repos: ["repos"] as const,
@@ -809,12 +815,92 @@ export function useTaskPlanning(taskId: string | undefined, enabled = true) {
   });
 }
 
+export function useTaskGoalRuns(taskId: string | undefined) {
+  const { client } = useApi();
+  return useQuery({
+    queryKey: qk.taskGoalRuns(taskId ?? "_"),
+    queryFn: () => client.listTaskGoalRuns(taskId as string),
+    enabled: !!taskId,
+  });
+}
+
+export function useTaskGoalRun(
+  taskId: string | undefined,
+  goalRunId: string | undefined,
+) {
+  const { client } = useApi();
+  return useQuery({
+    queryKey: qk.taskGoalRun(taskId ?? "_", goalRunId ?? "_"),
+    queryFn: () => client.getTaskGoalRun(taskId as string, goalRunId as string),
+    enabled: !!taskId && !!goalRunId,
+  });
+}
+
+export function useGoalPublications(
+  taskId: string | undefined,
+  goalRunId: string | undefined,
+) {
+  const { client } = useApi();
+  return useQuery({
+    queryKey: qk.goalPublications(taskId ?? "_", goalRunId ?? "_"),
+    queryFn: () =>
+      client.listGoalPublications(taskId as string, goalRunId as string),
+    enabled: !!taskId && !!goalRunId,
+  });
+}
+
+export function usePublishGoal(taskId: string, goalRunId: string) {
+  const { client } = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (draft: boolean) => client.publishGoal(taskId, goalRunId, draft),
+    onSuccess: () => {
+      void qc.invalidateQueries({
+        queryKey: qk.goalPublications(taskId, goalRunId),
+      });
+      void qc.invalidateQueries({ queryKey: qk.taskGoalRuns(taskId) });
+      void qc.invalidateQueries({ queryKey: qk.taskGoalRun(taskId, goalRunId) });
+    },
+  });
+}
+
 export function useStartTaskPlanning(boardId: string, taskId: string) {
   const { client } = useApi();
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (body: PlanningStartBody) =>
       client.startTaskPlanning(taskId, body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: qk.taskPlanning(taskId) });
+      void qc.invalidateQueries({ queryKey: qk.taskGoalRuns(taskId) });
+      void qc.invalidateQueries({ queryKey: qk.taskLoop(taskId) });
+      void qc.invalidateQueries({ queryKey: qk.boardTasks(boardId) });
+    },
+  });
+}
+
+export function usePauseTaskPlanning(boardId: string, taskId: string) {
+  const { client } = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => client.pauseTaskPlanning(taskId),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: qk.taskPlanning(taskId) });
+      void qc.invalidateQueries({ queryKey: qk.taskLoop(taskId) });
+      void qc.invalidateQueries({ queryKey: qk.boardTasks(boardId) });
+    },
+  });
+}
+
+export function useResumePlanningWithGuidance(
+  boardId: string,
+  taskId: string,
+) {
+  const { client } = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: PlanningGuidanceBody) =>
+      client.resumeTaskPlanningWithGuidance(taskId, body),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: qk.taskPlanning(taskId) });
       void qc.invalidateQueries({ queryKey: qk.taskLoop(taskId) });
@@ -828,7 +914,10 @@ export function useApproveTaskPlanning(taskId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: () => client.approveTaskPlanning(taskId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: qk.taskPlanning(taskId) }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: qk.taskPlanning(taskId) });
+      void qc.invalidateQueries({ queryKey: qk.taskGoalRuns(taskId) });
+    },
   });
 }
 
@@ -850,6 +939,7 @@ export function useApproveAndRunTaskPlanning(boardId: string, taskId: string) {
       client.approveAndRunTaskPlanning(taskId, body),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: qk.taskPlanning(taskId) });
+      void qc.invalidateQueries({ queryKey: qk.taskGoalRuns(taskId) });
       void qc.invalidateQueries({ queryKey: qk.taskLoop(taskId) });
       void qc.invalidateQueries({ queryKey: qk.boardTasks(boardId) });
     },

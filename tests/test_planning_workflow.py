@@ -15,7 +15,11 @@ from agent_team.features.board.runtime.loop import planning as planning_module
 from agent_team.features.board.runtime.loop import planning_artifacts as A
 from agent_team.features.board.runtime.loop import planning_prompts as P
 from agent_team.features.board.runtime.loop import service as loop_service
-from agent_team.features.board.runtime.loop.controller import LoopController
+from agent_team.features.board.runtime.loop.controller import (
+    CODING_AGENT_ROLE_PREAMBLE,
+    LoopController,
+)
+from agent_team.features.board.runtime.loop.evaluator import build_evaluator_prompt
 from agent_team.features.board.runtime.loop.status import LoopState
 from agent_team.features.board.runtime.loop.verdict import LoopVerdict
 
@@ -63,6 +67,7 @@ async def test_planning_job_accepts_extended_task_runtime_context(monkeypatch, t
         return SimpleNamespace(status="error")
 
     monkeypatch.setattr(planning_module, "_drive_to_completion", failed_run)
+    monkeypatch.setattr(planning_module, "_pause_requested", lambda _task_id: False)
     monkeypatch.setattr(
         planning_module.task_journal, "ingest_agent_notes", lambda **_kwargs: None
     )
@@ -76,6 +81,61 @@ async def test_planning_job_accepts_extended_task_runtime_context(monkeypatch, t
 
     assert result is LoopState.FAILED
     assert states == [LoopState.PLANNING, LoopState.FAILED]
+
+
+@pytest.mark.asyncio
+async def test_human_pause_parks_planning_without_rejecting_partial_artifacts(
+    monkeypatch, tmp_path
+):
+    states = []
+    monkeypatch.setattr(
+        planning_module,
+        "_task_workspace_and_board",
+        lambda _task_id: (str(tmp_path), "board-1", None),
+    )
+    monkeypatch.setattr(
+        planning_module,
+        "_board_planning_settings",
+        lambda _board_id: SimpleNamespace(
+            conventions="", planning_skill="", auto_approve_quick=False
+        ),
+    )
+    monkeypatch.setattr(
+        planning_module, "_agent_visible_workspace", lambda workspace, _board: workspace
+    )
+    monkeypatch.setattr(planning_module, "_board_repo_names", lambda _board_id: [])
+    monkeypatch.setattr(
+        planning_module,
+        "_persist_planning",
+        lambda _task_id, *, state, **_kwargs: states.append(state),
+    )
+    monkeypatch.setattr(planning_module, "_create_loop_run", lambda **_kwargs: "run-1")
+
+    async def cancelled_run(_run_id):
+        return SimpleNamespace(status="cancelled")
+
+    monkeypatch.setattr(planning_module, "_drive_to_completion", cancelled_run)
+    monkeypatch.setattr(planning_module, "_pause_requested", lambda _task_id: True)
+    monkeypatch.setattr(
+        planning_module.task_journal, "ingest_agent_notes", lambda **_kwargs: None
+    )
+    monkeypatch.setattr(planning_module.task_journal, "record", lambda **_kwargs: None)
+
+    result = await planning_module.run_planning_job(
+        task_id="task-1", planner_alias="planner", objective="Pilot"
+    )
+
+    assert result is LoopState.PLANNING_PAUSED
+    assert states == [LoopState.PLANNING, LoopState.PLANNING_PAUSED]
+
+
+def test_planning_guidance_prompt_resumes_same_contract_without_implementation():
+    prompt = P.build_planning_guidance_prompt("Keep the existing database schema.")
+    assert prompt.startswith("PHASE: PLAN")
+    assert "ROLE: PLANNER" in prompt
+    assert "Keep the existing database schema." in prompt
+    assert "Continue the SAME planning task" in prompt
+    assert "do not implement source changes" in prompt
 
 
 @pytest.mark.asyncio
@@ -409,6 +469,7 @@ def test_archive_change_request_clears_active_marker(tmp_path):
 # ── prompts ──────────────────────────────────────────────────────────────────
 def test_planning_prompt_requires_artifacts_and_forbids_edits():
     prompt = P.build_planning_prompt("Add X", task_id="t1", workspace_path="/ws")
+    assert P.ROLE_PLANNER in prompt
     assert A.SPEC_PATH in prompt
     assert A.PLAN_PATH in prompt
     assert A.TASKS_PATH in prompt
@@ -423,6 +484,7 @@ def test_planning_prompt_requires_artifacts_and_forbids_edits():
 
 def test_reviewer_rejects_ambiguous_multi_repo_verification_commands():
     prompt = P.build_review_prompt()
+    assert P.ROLE_PLAN_REVIEWER in prompt
     assert "multi-repo verification commands" in prompt
     assert "repository working directory" in prompt
 
@@ -431,6 +493,7 @@ def test_strict_evaluator_prompt_references_approved_contract():
     prompt = P.build_strict_evaluator_prompt(
         objective="obj", generator_summary="did stuff", verdict_path=A.EVIDENCE_PATH
     )
+    assert P.ROLE_INDEPENDENT_EVALUATOR in prompt
     assert A.SPEC_PATH in prompt
     assert A.PLAN_PATH in prompt
     assert A.EVIDENCE_PATH in prompt
@@ -439,9 +502,20 @@ def test_strict_evaluator_prompt_references_approved_contract():
     assert "criteria" in prompt and "scenarios" in prompt
 
 
+def test_legacy_evaluator_prompt_declares_independent_role():
+    prompt = build_evaluator_prompt("objective", "summary")
+    assert "ROLE: INDEPENDENT EVALUATOR" in prompt
+
+
 def test_generator_strict_preamble_mentions_change_request():
+    assert P.ROLE_CODING_AGENT in P.GENERATOR_STRICT_PREAMBLE
     assert A.PLAN_CHANGE_REQUEST_PATH in P.GENERATOR_STRICT_PREAMBLE
     assert A.SPEC_PATH in P.GENERATOR_STRICT_PREAMBLE
+
+
+def test_legacy_generator_opening_prompt_declares_coding_role():
+    prompt = LoopController("Do the work").start()
+    assert CODING_AGENT_ROLE_PREAMBLE in prompt
 
 
 # ── risk intake → lane (INTAKE.json) ─────────────────────────────────────────
@@ -1060,10 +1134,12 @@ def test_build_task_prompts_scope_to_single_task():
     assert "returns 200" in obj and "pytest test_api.py" in obj
     assert "Profiles: api" in obj and "Test change: add" in obj
     assert "api-service: pytest test_api.py" in obj
+    assert P.ROLE_CODING_AGENT in P.TASK_GRAPH_PREAMBLE
 
     ev = P.build_task_evaluator_prompt(
         task=task, generator_summary="done", verdict_path=A.EVIDENCE_PATH
     )
+    assert P.ROLE_INDEPENDENT_EVALUATOR in ev
     assert "T3" in ev and "returns 200" in ev
     assert A.EVIDENCE_PATH in ev
     assert "T3:AC-1" in ev and '"version": 2' in ev

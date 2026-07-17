@@ -19,6 +19,7 @@ import pytest
 from agent_team.features.board.models import (
     AgentTeamBoard,
     AgentTeamBoardMember,
+    AgentTeamGoalRun,
     AgentTeamTask,
 )
 from agent_team.features.board.runtime.loop import human_actions
@@ -59,6 +60,7 @@ def db():
         AgentTeamBoard,
         AgentTeamBoardMember,
         AgentTeamTask,
+        AgentTeamGoalRun,
         AgentTeamCommConnection,
         AgentTeamBoardChannel,
         AgentTeamCommDelivery,

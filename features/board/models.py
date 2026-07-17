@@ -471,6 +471,128 @@ class AgentTeamTask(Base):
         return value if isinstance(value, dict) else {}
 
 
+class AgentTeamGoalRun(Base):
+    """Immutable approved contract plus the execution proof it produced.
+
+    A task may be planned and executed many times. Workspace planning files are
+    intentionally reused by the active goal, so this row snapshots an approved
+    contract before a later goal or plan revision can overwrite those files.
+    Execution/workspace snapshots are filled as the run progresses; the
+    approved plan snapshot and its fingerprint never change.
+    """
+
+    __tablename__ = "plugin_agent_team_goal_run"
+    __table_args__ = (
+        UniqueConstraint("task_id", "run_no", name="uq_agent_team_goal_run_task_no"),
+        Index("ix_agent_team_goal_run_task_status", "task_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    task_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("plugin_agent_team_task.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    run_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    objective: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    contract_etag: Mapped[str] = mapped_column(String(71), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="approved")
+    outcome: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    plan_snapshot_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    planning_meta_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    execution_snapshot_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    workspace_snapshot_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    approved_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+    def plan_snapshot(self) -> dict:
+        return _json_object(self.plan_snapshot_json)
+
+    def planning_meta(self) -> dict:
+        return _json_object(self.planning_meta_json)
+
+    def execution_snapshot(self) -> dict:
+        return _json_object(self.execution_snapshot_json)
+
+    def workspace_snapshot(self) -> dict:
+        return _json_object(self.workspace_snapshot_json)
+
+
+class AgentTeamGoalPublication(Base):
+    """Human-approved publication of one completed goal into code review.
+
+    Agents may push an isolated task branch for staging deploys. This record is
+    the separate governance boundary: after a trusted PASS, a human approves
+    the current Git tree and the backend opens (or finds) its merge/pull request.
+    """
+
+    __tablename__ = "plugin_agent_team_goal_publication"
+    __table_args__ = (
+        UniqueConstraint(
+            "goal_run_id", "repo_id", name="uq_agent_team_goal_publication_repo"
+        ),
+        Index("ix_agent_team_goal_publication_task", "task_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    goal_run_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("plugin_agent_team_goal_run.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    task_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("plugin_agent_team_task.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    repo_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("plugin_agent_team_repo.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    repo_slug: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_branch: Mapped[str] = mapped_column(String(255), nullable=False)
+    target_branch: Mapped[str] = mapped_column(String(255), nullable=False)
+    #: Current Git tree approved by the human for this publication attempt.
+    tree_sha: Mapped[str] = mapped_column(String(64), nullable=False)
+    commit_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    remote_commit_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    approved_source_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    request_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    request_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    request_title: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="pending")
+    pushed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    published_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+
 class AgentTeamConversation(Base):
     """One ``(task, agent)`` thread of work.
 

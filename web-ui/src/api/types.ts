@@ -417,6 +417,7 @@ export interface TaskDTO {
 /** Persisted lifecycle state of a task's autonomous loop. */
 export type LoopState =
   | "planning"
+  | "planning_paused"
   | "waiting_plan_approval"
   | "plan_approved"
   | "running"
@@ -469,9 +470,13 @@ export interface PlanningInfoDTO {
   planning_mode: PlanningMode;
   objective?: string | null;
   is_planning: boolean;
+  /** A human stop request is waiting for the active planner role to settle. */
+  pause_requested?: boolean;
   approved: boolean;
   approved_by?: string | null;
   approved_at?: string | null;
+  /** Immutable approved goal revision currently bound to the live workspace. */
+  current_goal_run_id?: string | null;
   review_verdict?: string | null;
   /** Structured detail from a valid active reviewer artifact. */
   plan_review?: PlanReviewDTO | null;
@@ -490,6 +495,107 @@ export interface PlanningInfoDTO {
   questions?: PlanningQuestion[];
 }
 
+export interface GoalRunSummaryDTO {
+  id: string;
+  task_id: string;
+  run_no: number;
+  objective: string;
+  contract_etag: string;
+  status: string;
+  outcome?: string | null;
+  approved_by?: string | null;
+  approved_at?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  created_at?: string | null;
+  artifact_count: number;
+  changed_file_count: number;
+  receipt_count: number;
+  verdict?: string | null;
+}
+
+export interface GoalRunPlanArtifact extends PlanningArtifactDTO {
+  name?: string;
+}
+
+export interface GoalRunReceiptDTO {
+  id: string;
+  batch_id: string;
+  command_id: string;
+  repo?: string | null;
+  working_directory: string;
+  command: string;
+  exit_code: number;
+  duration_ms: number;
+  timed_out: boolean;
+  stdout_path: string;
+  stderr_path: string;
+  source_before_sha256?: string;
+  source_after_sha256?: string;
+  created_at?: string | null;
+}
+
+export interface GoalRunExecutionSnapshot {
+  version?: number;
+  attempts?: LoopAttemptDTO[];
+  receipts?: GoalRunReceiptDTO[];
+  roles?: Array<{
+    run_id: string;
+    conversation_id?: string | null;
+    attempt_id?: string | null;
+    role: string;
+    agent_id: string;
+    status: string;
+    tokens: number;
+    cost_usd: number;
+  }>;
+  total_tokens?: number;
+  total_cost_usd?: number;
+  final_tasks?: { tasks?: LoopTaskDTO[] };
+  evidence?: Record<string, unknown>;
+}
+
+export interface GoalRunWorkspaceSnapshot {
+  version?: number;
+  changes?: TaskChangesResponse;
+  diffs?: Record<string, TaskFileDiff>;
+}
+
+export interface GoalRunDetailDTO extends GoalRunSummaryDTO {
+  plan: { version?: number; artifacts?: GoalRunPlanArtifact[] };
+  planning_meta: Record<string, unknown>;
+  execution: GoalRunExecutionSnapshot;
+  workspace: GoalRunWorkspaceSnapshot;
+}
+
+export interface GoalPublicationDTO {
+  id: string;
+  goal_run_id: string;
+  task_id: string;
+  repo_slug: string;
+  source_branch: string;
+  target_branch: string;
+  tree_sha: string;
+  commit_sha?: string | null;
+  remote_commit_sha?: string | null;
+  provider?: string | null;
+  request_number?: string | null;
+  request_url?: string | null;
+  request_title?: string | null;
+  status: "pending" | "published" | "error" | string;
+  pushed: boolean;
+  error?: string | null;
+  published_by?: string | null;
+  published_at?: string | null;
+  created_at?: string | null;
+}
+
+export interface GoalPublishResultDTO {
+  ok: boolean;
+  publications: GoalPublicationDTO[];
+  detail?: string | null;
+}
+
 /** Body to answer an agent's blocking questions and resume the paused phase. */
 export interface PlanningAnswerBody {
   /** Map of question id → chosen option or free text (an "Other" answer). */
@@ -503,6 +609,10 @@ export interface PlanningStartBody {
   planner_id: string;
   reviewer_id?: string | null;
   objective?: string | null;
+}
+
+export interface PlanningGuidanceBody {
+  guidance: string;
 }
 
 /** Body to approve the plan and start strict execution. */

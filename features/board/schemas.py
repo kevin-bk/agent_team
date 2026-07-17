@@ -353,6 +353,12 @@ class PlanningChangeRequestCreate(BaseModel):
     objective: str | None = Field(default=None, max_length=20000)
 
 
+class PlanningGuidanceCreate(BaseModel):
+    """Human guidance used to resume an intentionally paused planner."""
+
+    guidance: str = Field(min_length=1, max_length=20000)
+
+
 class PlanningRunCreate(BaseModel):
     """Approve the drafted plan and start strict execution against it."""
 
@@ -444,10 +450,14 @@ class PlanningInfoDTO(BaseModel):
     objective: str | None = None
     #: Whether a planning job is actively drafting artifacts right now.
     is_planning: bool = False
+    #: A stop request is in flight; the active role has not parked yet.
+    pause_requested: bool = False
     #: Approval metadata (backend-owned; never written by an agent).
     approved: bool = False
     approved_by: str | None = None
     approved_at: str | None = None
+    #: Immutable approved goal revision currently bound to this workspace.
+    current_goal_run_id: str | None = None
     #: Last adversarial reviewer verdict (``pass``/``fail``/``needs_human``).
     review_verdict: str | None = None
     #: Structured review detail, null when no valid active review exists.
@@ -467,6 +477,70 @@ class PlanningInfoDTO(BaseModel):
     artifacts: list[PlanningArtifactDTO] = Field(default_factory=list)
     #: Blocking questions an agent raised, shown as cards when waiting for answers.
     questions: list[PlanningQuestionDTO] = Field(default_factory=list)
+
+
+class GoalRunSummaryDTO(BaseModel):
+    """One immutable approved goal revision in the task's history."""
+
+    id: str
+    task_id: str
+    run_no: int
+    objective: str = ""
+    contract_etag: str
+    status: str
+    outcome: str | None = None
+    approved_by: str | None = None
+    approved_at: str | None = None
+    started_at: str | None = None
+    completed_at: str | None = None
+    created_at: str | None = None
+    artifact_count: int = 0
+    changed_file_count: int = 0
+    receipt_count: int = 0
+    verdict: str | None = None
+
+
+class GoalRunDetailDTO(GoalRunSummaryDTO):
+    """Historical plan, workspace, and proof snapshots for one goal run."""
+
+    plan: dict = Field(default_factory=dict)
+    planning_meta: dict = Field(default_factory=dict)
+    execution: dict = Field(default_factory=dict)
+    workspace: dict = Field(default_factory=dict)
+
+
+class GoalPublishRequest(BaseModel):
+    """Human approval to publish the current tree of every changed repo."""
+
+    draft: bool = False
+
+
+class GoalPublicationDTO(BaseModel):
+    id: str
+    goal_run_id: str
+    task_id: str
+    repo_slug: str
+    source_branch: str
+    target_branch: str
+    tree_sha: str
+    commit_sha: str | None = None
+    remote_commit_sha: str | None = None
+    provider: str | None = None
+    request_number: str | None = None
+    request_url: str | None = None
+    request_title: str | None = None
+    status: str
+    pushed: bool = False
+    error: str | None = None
+    published_by: str | None = None
+    published_at: str | None = None
+    created_at: str | None = None
+
+
+class GoalPublishResultDTO(BaseModel):
+    ok: bool
+    publications: list[GoalPublicationDTO] = Field(default_factory=list)
+    detail: str | None = None
 
 
 class JournalEntryDTO(BaseModel):

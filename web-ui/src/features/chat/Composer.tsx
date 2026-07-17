@@ -29,36 +29,60 @@ export function Composer({
   onCancel,
   onUpload,
   onDeleteUpload,
+  runningMode = "steer",
+  idlePlaceholder = "Message the agent…",
+  sendLabel = "Send",
+  stopLabel = "Stop the run",
+  disabled = false,
+  stopping = false,
 }: {
   running: boolean;
-  onSend: (text: string, attachments: UserAttachment[]) => void;
-  onSteer: (text: string, mode: "queue" | "interrupt" | "steer") => void;
+  onSend: (
+    text: string,
+    attachments: UserAttachment[],
+  ) => void | Promise<void>;
+  onSteer?: (text: string, mode: "queue" | "interrupt" | "steer") => void;
   onCancel: () => void;
   onUpload?: (files: File[]) => Promise<AttachmentDTO[]>;
   onDeleteUpload?: (dto: AttachmentDTO) => Promise<unknown> | void;
+  runningMode?: "steer" | "stop-only";
+  idlePlaceholder?: string;
+  sendLabel?: string;
+  stopLabel?: string;
+  disabled?: boolean;
+  stopping?: boolean;
 }) {
   const [text, setText] = useState("");
   const [dragOver, setDragOver] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const att = usePendingAttachments(
     onUpload ?? (async () => []),
     onDeleteUpload,
   );
 
-  const submit = () => {
+  const submit = async () => {
+    if (disabled || submitting) return;
     const value = text.trim();
     const attachments = att.toUserAttachments();
     if (running) {
-      if (!value) return;
+      if (!value || runningMode === "stop-only" || !onSteer) return;
       onSteer(value, "queue");
       setText("");
       return;
     }
     if (!value && attachments.length === 0) return;
     if (att.uploading) return;
-    onSend(value, attachments);
-    setText("");
-    att.clear();
+    setSubmitting(true);
+    try {
+      await onSend(value, attachments);
+      setText("");
+      att.clear();
+    } catch {
+      // The caller owns error reporting. Keep the draft so the human can retry.
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const pickFiles = (files: FileList | null) => {
@@ -86,14 +110,14 @@ export function Composer({
   const steerWith = (mode: "queue" | "interrupt" | "steer") => {
     const value = text.trim();
     if (!value) return;
-    onSteer(value, mode);
+    onSteer?.(value, mode);
     setText("");
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      submit();
+      void submit();
     }
   };
 
@@ -140,9 +164,12 @@ export function Composer({
             rows={1}
             placeholder={
               running
-                ? "Steer the running agent… (Enter to queue)"
-                : "Message the agent…"
+                ? runningMode === "stop-only"
+                  ? "Stop the planner before adding guidance…"
+                  : "Steer the running agent… (Enter to queue)"
+                : idlePlaceholder
             }
+            disabled={disabled || (running && runningMode === "stop-only")}
             className="max-h-48 min-h-[40px] resize-none rounded-none border-0 bg-transparent shadow-none focus-visible:border-transparent focus-visible:ring-0"
           />
           <div className="flex items-center justify-between gap-2 border-t border-border px-2 py-1.5">
@@ -152,7 +179,7 @@ export function Composer({
                 size="icon"
                 onClick={() => fileRef.current?.click()}
                 title="Attach files or images"
-                disabled={running}
+                disabled={running || disabled}
                 className="shrink-0 text-muted-foreground hover:text-primary"
               >
                 <Paperclip className="h-4 w-4" />
@@ -160,14 +187,25 @@ export function Composer({
             ) : (
               <span />
             )}
-            {running ? (
+            {running && runningMode === "stop-only" ? (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={onCancel}
+                disabled={stopping}
+                title={stopLabel}
+              >
+                <Square className="h-3.5 w-3.5" />
+                {stopping ? "Stopping…" : stopLabel}
+              </Button>
+            ) : running ? (
               <div className="flex items-center gap-1">
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <Button
                       variant="secondary"
                       size="sm"
-                      disabled={!text.trim()}
+                      disabled={!text.trim() || disabled}
                     >
                       Steer <ChevronDown className="h-3.5 w-3.5" />
                     </Button>
@@ -196,10 +234,16 @@ export function Composer({
             ) : (
               <Button
                 size="sm"
-                onClick={submit}
-                disabled={att.uploading || (!text.trim() && !att.hasReady)}
+                onClick={() => void submit()}
+                disabled={
+                  disabled
+                  || submitting
+                  || att.uploading
+                  || (!text.trim() && !att.hasReady)
+                }
               >
-                <Send className="h-3.5 w-3.5" /> Send
+                <Send className="h-3.5 w-3.5" />
+                {submitting ? "Sending…" : sendLabel}
               </Button>
             )}
           </div>
