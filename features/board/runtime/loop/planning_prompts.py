@@ -166,9 +166,9 @@ _TASKS_SCHEMA = (
     '      "verification": {\n'
     '        "profiles": ["code", "ui_admin"],\n'
     '        "test_change": "none|add|update",\n'
-    '        "feature_commands": [{"repo": "repo-slug", '
+    '        "feature_commands": [{"repo": "repo-slug", "cwd": ".", '
     '"command": "exact focused test command"}],\n'
-    '        "regression_commands": [{"repo": "repo-slug", '
+    '        "regression_commands": [{"repo": "repo-slug", "cwd": ".", '
     '"command": "exact regression command"}],\n'
     '        "required_evidence": []\n'
     "      },\n"
@@ -249,7 +249,12 @@ def build_planning_prompt(
         "paths. For every task, classify its verification profiles and whether "
         "automated tests must be added or updated. UI/visual profiles require "
         "scenario evidence plus a real screenshot/trace/report artifact; AI "
-        "profiles require scenario evidence. Write every `feature_commands` and "
+        "profiles require scenario evidence. `required_evidence` accepts only "
+        "standard evidence section identifiers: `commands`, `criteria`, "
+        "`scenarios`, and `artifacts`; never put command names, log descriptions, "
+        "or other free text there. Put executable checks in `feature_commands` "
+        "or `regression_commands`, and scope/diff expectations in `acceptance`. "
+        "Write every `feature_commands` and "
         "`regression_commands` entry as a structured `{repo, command}` object. "
         "Use the exact assigned repository slug in `repo`; put only the command "
         "to run inside that repo in `command` (do not prefix it with `cd`). Never "

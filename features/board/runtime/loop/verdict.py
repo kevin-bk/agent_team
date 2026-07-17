@@ -174,9 +174,18 @@ def validate_trusted_receipts(
         command = str(receipt.get("command") or "").strip()
         if command:
             repo = str(receipt.get("repo") or "").strip()
+            working_directory = str(receipt.get("working_directory") or repo).strip()
+            if repo and working_directory not in {"", repo, "."}:
+                relative = working_directory.removeprefix(f"{repo}/")
+                repo = f"{repo}:{relative}"
             observed_commands.add((repo, " ".join(command.split())))
         code = _exit_code(receipt.get("exit_code"))
-        if code is None or code != 0 or receipt.get("timed_out") is True:
+        passed = (
+            receipt.get("status") == "pass"
+            if receipt.get("status") is not None
+            else code == 0 and receipt.get("timed_out") is not True
+        )
+        if code is None or not passed:
             errors.append(
                 f"{where} did not pass (exit_code={receipt.get('exit_code')}, "
                 f"timed_out={bool(receipt.get('timed_out'))})"

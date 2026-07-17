@@ -48,3 +48,33 @@ stay in lockstep.
 - *Resumed runs failed re-`chmod`ing files created by the mapped sandbox uid*:
   permission preparation is now idempotent — it skips paths that already carry
   the required bits.
+
+---
+
+## 2. Loop control flow: fail-closed evaluator, resumable blocked tasks, planner contract prompts
+
+**Features**
+
+- Verification command entries support an optional repo-relative `cwd`
+  (`{repo, cwd?, command}`), normalized fail-closed (no absolute paths, no
+  `..`); dedup keys, labels and receipt matching are cwd-aware.
+- Receipt pass/fail honours a policy-declared expected exit code instead of
+  hard-coding 0.
+- The planner prompt states the `required_evidence` enum (`commands`,
+  `criteria`, `scenarios`, `artifacts`) and routes command/scope details to
+  their proper fields, so plans stop failing schema validation with free text.
+
+**Bugs → root cause → fix**
+
+- *Evaluator infrastructure errors burned the whole attempt budget*: the loop
+  was fail-open — an evaluator exception (or a `None` verdict from an adapter
+  that converts failures instead of raising) triggered another builder attempt
+  with no reviewer feedback. Seven redundant builder turns ran against one
+  broken evaluator. Both paths now stop immediately at `needs_human` with a
+  blocking journal entry; the completed builder turn is counted once.
+- *Resume returned HTTP 200 but ran zero attempts*: the task-graph scheduler
+  only selects `pending` tasks, while a failed run leaves `blocked` markers;
+  dependent tasks then had unmet dependencies and the graph immediately
+  returned `needs_human`. Starting a graph (an explicit human Resume) now
+  resets both `in_progress` and `blocked` unfinished tasks to `pending`;
+  completed tasks stay untouched.
