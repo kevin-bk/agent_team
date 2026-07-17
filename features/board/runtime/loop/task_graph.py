@@ -57,6 +57,7 @@ OUTCOME_PLAN_CHANGE = "plan_change"
 #: Outcome when the per-task generator raised blocking questions and paused for
 #: a human to answer them.
 OUTCOME_NEEDS_ANSWERS = "needs_answers"
+OUTCOME_CAPPED = "capped"
 
 
 async def run_task_graph(
@@ -67,6 +68,7 @@ async def run_task_graph(
     run_generator: RunGeneratorFn,
     make_evaluator: MakeEvaluatorFn,
     max_attempts_per_task: int = 3,
+    max_total_attempts: int | None = None,
     budget: LoopBudget | None = None,
     cancel: asyncio.Event | None = None,
     on_status: OnStatusFn | None = None,
@@ -87,6 +89,7 @@ async def run_task_graph(
     verification grades the whole SPEC once.
     """
     ledger = LoopLedger(budget=budget or LoopBudget())
+    total_attempts = 0
 
     def _completed() -> int:
         return sum(
@@ -120,6 +123,7 @@ async def run_task_graph(
         OUTCOME_NEEDS_HUMAN: ("state_change", "warning", "Plan stopped — needs human"),
         OUTCOME_BUDGET: ("risk", "warning", "Plan stopped — resource budget exceeded"),
         OUTCOME_CANCELLED: ("state_change", "warning", "Plan execution cancelled"),
+        OUTCOME_CAPPED: ("risk", "warning", "Plan stopped — total attempt cap reached"),
     }
 
     def _terminal(state: LoopState, outcome: str) -> LoopOutcome:
@@ -133,16 +137,22 @@ async def run_task_graph(
                 title=title,
                 actor_type="system",
                 severity=severity,
-                metadata={"outcome": outcome, "completed": _completed()},
+                metadata={
+                    "outcome": outcome,
+                    "completed": _completed(),
+                    "attempts_used": total_attempts,
+                    "max_total_attempts": max_total_attempts,
+                },
             )
         _publish(state, outcome=outcome)
         return LoopOutcome(outcome, _completed())
 
-    # A prior run may have crashed mid-task, leaving an ``in_progress`` marker on
-    # disk. Reset those to ``pending`` so the scheduler can pick them up again
-    # instead of wedging behind a task nothing is driving.
+    # A prior run may have crashed mid-task or exhausted its per-task attempts,
+    # leaving an ``in_progress`` or ``blocked`` marker on disk. Starting this
+    # graph again is an explicit human Resume action, so make unfinished tasks
+    # runnable again. Completed work remains untouched.
     for r in artifacts.task_list(workspace_path):
-        if r["status"] == "in_progress":
+        if r["status"] in {"in_progress", "blocked"}:
             await asyncio.to_thread(
                 artifacts.set_task_status, workspace_path, r["id"], "pending"
             )
@@ -161,6 +171,8 @@ async def run_task_graph(
             return _terminal(LoopState.CANCELLED, OUTCOME_CANCELLED)
         if ledger.exceeded() is not None:
             return _terminal(LoopState.WAITING_FOR_HUMAN, OUTCOME_BUDGET)
+        if max_total_attempts is not None and total_attempts >= max_total_attempts:
+            return _terminal(LoopState.WAITING_FOR_HUMAN, OUTCOME_CAPPED)
 
         rows = artifacts.task_list(workspace_path)
         nxt = artifacts.next_runnable_task(rows)
@@ -187,13 +199,18 @@ async def run_task_graph(
         )
         _publish(LoopState.RUNNING)
 
+        remaining_attempts = (
+            max_attempts_per_task
+            if max_total_attempts is None
+            else min(max_attempts_per_task, max_total_attempts - total_attempts)
+        )
         outcome = await run_loop(
             task_id=task_id,
             objective=planning_prompts.build_task_objective(nxt),
             workspace_path=workspace_path,
             run_generator=run_generator,
             evaluator=make_evaluator(nxt),
-            max_attempts=max_attempts_per_task,
+            max_attempts=remaining_attempts,
             cancel=cancel,
             on_status=None,  # the orchestrator owns the overall lifecycle state
             plan_path=artifacts.PLAN_PATH,
@@ -204,6 +221,7 @@ async def run_task_graph(
             journal_terminal=False,  # the graph journals task-level lines instead
             max_zero_streak=max_zero_streak,
         )
+        total_attempts += outcome.attempts
 
         if outcome.outcome == "complete":
             await asyncio.to_thread(
@@ -263,7 +281,10 @@ async def run_task_graph(
     # Every task is complete. Optionally grade the whole SPEC once as a backstop
     # against tasks that each pass but do not add up to the objective.
     if final_verify:
+        if max_total_attempts is not None and total_attempts >= max_total_attempts:
+            return _terminal(LoopState.WAITING_FOR_HUMAN, OUTCOME_CAPPED)
         attempt_id = await asyncio.to_thread(_open_attempt, task_id)
+        total_attempts += 1
         verdict = None
         try:
             verdict = await make_evaluator(None).evaluate(

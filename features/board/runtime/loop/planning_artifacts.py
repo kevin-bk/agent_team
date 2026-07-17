@@ -400,7 +400,7 @@ def normalize_verification(raw: object) -> dict:
 
 
 def normalize_verification_command(raw: object) -> str | dict[str, str] | None:
-    """Normalize a legacy string or structured ``{repo, command}`` entry."""
+    """Normalize a legacy string or structured ``{repo, cwd?, command}`` entry."""
     if isinstance(raw, str):
         command = raw.strip()
         return command or None
@@ -410,14 +410,25 @@ def normalize_verification_command(raw: object) -> str | dict[str, str] | None:
     command = str(raw.get("command") or "").strip()
     if not repo or not command:
         return None
-    return {"repo": repo, "command": command}
+    cwd = str(raw.get("cwd") or ".").strip()
+    if (
+        not cwd
+        or cwd.startswith(("/", "\\"))
+        or ".." in cwd.replace("\\", "/").split("/")
+    ):
+        return None
+    result = {"repo": repo, "command": command}
+    if cwd != ".":
+        result["cwd"] = cwd.replace("\\", "/")
+    return result
 
 
 def verification_command_key(raw: object) -> tuple[str, str]:
     """Return a stable ``(repo, command)`` identity for de-duplication."""
     normalized = normalize_verification_command(raw)
     if isinstance(normalized, dict):
-        repo = normalized["repo"]
+        cwd = normalized.get("cwd", ".")
+        repo = normalized["repo"] if cwd == "." else f"{normalized['repo']}:{cwd}"
         command = normalized["command"]
     elif isinstance(normalized, str):
         repo = ""
@@ -431,7 +442,9 @@ def verification_command_label(raw: object) -> str:
     """Render one command entry for prompts and validation errors."""
     normalized = normalize_verification_command(raw)
     if isinstance(normalized, dict):
-        return f"{normalized['repo']}: {normalized['command']}"
+        cwd = normalized.get("cwd", ".")
+        prefix = normalized["repo"] if cwd == "." else f"{normalized['repo']}/{cwd}"
+        return f"{prefix}: {normalized['command']}"
     return normalized if isinstance(normalized, str) else ""
 
 
