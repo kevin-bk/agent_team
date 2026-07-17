@@ -47,6 +47,8 @@ class BoardUpdate(BaseModel):
     #: Auto-approve strict plans whose risk intake lands in the ``quick`` lane
     #: (first draft only; normal/risk lanes always park for a human).
     planning_auto_approve_quick: bool | None = None
+    #: Automatic reviewer-driven planner re-drafts (0 disables; bounded for safety).
+    planning_review_max_redrafts: int | None = Field(default=None, ge=0, le=10)
     #: Isolated-runtime override for this board (see ``RuntimeProfile`` /
     #: ``config.OVERLAY_FIELDS``): provider/runtime_strategy/image/cpu/memory_mb/
     #: idle_timeout_minutes/strict_isolation/workspace_mode/... Empty = env default.
@@ -93,6 +95,8 @@ class BoardDTO(BaseModel):
     planning_skill: str = ""
     #: Auto-approve quick-lane plans on their first draft (default off).
     planning_auto_approve_quick: bool = False
+    #: Automatic reviewer-driven planner re-drafts (0 disables).
+    planning_review_max_redrafts: int = 0
     #: Isolated-runtime override for this board (owner-only; may embed tuning that
     #: overlays the env defaults). Empty object = use the process env defaults.
     runtime_profile: dict = Field(default_factory=dict)
@@ -269,6 +273,15 @@ class LoopTaskDTO(BaseModel):
     depends_on: list[str] = Field(default_factory=list)
 
 
+class LoopReviewerRunDTO(BaseModel):
+    """One plan-review run whose fresh transcript belongs in Work history."""
+
+    run_id: str
+    conversation_id: str
+    agent_id: str
+    created_at: str | None = None
+
+
 class LoopInfoDTO(BaseModel):
     """Snapshot of a task's autonomous loop for the cockpit."""
 
@@ -293,6 +306,9 @@ class LoopInfoDTO(BaseModel):
     planner_agent_id: str | None = None
     generator_agent_id: str | None = None
     evaluator_agent_id: str | None = None
+    #: Every reviewer uses a fresh conversation. Preserve all of them so
+    #: redraft cycles remain visible instead of exposing only the latest turn.
+    reviewer_runs: list[LoopReviewerRunDTO] = Field(default_factory=list)
     #: The loop run streaming right now (any role) + its conversation, so the
     #: cockpit attaches the live stream to whichever role is currently working.
     active_run_id: str | None = None
@@ -408,6 +424,17 @@ class PlanningArtifactDTO(BaseModel):
     content: str | None = None
 
 
+class PlanReviewDTO(BaseModel):
+    """Validated, canonical projection of ``PLAN_REVIEW.json``."""
+
+    version: int = 1
+    verdict: Literal["pass", "fail", "needs_human"]
+    blocking_issues: list[str] = Field(default_factory=list)
+    suggested_fixes: list[str] = Field(default_factory=list)
+    risk_level: Literal["low", "medium", "high"]
+    reviewed_artifacts: list[str] = Field(default_factory=list)
+
+
 class PlanningInfoDTO(BaseModel):
     """Snapshot of a task's strict planning phase for the cockpit."""
 
@@ -423,6 +450,11 @@ class PlanningInfoDTO(BaseModel):
     approved_at: str | None = None
     #: Last adversarial reviewer verdict (``pass``/``fail``/``needs_human``).
     review_verdict: str | None = None
+    #: Structured review detail, null when no valid active review exists.
+    plan_review: PlanReviewDTO | None = None
+    #: Durable reviewer-driven redraft progress for the current planning cycle.
+    review_attempts: int = 0
+    review_max_redrafts: int = 0
     #: Lane derived from the planner's risk intake (``quick``/``normal``/
     #: ``risk``), or ``None`` when the planner wrote no usable ``INTAKE.json``.
     #: Recomputed from disk, never trusted from the agent.

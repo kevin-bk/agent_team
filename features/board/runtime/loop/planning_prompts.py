@@ -605,6 +605,32 @@ def build_answers_addendum(answered: list[dict], note: str | None = None) -> str
     return "\n".join(lines)
 
 
+def build_review_addendum(
+    blocking_issues: list[str], suggested_fixes: list[str] | None = None
+) -> str:
+    """Render validated reviewer feedback for a bounded planner redraft."""
+    issues = [str(item).strip() for item in blocking_issues if str(item).strip()]
+    fixes = [str(item).strip() for item in (suggested_fixes or []) if str(item).strip()]
+    lines = [
+        "## Adversarial review feedback — redraft required",
+        "The previous draft was rejected by the configured plan reviewer.",
+        "Resolve every blocking issue while preserving valid parts of the contract.",
+        "",
+        "### Blocking issues",
+        _bullets(issues),
+    ]
+    if fixes:
+        lines.extend(["", "### Suggested fixes", _bullets(fixes)])
+    lines.extend(
+        [
+            "",
+            "Overwrite the planning artifacts with the corrected revision. Do not "
+            "implement source changes in this turn.",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def build_strict_evaluator_prompt(
     *,
     objective: str,

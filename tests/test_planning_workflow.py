@@ -20,9 +20,19 @@ from agent_team.features.board.runtime.loop.status import LoopState
 from agent_team.features.board.runtime.loop.verdict import LoopVerdict
 
 
+def _run_planning_threads_inline(monkeypatch) -> None:
+    """Keep this pure unit-test module independent of executor shutdown timing."""
+
+    async def inline(func, /, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(planning_module.asyncio, "to_thread", inline)
+
+
 @pytest.mark.asyncio
 async def test_planning_job_accepts_extended_task_runtime_context(monkeypatch, tmp_path):
     """The shared task lookup includes the approved contract fingerprint."""
+    _run_planning_threads_inline(monkeypatch)
     states = []
     monkeypatch.setattr(
         planning_module,
@@ -71,6 +81,7 @@ async def test_planning_job_accepts_extended_task_runtime_context(monkeypatch, t
 @pytest.mark.asyncio
 async def test_autonomous_loop_accepts_extended_task_runtime_context(monkeypatch, tmp_path):
     """Execution must ignore the approval etag when only workspace/board are needed."""
+    _run_planning_threads_inline(monkeypatch)
     sentinel = object()
     monkeypatch.setattr(
         loop_service,
@@ -136,6 +147,82 @@ def test_approved_etags_only_existing(tmp_path):
     etags = A.approved_etags(ws)
     assert set(etags) == {"SPEC.md", "PLAN.md"}
     assert etags["SPEC.md"] == A.etag("spec")
+
+
+# ── PLAN_REVIEW.json validation + lifecycle ─────────────────────────────────
+def _valid_plan_review(verdict: object = "pass") -> dict:
+    return {
+        "version": 1,
+        "verdict": verdict,
+        "blocking_issues": [],
+        "suggested_fixes": [],
+        "risk_level": "low",
+        "reviewed_artifacts": [A.SPEC_PATH, A.PLAN_PATH, A.TASKS_PATH],
+    }
+
+
+def test_validate_plan_review_accepts_and_canonicalises_known_verdict():
+    data = _valid_plan_review("passed")
+    assert A.validate_plan_review(data) == []
+    normalized = A.normalize_plan_review(data)
+    assert normalized is not None
+    assert normalized["verdict"] == "pass"
+
+
+@pytest.mark.parametrize("verdict", ["LGTM", 42, ["fail"]])
+def test_validate_plan_review_rejects_unknown_or_non_scalar_verdict(verdict):
+    errors = A.validate_plan_review(_valid_plan_review(verdict))
+    assert any("verdict" in error for error in errors)
+
+
+def test_validate_plan_review_rejects_missing_and_malformed_fields():
+    data = _valid_plan_review()
+    data.pop("suggested_fixes")
+    data["blocking_issues"] = "none"
+    data["risk_level"] = "critical"
+    errors = A.validate_plan_review(data)
+    assert any("suggested_fixes" in error for error in errors)
+    assert any("blocking_issues" in error for error in errors)
+    assert any("risk_level" in error for error in errors)
+
+
+def test_archive_plan_review_prevents_stale_active_verdict(tmp_path):
+    ws = str(tmp_path)
+    A.write_text(ws, A.PLAN_REVIEW_PATH, json.dumps(_valid_plan_review()))
+    dest = A.archive_plan_review(ws)
+    assert dest is not None and "archive/plan-reviews/" in dest
+    assert not A.exists(ws, A.PLAN_REVIEW_PATH)
+    assert A.read_plan_review(ws) is None
+    assert A.read_text(ws, dest)
+
+
+def test_planning_info_exposes_review_content_and_structured_detail(tmp_path):
+    from agent_team.features.board import router as board_router
+
+    ws = str(tmp_path)
+    review = _valid_plan_review("fail")
+    review["blocking_issues"] = ["Missing rollback"]
+    A.write_text(ws, A.PLAN_REVIEW_PATH, json.dumps(review))
+    task = SimpleNamespace(
+        id="task-1",
+        workspace_path=ws,
+        loop_state=LoopState.WAITING_PLAN_APPROVAL.value,
+        planning_mode="strict_plan",
+        objective="Ship safely",
+        planning_meta=lambda: {
+            "approved": False,
+            "review_verdict": "fail",
+            "review_attempts": 1,
+            "review_max_redrafts": 2,
+        },
+    )
+    info = board_router._planning_info(task)
+    artifact = next(a for a in info.artifacts if a.path == A.PLAN_REVIEW_PATH)
+    assert artifact.content is not None
+    assert info.plan_review is not None
+    assert info.plan_review.blocking_issues == ["Missing rollback"]
+    assert info.review_attempts == 1
+    assert info.review_max_redrafts == 2
 
 
 # ── TASKS.json validation ────────────────────────────────────────────────────
@@ -422,17 +509,321 @@ def test_planning_prompt_requires_risk_intake():
 def test_should_auto_approve_guards():
     from agent_team.features.board.runtime.loop.planning import _should_auto_approve
 
-    ok = dict(allow=True, board_opt_in=True, lane="quick", review_verdict=None)
+    ok = dict(allow=True, board_opt_in=True, lane="quick", review_verdict="pass")
     assert _should_auto_approve(**ok)
-    assert _should_auto_approve(**{**ok, "review_verdict": "pass"})
     # Any missing guard falls back to human approval:
     assert not _should_auto_approve(**{**ok, "allow": False})  # re-draft
     assert not _should_auto_approve(**{**ok, "board_opt_in": False})
     assert not _should_auto_approve(**{**ok, "lane": None})  # no intake
     assert not _should_auto_approve(**{**ok, "lane": "normal"})
     assert not _should_auto_approve(**{**ok, "lane": "risk"})
+    assert not _should_auto_approve(**{**ok, "review_verdict": None})
     assert not _should_auto_approve(**{**ok, "review_verdict": "fail"})
     assert not _should_auto_approve(**{**ok, "review_verdict": "needs_human"})
+    assert not _should_auto_approve(**{**ok, "review_verdict": "error"})
+
+
+@pytest.mark.asyncio
+async def test_reviewer_requires_valid_current_artifact(monkeypatch, tmp_path):
+    _run_planning_threads_inline(monkeypatch)
+    ws = str(tmp_path)
+    A.write_text(ws, A.SPEC_PATH, "spec")
+    A.write_text(ws, A.PLAN_PATH, "plan")
+    A.write_text(ws, A.TASKS_PATH, json.dumps({"version": 1, "tasks": []}))
+    monkeypatch.setattr(planning_module, "_create_loop_run", lambda **_kwargs: "review-1")
+    monkeypatch.setattr(
+        planning_module.task_journal, "ingest_agent_notes", lambda **_kwargs: None
+    )
+
+    async def completed(_run_id):
+        A.write_text(ws, A.PLAN_REVIEW_PATH, json.dumps(_valid_plan_review("fail")))
+        return SimpleNamespace(status="done")
+
+    monkeypatch.setattr(planning_module, "_drive_to_completion", completed)
+    result = await planning_module._run_reviewer(
+        task_id="task-1",
+        reviewer_alias="reviewer",
+        workspace_path=ws,
+    )
+    assert result.verdict == "fail"
+    assert result.data is not None
+    assert result.run_id == "review-1"
+    assert result.review_etag == A.metadata(ws, A.PLAN_REVIEW_PATH).etag
+    assert set(result.reviewed_artifact_etags) == {
+        "SPEC.md",
+        "PLAN.md",
+        "TASKS.json",
+    }
+
+
+@pytest.mark.asyncio
+async def test_reviewer_failure_cannot_reuse_stale_pass(monkeypatch, tmp_path):
+    _run_planning_threads_inline(monkeypatch)
+    ws = str(tmp_path)
+    A.write_text(ws, A.PLAN_REVIEW_PATH, json.dumps(_valid_plan_review("pass")))
+    monkeypatch.setattr(planning_module, "_create_loop_run", lambda **_kwargs: "review-2")
+    monkeypatch.setattr(
+        planning_module.task_journal, "ingest_agent_notes", lambda **_kwargs: None
+    )
+
+    async def failed(_run_id):
+        return SimpleNamespace(status="error")
+
+    monkeypatch.setattr(planning_module, "_drive_to_completion", failed)
+    result = await planning_module._run_reviewer(
+        task_id="task-1",
+        reviewer_alias="reviewer",
+        workspace_path=ws,
+    )
+    assert result.verdict == "error"
+    assert result.data is None
+    assert "status" in result.errors[0]
+    assert not A.exists(ws, A.PLAN_REVIEW_PATH)
+
+
+@pytest.mark.asyncio
+async def test_reviewer_malformed_artifact_is_error(monkeypatch, tmp_path):
+    _run_planning_threads_inline(monkeypatch)
+    ws = str(tmp_path)
+    monkeypatch.setattr(planning_module, "_create_loop_run", lambda **_kwargs: "review-3")
+    monkeypatch.setattr(
+        planning_module.task_journal, "ingest_agent_notes", lambda **_kwargs: None
+    )
+
+    async def completed(_run_id):
+        A.write_text(ws, A.PLAN_REVIEW_PATH, '{"version": 1, "verdict": "LGTM"}')
+        return SimpleNamespace(status="done")
+
+    monkeypatch.setattr(planning_module, "_drive_to_completion", completed)
+    result = await planning_module._run_reviewer(
+        task_id="task-1",
+        reviewer_alias="reviewer",
+        workspace_path=ws,
+    )
+    assert result.verdict == "error"
+    assert result.data is None
+    assert result.errors
+
+
+async def _run_review_cycle(
+    monkeypatch,
+    tmp_path,
+    *,
+    verdicts: list[str],
+    max_redrafts: int,
+    auto_approve_quick: bool = False,
+    reviewer_alias: str | None = "reviewer",
+):
+    _run_planning_threads_inline(monkeypatch)
+    states: list[LoopState] = []
+    meta: dict = {}
+    planner_prompts: list[str] = []
+    journal_entries: list[dict] = []
+    meta_reads = 0
+
+    monkeypatch.setattr(
+        planning_module,
+        "_task_workspace_and_board",
+        lambda _task_id: (str(tmp_path), "board-1", ""),
+    )
+    monkeypatch.setattr(
+        planning_module,
+        "_board_planning_settings",
+        lambda _board_id: SimpleNamespace(
+            conventions="",
+            planning_skill="",
+            auto_approve_quick=auto_approve_quick,
+            review_max_redrafts=max_redrafts,
+        ),
+    )
+    monkeypatch.setattr(
+        planning_module, "_agent_visible_workspace", lambda workspace, _board_id: workspace
+    )
+    monkeypatch.setattr(planning_module, "_board_repo_names", lambda _board_id: [])
+
+    def persist(_task_id, *, state, meta_updates=None, **_kwargs):
+        states.append(state)
+        meta.update(meta_updates or {})
+
+    def read_meta(_task_id):
+        nonlocal meta_reads
+        meta_reads += 1
+        return dict(meta)
+
+    monkeypatch.setattr(planning_module, "_persist_planning", persist)
+    monkeypatch.setattr(planning_module, "_planning_meta", read_meta)
+
+    def create_run(**kwargs):
+        planner_prompts.append(kwargs["prompt"])
+        return f"planner-{len(planner_prompts)}"
+
+    monkeypatch.setattr(planning_module, "_create_loop_run", create_run)
+
+    async def completed(_run_id):
+        return SimpleNamespace(status="done")
+
+    monkeypatch.setattr(planning_module, "_drive_to_completion", completed)
+    monkeypatch.setattr(
+        planning_module.task_journal, "ingest_agent_notes", lambda **_kwargs: None
+    )
+    monkeypatch.setattr(
+        planning_module.task_journal,
+        "record",
+        lambda **kwargs: journal_entries.append(kwargs),
+    )
+    monkeypatch.setattr(planning_module.artifacts, "questions_pending", lambda _ws: False)
+    monkeypatch.setattr(planning_module.artifacts, "missing_required", lambda _ws: [])
+    monkeypatch.setattr(
+        planning_module.artifacts,
+        "intake_lane",
+        lambda _ws: SimpleNamespace(
+            lane="quick", flags=(), hard_gates=(), input_type="change"
+        ),
+    )
+
+    queued = list(verdicts)
+    review_calls = 0
+
+    async def review(**_kwargs):
+        nonlocal review_calls
+        review_calls += 1
+        verdict = queued.pop(0)
+        data = None
+        errors: tuple[str, ...] = ()
+        if verdict == "error":
+            errors = ("malformed reviewer output",)
+        else:
+            data = _valid_plan_review(verdict)
+            data["blocking_issues"] = [f"Issue from review {review_calls}"]
+            data["suggested_fixes"] = [f"Fix from review {review_calls}"]
+        return planning_module._PlanReviewResult(
+            verdict=verdict,
+            run_id=f"review-{review_calls}",
+            data=data,
+            errors=errors,
+            review_etag=f"sha256:review-{review_calls}",
+            reviewed_artifact_etags={"SPEC.md": f"sha256:spec-{review_calls}"},
+        )
+
+    monkeypatch.setattr(planning_module, "_run_reviewer", review)
+    if auto_approve_quick:
+        monkeypatch.setattr(
+            planning_module,
+            "_auto_approve_plan",
+            lambda _task_id: pytest.fail("non-pass review must not auto-approve"),
+        )
+
+    state = await planning_module.run_planning_job(
+        task_id="task-1",
+        planner_alias="planner",
+        reviewer_alias=reviewer_alias,
+        objective="Plan the change",
+    )
+    return SimpleNamespace(
+        state=state,
+        states=states,
+        meta=meta,
+        prompts=planner_prompts,
+        review_calls=review_calls,
+        meta_reads=meta_reads,
+        journal_entries=journal_entries,
+    )
+
+
+@pytest.mark.asyncio
+async def test_review_fail_with_default_zero_keeps_manual_flow(monkeypatch, tmp_path):
+    result = await _run_review_cycle(
+        monkeypatch, tmp_path, verdicts=["fail"], max_redrafts=0
+    )
+    assert result.state is LoopState.WAITING_PLAN_APPROVAL
+    assert result.review_calls == 1
+    assert result.meta["review_attempts"] == 0
+    assert result.meta["last_error"] is None
+
+
+@pytest.mark.asyncio
+async def test_no_reviewer_skips_agent_cost_and_requires_human_gate(monkeypatch, tmp_path):
+    result = await _run_review_cycle(
+        monkeypatch,
+        tmp_path,
+        verdicts=[],
+        max_redrafts=2,
+        auto_approve_quick=True,
+        reviewer_alias=None,
+    )
+    assert result.state is LoopState.WAITING_PLAN_APPROVAL
+    assert result.review_calls == 0
+    assert result.meta["review_verdict"] is None
+    assert result.meta["reviewer_id"] is None
+    assert result.meta["auto_approved"] is False
+    suppressed = [
+        entry
+        for entry in result.journal_entries
+        if entry["title"] == "Quick-lane auto-approval skipped: no reviewer"
+    ]
+    assert len(suppressed) == 1
+    assert suppressed[0]["severity"] == "warning"
+    assert suppressed[0]["metadata"] == {
+        "reason": "missing_reviewer",
+        "lane": "quick",
+        "planning_auto_approve_quick": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_review_fail_redrafts_until_pass_with_durable_counter(monkeypatch, tmp_path):
+    result = await _run_review_cycle(
+        monkeypatch,
+        tmp_path,
+        verdicts=["fail", "fail", "pass"],
+        max_redrafts=2,
+    )
+    assert result.state is LoopState.WAITING_PLAN_APPROVAL
+    assert result.review_calls == 3
+    assert len(result.prompts) == 3
+    assert "Adversarial review feedback" not in result.prompts[0]
+    assert "Issue from review 1" in result.prompts[1]
+    assert "Issue from review 2" in result.prompts[2]
+    assert result.meta["review_attempts"] == 2
+    assert result.meta["review_verdict"] == "pass"
+    assert result.meta["last_error"] is None
+    # Each recursive redraft reads the counter back from durable planning meta.
+    assert result.meta_reads == 2
+
+
+@pytest.mark.asyncio
+async def test_review_redraft_cap_parks_with_error(monkeypatch, tmp_path):
+    result = await _run_review_cycle(
+        monkeypatch,
+        tmp_path,
+        verdicts=["fail", "fail", "fail"],
+        max_redrafts=2,
+    )
+    assert result.state is LoopState.WAITING_PLAN_APPROVAL
+    assert result.review_calls == 3
+    assert result.meta["review_attempts"] == 2
+    assert "after 2 automatic re-draft" in result.meta["last_error"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("verdict", ["needs_human", "error"])
+async def test_review_human_or_error_never_redrafts_or_auto_approves(
+    monkeypatch, tmp_path, verdict
+):
+    result = await _run_review_cycle(
+        monkeypatch,
+        tmp_path,
+        verdicts=[verdict],
+        max_redrafts=2,
+        auto_approve_quick=True,
+    )
+    assert result.state is LoopState.WAITING_PLAN_APPROVAL
+    assert result.review_calls == 1
+    assert result.meta["review_attempts"] == 0
+    if verdict == "error":
+        assert "Plan reviewer error" in result.meta["last_error"]
+    else:
+        assert result.meta["last_error"] is None
 
 
 def test_backend_lane_rule_matches_project_harness_classifier():
@@ -853,6 +1244,18 @@ def test_build_answers_addendum_renders_qa_and_note():
     assert "Skipped?" not in addendum
     assert "Keep it simple." in addendum
     assert "Do not re-ask" in addendum
+
+
+def test_build_review_addendum_carries_only_actionable_feedback():
+    addendum = P.build_review_addendum(
+        ["Add rollback steps", "  Prove the migration  ", ""],
+        ["Use the existing migration helper"],
+    )
+    assert "Adversarial review feedback" in addendum
+    assert "Add rollback steps" in addendum
+    assert "Prove the migration" in addendum
+    assert "existing migration helper" in addendum
+    assert "do not implement" in addendum.lower()
 
 
 def test_ask_questions_instruction_in_planner_and_generator_prompts():

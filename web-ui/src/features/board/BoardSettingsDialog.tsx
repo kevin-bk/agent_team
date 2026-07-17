@@ -119,6 +119,9 @@ export function BoardSettingsDialog({
   const [autoApproveQuick, setAutoApproveQuick] = useState(
     board.planning_auto_approve_quick ?? false,
   );
+  const [reviewMaxRedrafts, setReviewMaxRedrafts] = useState(
+    board.planning_review_max_redrafts ?? 0,
+  );
   const [rt, setRt] = useState<RuntimeDraft>(() => toRuntimeDraft(board.runtime_profile));
 
   // Reset the draft whenever the dialog (re)opens for a board.
@@ -131,6 +134,7 @@ export function BoardSettingsDialog({
       setPlanningConventions(board.planning_conventions ?? "");
       setPlanningSkill(board.planning_skill ?? "");
       setAutoApproveQuick(board.planning_auto_approve_quick ?? false);
+      setReviewMaxRedrafts(board.planning_review_max_redrafts ?? 0);
       setRt(toRuntimeDraft(board.runtime_profile));
     }
   }, [open, board]);
@@ -196,6 +200,10 @@ export function BoardSettingsDialog({
         planning_conventions: planningConventions.trim(),
         planning_skill: planningSkill.trim(),
         planning_auto_approve_quick: autoApproveQuick,
+        planning_review_max_redrafts: Math.max(
+          0,
+          Math.min(10, Math.trunc(reviewMaxRedrafts || 0)),
+        ),
         runtime_profile: fromRuntimeDraft(rt),
       });
       toast.success("Board updated");
@@ -330,10 +338,34 @@ export function BoardSettingsDialog({
                 <span className="text-[12.5px] text-muted-foreground/80">
                   When the planner's risk intake classifies a task as quick
                   (0–1 risk flags, no hard gates like auth or data migrations),
-                  the first plan draft is approved automatically instead of
-                  waiting for a human. Normal and risk lanes, and any re-draft
-                  after human feedback, always require human approval.
+                  the first plan draft may be approved automatically only after
+                  a configured reviewer returns pass. Choosing no reviewer,
+                  normal and risk lanes, and any re-draft after human feedback
+                  always require human approval.
+                  <span className="mt-1 block font-medium text-amber-700 dark:text-amber-300">
+                    This setting has no effect for a planning run that selects
+                    No reviewer.
+                  </span>
                 </span>
+              </span>
+            </label>
+            <label className="grid gap-1.5">
+              <span className="text-[12.5px] font-medium text-muted-foreground">
+                Reviewer re-draft limit
+              </span>
+              <Input
+                type="number"
+                min={0}
+                max={10}
+                step={1}
+                value={reviewMaxRedrafts}
+                onChange={(e) => setReviewMaxRedrafts(Number(e.target.value))}
+              />
+              <span className="text-[12.5px] text-muted-foreground/80">
+                When a reviewer returns fail, let the planner correct the plan
+                this many times before waiting for human approval. Zero keeps
+                the current manual review flow; needs-human and reviewer errors
+                always stop immediately.
               </span>
             </label>
           </div>

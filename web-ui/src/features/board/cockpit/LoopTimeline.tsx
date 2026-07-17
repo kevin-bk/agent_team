@@ -35,18 +35,12 @@ import { Spinner } from "@/components/ui/spinner";
 import { formatTimestamp } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { AgentLogo, type ResolvedAgent } from "./agentRoles";
+import {
+  buildRoleSources,
+  type RoleKind,
+  type RoleMeta,
+} from "./roleSources";
 import type { LoopInfoDTO } from "@/api/types";
-
-export type RoleKind = "plan" | "build" | "critic";
-
-export interface RoleMeta {
-  /** Stable unique key (e.g. "plan", "build", "critic-<attemptId>"). */
-  key: string;
-  /** Human label shown on the turn ("Planner", "Builder", "Critic #2"). */
-  label: string;
-  kind: RoleKind;
-  conversationId: string;
-}
 
 interface TaggedBlock {
   role: RoleMeta;
@@ -63,6 +57,13 @@ const ROLE_STYLE: Record<
       "bg-sky-500/15 text-sky-600 ring-1 ring-inset ring-sky-500/30 dark:text-sky-300",
     dot: "bg-sky-500",
     name: "text-sky-700 dark:text-sky-300",
+  },
+  review: {
+    icon: ShieldCheck,
+    badge:
+      "bg-amber-500/15 text-amber-600 ring-1 ring-inset ring-amber-500/30 dark:text-amber-300",
+    dot: "bg-amber-500",
+    name: "text-amber-700 dark:text-amber-300",
   },
   build: {
     icon: Hammer,
@@ -93,41 +94,6 @@ const WRITE_OR_EDIT = new Set([
   "str_replace_editor",
   "multiedit",
 ]);
-
-/** The plan / build / critic conversations that make up a goal, in order. */
-export function buildRoleSources(info: LoopInfoDTO): RoleMeta[] {
-  const out: RoleMeta[] = [];
-  if (info.planner_conversation_id) {
-    out.push({
-      key: "plan",
-      label: "Planner",
-      kind: "plan",
-      conversationId: info.planner_conversation_id,
-    });
-  }
-  if (info.generator_conversation_id) {
-    out.push({
-      key: "build",
-      label: "Builder",
-      kind: "build",
-      conversationId: info.generator_conversation_id,
-    });
-  }
-  for (const a of info.attempts) {
-    const conv =
-      a.critic_conversation_id ??
-      a.evaluations.find((e) => e.conversation_id)?.conversation_id;
-    if (conv) {
-      out.push({
-        key: `critic-${a.id}`,
-        label: `Critic #${a.attempt_no}`,
-        kind: "critic",
-        conversationId: conv,
-      });
-    }
-  }
-  return out;
-}
 
 /**
  * Load every role's persisted transcript, merge by timestamp into one stream,
@@ -353,6 +319,11 @@ function TurnRow({
                 glyphClassName="h-2.5 w-2.5"
               />
               {agent.name}
+            </span>
+          )}
+          {!agent && turn.role.agentId && (
+            <span className="rounded-full border border-border bg-card/70 px-1.5 py-px font-mono text-[10.5px] text-muted-foreground">
+              {turn.role.agentId}
             </span>
           )}
         </div>

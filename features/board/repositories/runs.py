@@ -91,6 +91,18 @@ def get_latest_task_run_by_role(
     )
 
 
+def list_task_runs_by_role(
+    db: Session, *, task_id: str, role: str
+) -> list[AgentTeamRun]:
+    """Return every run of one task role, oldest first for timeline display."""
+    return (
+        db.query(AgentTeamRun)
+        .filter(AgentTeamRun.task_id == task_id, AgentTeamRun.role == role)
+        .order_by(AgentTeamRun.created_at.asc(), AgentTeamRun.human_key.asc())
+        .all()
+    )
+
+
 def get_active_loop_run(db: Session, *, task_id: str) -> AgentTeamRun | None:
     """Return the loop run currently streaming for a task (any role), or None.
 

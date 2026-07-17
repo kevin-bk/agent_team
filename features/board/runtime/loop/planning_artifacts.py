@@ -196,6 +196,81 @@ def approved_etags(workspace_path: str) -> dict[str, str]:
     return out
 
 
+def validate_plan_review(data: object) -> list[str]:
+    """Validate ``PLAN_REVIEW.json`` without raising.
+
+    The reviewer artifact is agent-written and therefore untrusted. Verdict
+    aliases accepted by the shared verdict parser are canonicalised by
+    :func:`normalize_plan_review`, but containers and scalar field types remain
+    strict so values such as ``42`` or ``["fail"]`` cannot become verdicts via
+    string coercion.
+    """
+    errors: list[str] = []
+    if not isinstance(data, dict):
+        return ["PLAN_REVIEW.json must be a JSON object"]
+    if type(data.get("version")) is not int or data.get("version") != 1:
+        errors.append(
+            "PLAN_REVIEW.json: unsupported or missing 'version' (expected 1)"
+        )
+
+    raw_verdict = data.get("verdict")
+    if not isinstance(raw_verdict, str):
+        errors.append("PLAN_REVIEW.json: 'verdict' must be a string")
+    else:
+        # Lazy import avoids the verdict module's existing artifacts import from
+        # becoming a module-import cycle.
+        from agent_team.features.board.runtime.loop.verdict import _coerce_verdict
+
+        if _coerce_verdict(raw_verdict) is None:
+            errors.append(
+                "PLAN_REVIEW.json: 'verdict' must be pass, fail, or needs_human"
+            )
+
+    for field in ("blocking_issues", "suggested_fixes", "reviewed_artifacts"):
+        value = data.get(field)
+        if not isinstance(value, list) or any(
+            not isinstance(item, str) or not item.strip() for item in value
+        ):
+            errors.append(
+                f"PLAN_REVIEW.json: '{field}' must be a list of non-empty strings"
+            )
+
+    risk_level = data.get("risk_level")
+    if not isinstance(risk_level, str) or risk_level.strip().lower() not in {
+        "low",
+        "medium",
+        "high",
+    }:
+        errors.append(
+            "PLAN_REVIEW.json: 'risk_level' must be low, medium, or high"
+        )
+    return errors
+
+
+def normalize_plan_review(data: object) -> dict | None:
+    """Return a canonical validated plan-review object, else ``None``."""
+    if validate_plan_review(data):
+        return None
+    assert isinstance(data, dict)  # narrowed by validation
+    from agent_team.features.board.runtime.loop.verdict import _coerce_verdict
+
+    verdict = _coerce_verdict(data["verdict"])
+    assert verdict is not None
+    return {
+        "version": 1,
+        "verdict": verdict.value,
+        "blocking_issues": [item.strip() for item in data["blocking_issues"]],
+        "suggested_fixes": [item.strip() for item in data["suggested_fixes"]],
+        "risk_level": data["risk_level"].strip().lower(),
+        "reviewed_artifacts": [item.strip() for item in data["reviewed_artifacts"]],
+    }
+
+
+def read_plan_review(workspace_path: str) -> dict | None:
+    """Read and normalise the active reviewer artifact, if it is valid."""
+    return normalize_plan_review(read_json(workspace_path, PLAN_REVIEW_PATH))
+
+
 def missing_required(workspace_path: str) -> list[str]:
     """Required-for-approval artifacts that are absent or blank."""
     return [p for p in REQUIRED_FOR_APPROVAL if not exists(workspace_path, p)]
@@ -590,6 +665,26 @@ def archive_change_request(workspace_path: str) -> str | None:
     write_text(workspace_path, rel_dest, text)
     try:
         os.remove(_safe_abs(workspace_path, PLAN_CHANGE_REQUEST_PATH))
+    except OSError:
+        pass
+    return rel_dest
+
+
+def archive_plan_review(workspace_path: str) -> str | None:
+    """Archive the active plan review before starting a new reviewer turn.
+
+    A reviewer failure must never inherit a valid verdict left by an earlier
+    planning revision. Archiving preserves that evidence for audit while
+    ensuring the active path can only have been produced by the current run.
+    """
+    text = read_text(workspace_path, PLAN_REVIEW_PATH)
+    if not text or not text.strip():
+        return None
+    stamp = datetime.now(tz=UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    rel_dest = f"{ARCHIVE_DIR}/plan-reviews/{stamp}.json"
+    write_text(workspace_path, rel_dest, text)
+    try:
+        os.remove(_safe_abs(workspace_path, PLAN_REVIEW_PATH))
     except OSError:
         pass
     return rel_dest

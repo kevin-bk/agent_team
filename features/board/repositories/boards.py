@@ -101,6 +101,13 @@ def serialize_board(
         planning_auto_approve_quick=bool(
             getattr(board, "planning_auto_approve_quick", False)
         ),
+        planning_review_max_redrafts=max(
+            0,
+            min(
+                10,
+                int(getattr(board, "planning_review_max_redrafts", 0) or 0),
+            ),
+        ),
         # Runtime profile may carry infra tuning; expose only to owners who edit
         # it in board settings (mirrors agent_mcp handling).
         runtime_profile=board.runtime_profile() if my_role == "owner" else {},

@@ -54,6 +54,7 @@ from agent_team.features.board.schemas import (
     LoopEvaluationDTO,
     LoopInfoDTO,
     LoopResumeCreate,
+    LoopReviewerRunDTO,
     LoopTaskDTO,
     MentionCreate,
     MentionResponse,
@@ -65,6 +66,7 @@ from agent_team.features.board.schemas import (
     PlanningQuestionDTO,
     PlanningRunCreate,
     PlanningStartCreate,
+    PlanReviewDTO,
     SkillPackDTO,
     TaskCreate,
     TaskMove,
@@ -252,6 +254,8 @@ async def update_board(
         board.planning_skill = planning_skill
     if payload.planning_auto_approve_quick is not None:
         board.planning_auto_approve_quick = bool(payload.planning_auto_approve_quick)
+    if payload.planning_review_max_redrafts is not None:
+        board.planning_review_max_redrafts = payload.planning_review_max_redrafts
     if payload.runtime_profile is not None:
         from agent_team.features.board.runtime.sandbox.config import validate_overlay
 
@@ -1501,6 +1505,7 @@ async def get_task_loop(task_id: str, request: Request, db: Session = Depends(ge
         RUN_ROLE_EVALUATOR,
         RUN_ROLE_GENERATOR,
         RUN_ROLE_PLANNER,
+        RUN_ROLE_REVIEWER,
     )
     from agent_team.features.board.repositories import attempts as attempts_repo
     from agent_team.features.board.repositories import runs as runs_repo
@@ -1568,6 +1573,9 @@ async def get_task_loop(task_id: str, request: Request, db: Session = Depends(ge
     planner_run = runs_repo.get_latest_task_run_by_role(
         db, task_id=task_id, role=RUN_ROLE_PLANNER
     )
+    reviewer_runs = runs_repo.list_task_runs_by_role(
+        db, task_id=task_id, role=RUN_ROLE_REVIEWER
+    )
     active_run = runs_repo.get_active_loop_run(db, task_id=task_id)
     from agent_team.features.board.runtime.loop import planning_artifacts as artifacts
 
@@ -1596,6 +1604,16 @@ async def get_task_loop(task_id: str, request: Request, db: Session = Depends(ge
             generator_run.agent_alias if generator_run is not None else None
         ),
         evaluator_agent_id=critic_run.agent_alias if critic_run is not None else None,
+        reviewer_runs=[
+            LoopReviewerRunDTO(
+                run_id=run.id,
+                conversation_id=run.conversation_id,
+                agent_id=run.agent_alias,
+                created_at=run.created_at.isoformat() if run.created_at else None,
+            )
+            for run in reviewer_runs
+            if run.conversation_id
+        ],
         active_run_id=active_run.id if active_run is not None else None,
         active_conversation_id=(
             active_run.conversation_id if active_run is not None else None
@@ -1779,6 +1797,7 @@ def _planning_info(task) -> PlanningInfoDTO:
     # Editable artifacts plus the change-request note carry their text so the
     # cockpit can render/edit them (the note is read-only, shown as an alert).
     readable = set(artifacts.EDITABLE_ARTIFACTS.values()) | {
+        artifacts.PLAN_REVIEW_PATH,
         artifacts.PLAN_CHANGE_REQUEST_PATH,
         artifacts.QUESTIONS_PATH,
     }
@@ -1801,6 +1820,7 @@ def _planning_info(task) -> PlanningInfoDTO:
     # Lane comes from the on-disk intake (source of truth, survives restarts);
     # auto_approved from the approval metadata stamped at planning time.
     lane_info = artifacts.intake_lane(task.workspace_path)
+    review_data = artifacts.read_plan_review(task.workspace_path)
     return PlanningInfoDTO(
         task_id=task.id,
         loop_state=task.loop_state,
@@ -1811,6 +1831,9 @@ def _planning_info(task) -> PlanningInfoDTO:
         approved_by=meta.get("approved_by"),
         approved_at=meta.get("approved_at"),
         review_verdict=meta.get("review_verdict"),
+        plan_review=PlanReviewDTO(**review_data) if review_data is not None else None,
+        review_attempts=int(meta.get("review_attempts") or 0),
+        review_max_redrafts=int(meta.get("review_max_redrafts") or 0),
         lane=lane_info.lane,
         lane_hard_gates=list(lane_info.hard_gates),
         auto_approved=bool(meta.get("auto_approved")),

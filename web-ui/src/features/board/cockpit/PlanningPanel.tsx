@@ -215,18 +215,27 @@ function PlanSetupDialog({
                 placeholder="Pick a planner"
               />
             </Field>
-            <Field label="Reviewer" hint="optional">
+            <Field label="Plan review" hint="optional agent cost">
               <SelectMenu
                 value={reviewer}
                 onChange={setReviewer}
                 options={[
-                  { value: "", label: "No reviewer" },
+                  {
+                    value: "",
+                    label: "No reviewer — manual human review",
+                  },
                   ...options.map(agentOpt),
                 ]}
-                placeholder="No reviewer"
+                placeholder="No reviewer — manual human review"
               />
             </Field>
           </div>
+
+          <p className="text-[12.5px] text-muted-foreground/80">
+            {reviewer
+              ? "The selected agent reviews every plan draft and may trigger bounded re-drafts, which uses additional tokens. Only an explicit pass can use quick-lane auto-approval."
+              : "No reviewer skips the extra agent run and token cost. Every completed draft waits at the human approval gate for manual review."}
+          </p>
 
           {lastError && <ErrorNote>{lastError}</ErrorNote>}
         </div>
@@ -368,6 +377,10 @@ export function ReviewStage({
       )?.content ?? null,
     [info.artifacts],
   );
+  const review = info.plan_review ?? null;
+  const reviewVerdict = review?.verdict ?? info.review_verdict ?? null;
+  const reviewIsPass = reviewVerdict === "pass";
+  const reviewNeedsHuman = reviewVerdict === "needs_human";
 
   return (
     <div className="rounded-lg border border-border bg-card p-4">
@@ -402,23 +415,89 @@ export function ReviewStage({
             Auto-approved
           </span>
         )}
-        {info.review_verdict && (
-          <span
-            className={cn(
-              "ml-1 rounded px-1.5 py-0.5 text-[11px] font-medium",
-              info.review_verdict === "pass"
-                ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300"
-                : info.review_verdict === "needs_human"
-                  ? "bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300"
-                  : "bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-300",
-            )}
-          >
-            Reviewer: {info.review_verdict}
-          </span>
-        )}
       </div>
 
       {info.last_error && <ErrorNote>{info.last_error}</ErrorNote>}
+
+      {reviewVerdict && (
+        <div
+          className={cn(
+            "mt-2 rounded-md border p-3",
+            reviewIsPass
+              ? "border-emerald-300 bg-emerald-50 dark:border-emerald-500/30 dark:bg-emerald-500/10"
+              : reviewNeedsHuman
+                ? "border-amber-300 bg-amber-50 dark:border-amber-500/30 dark:bg-amber-500/10"
+                : "border-rose-300 bg-rose-50 dark:border-rose-500/30 dark:bg-rose-500/10",
+          )}
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            {reviewIsPass ? (
+              <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-300" />
+            ) : (
+              <AlertTriangle
+                className={cn(
+                  "h-4 w-4",
+                  reviewNeedsHuman
+                    ? "text-amber-600 dark:text-amber-300"
+                    : "text-rose-600 dark:text-rose-300",
+                )}
+              />
+            )}
+            <span className="text-[12.5px] font-semibold text-foreground">
+              Plan reviewer: {reviewVerdict.replace("_", " ")}
+            </span>
+            {review && (
+              <span className="rounded bg-surface-1/80 px-1.5 py-0.5 text-[10.5px] font-medium uppercase text-muted-foreground">
+                {review.risk_level} risk
+              </span>
+            )}
+            {(info.review_max_redrafts ?? 0) > 0 && (
+              <span className="text-[11px] text-muted-foreground">
+                Re-drafts {info.review_attempts ?? 0}/{info.review_max_redrafts}
+              </span>
+            )}
+          </div>
+
+          {review ? (
+            <div className="mt-2 grid gap-2 text-[12px] text-foreground/90 sm:grid-cols-2">
+              <div>
+                <p className="font-semibold">Blocking issues</p>
+                {review.blocking_issues.length ? (
+                  <ul className="mt-1 list-disc space-y-1 pl-4">
+                    {review.blocking_issues.map((issue, index) => (
+                      <li key={`${index}-${issue}`}>{issue}</li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="mt-1 text-muted-foreground">None reported.</p>
+                )}
+              </div>
+              <div>
+                <p className="font-semibold">Suggested fixes</p>
+                {review.suggested_fixes.length ? (
+                  <ul className="mt-1 list-disc space-y-1 pl-4">
+                    {review.suggested_fixes.map((fix, index) => (
+                      <li key={`${index}-${fix}`}>{fix}</li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="mt-1 text-muted-foreground">None reported.</p>
+                )}
+              </div>
+              {review.reviewed_artifacts.length > 0 && (
+                <p className="text-[11px] text-muted-foreground sm:col-span-2">
+                  Reviewed: {review.reviewed_artifacts.join(", ")}
+                </p>
+              )}
+            </div>
+          ) : (
+            <p className="mt-2 text-[12px] text-muted-foreground">
+              The reviewer run did not produce a valid review artifact. This
+              plan requires human review and cannot be auto-approved.
+            </p>
+          )}
+        </div>
+      )}
 
       {changeRequest && (
         <div className="mt-2 rounded-md border border-amber-300 bg-amber-50 p-2.5 dark:border-amber-500/30 dark:bg-amber-500/10">

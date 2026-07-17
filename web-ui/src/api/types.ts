@@ -292,6 +292,8 @@ export interface BoardDTO {
   planning_skill?: string;
   /** Auto-approve quick-lane plans on their first draft (default off). */
   planning_auto_approve_quick?: boolean;
+  /** Maximum automatic planner re-drafts after reviewer fail (0 disables). */
+  planning_review_max_redrafts?: number;
   /** Isolated-runtime override (owner-only; empty = env defaults). */
   runtime_profile?: BoardRuntimeProfile;
   archived: boolean;
@@ -438,6 +440,16 @@ export interface PlanningArtifactDTO {
   content?: string | null;
 }
 
+/** Validated projection of the active PLAN_REVIEW.json artifact. */
+export interface PlanReviewDTO {
+  version: 1;
+  verdict: "pass" | "fail" | "needs_human";
+  blocking_issues: string[];
+  suggested_fixes: string[];
+  risk_level: "low" | "medium" | "high";
+  reviewed_artifacts: string[];
+}
+
 /** One structured question an agent raised for the human. */
 export interface PlanningQuestion {
   id: string;
@@ -461,6 +473,11 @@ export interface PlanningInfoDTO {
   approved_by?: string | null;
   approved_at?: string | null;
   review_verdict?: string | null;
+  /** Structured detail from a valid active reviewer artifact. */
+  plan_review?: PlanReviewDTO | null;
+  /** Durable reviewer-driven re-draft progress for this planning cycle. */
+  review_attempts?: number;
+  review_max_redrafts?: number;
   /** Lane from the planner's risk intake (quick/normal/risk); null = no intake. */
   lane?: "quick" | "normal" | "risk" | null;
   /** Hard-gate flags that forced the risk lane (empty otherwise). */
@@ -588,6 +605,8 @@ export interface PatchBoardBody {
   planning_skill?: string;
   /** Auto-approve quick-lane plans on their first draft. */
   planning_auto_approve_quick?: boolean;
+  /** Maximum automatic planner re-drafts after reviewer fail (0 disables). */
+  planning_review_max_redrafts?: number;
   /** Isolated-runtime override; empty object = use the env defaults. */
   runtime_profile?: BoardRuntimeProfile;
   archived?: boolean;
@@ -956,6 +975,8 @@ export interface LoopInfoDTO {
   planner_agent_id?: string | null;
   generator_agent_id?: string | null;
   evaluator_agent_id?: string | null;
+  /** Every fresh plan-review transcript, oldest first. */
+  reviewer_runs?: LoopReviewerRunDTO[];
   /** The loop run streaming right now (any role) + its conversation. */
   active_run_id?: string | null;
   active_conversation_id?: string | null;
@@ -967,6 +988,13 @@ export interface LoopInfoDTO {
   attempts: LoopAttemptDTO[];
   /** Live task-graph progress from TASKS.json (empty unless executing task-by-task). */
   tasks?: LoopTaskDTO[];
+}
+
+export interface LoopReviewerRunDTO {
+  run_id: string;
+  conversation_id: string;
+  agent_id: string;
+  created_at?: string | null;
 }
 
 export type LoopTaskStatus =

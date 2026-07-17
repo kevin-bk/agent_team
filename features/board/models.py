@@ -221,6 +221,11 @@ class AgentTeamBoard(Base):
     planning_auto_approve_quick: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False
     )
+    #: Maximum automatic planner re-drafts after a configured plan reviewer
+    #: returns ``fail``. Zero preserves the legacy human-approval flow.
+    planning_review_max_redrafts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
     # ── Jira sync (per-board, Phase 1: one-way pull) ──────────────────────
     #: Master switch — when False the board ignores all Jira config.
     jira_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

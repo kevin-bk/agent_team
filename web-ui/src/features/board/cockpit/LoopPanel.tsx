@@ -43,8 +43,8 @@ import { GoalStepper, type GoalStage } from "./GoalStepper";
 import {
   LoopTimeline,
   useGoalActivity,
-  type RoleKind,
 } from "./LoopTimeline";
+import type { RoleKind } from "./roleSources";
 import { PlanStage, QuestionStage, ReviewStage } from "./PlanningPanel";
 import {
   AgentLogo,
@@ -220,6 +220,7 @@ export function LoopPanel({
   const showActivity =
     !!info &&
     (!!info.planner_conversation_id ||
+      !!info.reviewer_runs?.length ||
       !!info.generator_conversation_id ||
       info.attempts.some(
         (a) =>
@@ -708,6 +709,7 @@ function ResumeControl({
 const ROLE_FILTERS: { key: RoleKind | "all"; label: string }[] = [
   { key: "all", label: "All" },
   { key: "plan", label: "Planner" },
+  { key: "review", label: "Plan reviews" },
   { key: "build", label: "Builder" },
   { key: "critic", label: "Critic" },
 ];

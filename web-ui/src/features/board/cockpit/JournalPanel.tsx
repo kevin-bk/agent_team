@@ -68,6 +68,7 @@ const TYPE_ICON: Record<string, typeof GitBranch> = {
   assumption: ListChecks,
   risk: AlertTriangle,
   note: FileText,
+  plan_review: ListChecks,
 };
 
 const NOTE_TYPES = ["note", "decision", "assumption", "risk"] as const;

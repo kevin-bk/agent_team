@@ -1,6 +1,6 @@
 # Planning workflow
 
-Last updated: 2026-07-05 · [↩ index](../index.md) · Source:
+Last updated: 2026-07-17 · [↩ index](../index.md) · Source:
 [`../../plans/planning-workflow-upgrade.md`](../../plans/planning-workflow-upgrade.md),
 [`../../plans/planning-workflow-implementation-decisions.md`](../../plans/planning-workflow-implementation-decisions.md),
 [`../../plans/loop-quality-and-self-improvement.md`](../../plans/loop-quality-and-self-improvement.md),
@@ -122,14 +122,45 @@ What the lane changes:
   lane badge with the hard gates on hover.
 - **`risk` without a reviewer** logs a warning journal entry — the rigor the
   lane asks for is missing a leg; it surfaces rather than blocks.
-- **`quick` + board opt-in ⇒ auto-approval**: when the board enables
+- **`quick` + board opt-in + reviewer `pass` ⇒ auto-approval**: when the board enables
   *Auto-approve quick-lane plans* (`planning_auto_approve_quick`, default off),
-  a first-draft quick-lane plan whose reviewer (if any) said `pass` is stamped
+  a first-draft quick-lane plan whose configured reviewer explicitly said `pass`
+  is stamped
   with a **system** approval (same artifact validation + etag pinning as a
   human click, `approved_by = system:quick-lane`) and parks at
-  `plan_approved`. Re-drafts after a human requested changes or answered
-  blocking questions are **never** auto-approved — once a human engaged, they
-  get the final look. Execution start remains an explicit action.
+  `plan_approved`. Selecting **No reviewer — manual human review** skips the
+  reviewer agent and its token cost, and always parks at `waiting_plan_approval`
+  even for a quick-lane plan. If the board auto-approve setting is enabled, this
+  suppression emits a warning journal entry with reason `missing_reviewer` so
+  the behavior is never silent. Re-drafts after a human requested changes or
+  answered blocking questions are **never** auto-approved — once a human
+  engaged, they get the final look. Execution start remains an explicit action.
+
+### Plan-review verdicts are typed and fail closed
+
+When a reviewer is configured, the backend validates `PLAN_REVIEW.json` before
+using its verdict. The document must be schema version 1 and contain a recognised
+verdict, string lists for issues/fixes/reviewed artifacts, and a low/medium/high
+risk level. Missing, malformed, or failed reviewer output becomes the explicit
+backend verdict `error`; it is never confused with "no reviewer" and can never
+auto-approve a quick-lane plan. A valid `needs_human` verdict parks at
+`waiting_plan_approval`, where the review card gives the human enough context to
+approve or request changes. `waiting_answers` remains reserved for structured
+`QUESTIONS.json`.
+
+The plan setup dialog makes the cost policy explicit. Its default **No reviewer
+— manual human review** option does not start a reviewer run and requires the
+human approval gate. Selecting an agent opts into the additional reviewer token
+cost, typed verdict and optional bounded re-draft flow.
+
+Before each reviewer turn, the previous active review is archived so a crashed
+run cannot reuse a stale pass. Planning metadata and journal entries record the
+review run id, review etag, and the SPEC/PLAN/TASKS etags that were reviewed.
+These are review provenance, separate from the approved execution contract.
+
+The cockpit shows structured issues, fixes, risk, and re-draft progress in a
+review card. Every reviewer uses a fresh conversation; all reviewer runs are
+therefore returned to Work history instead of exposing only the latest one.
 
 ### Per-board tuning: conventions, planning skill, repo templates
 
@@ -149,11 +180,18 @@ stays backend-owned and is never overridable.
   backend always materialises it into task workspaces (even when it isn't in the
   board's regular `skill_ids`), and `build_planning_prompt` points the planner
   at its workspace folder.
+- **`planning_review_max_redrafts`** (Board settings → *Planning* → *Reviewer
+  re-draft limit*, `0..10`, default `0`): when a valid reviewer verdict is
+  `fail`, automatically re-run the planner with the review's blocking issues and
+  suggested fixes up to this cap. `0` preserves the manual flow. `needs_human`
+  and `error` always stop immediately; exhausting the cap parks for human
+  approval with a clear `last_error`. Automatic re-drafts are never quick-lane
+  auto-approved.
 - **Repo-native templates**: the planner prompt also tells the agent to prefer
   conventions the repository itself ships (`CONTRIBUTING`, `docs/` spec/RFC/ADR
   templates, `AGENTS.md`) for the *content* of `SPEC.md`/`PLAN.md`.
 
-Both board fields are loaded best-effort (`loop/service.py ::
+These board fields are loaded best-effort (`loop/service.py ::
 _board_planning_settings`) — a missing board or DB hiccup degrades to the
 defaults, never a failed run.
 
@@ -187,9 +225,11 @@ prefer repo-native templates (P3 above) for artifact content.
 ## The lifecycle (mapped onto `loop_state`)
 
 ```
-intake → planning ──► waiting_plan_approval ──(approve)──► plan_approved ──► running ──► verification ──► complete
-                            ▲   │ (request changes / edit invalidates approval)
-                            └───┘
+intake → planning ──► review ──► waiting_plan_approval ──(approve)──► plan_approved ──► running ──► verification ──► complete
+             ▲          │ fail + re-draft budget
+             └──────────┘
+                                  ▲   │ (request changes / edit invalidates approval)
+                                  └───┘
 running ──► plan_change_requested   (approved plan turned out wrong; resolve + re-approve)
 running ──► waiting_answers          (blocking questions; human answers, re-plan)
 ```

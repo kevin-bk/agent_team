@@ -603,9 +603,11 @@ class BoardPlanningSettings(NamedTuple):
     planning_skill: str
     #: Auto-approve quick-lane plans on their first draft (default off).
     auto_approve_quick: bool
+    #: Maximum reviewer-driven planner re-drafts (zero disables the loop).
+    review_max_redrafts: int
 
 
-_DEFAULT_PLANNING_SETTINGS = BoardPlanningSettings("", "", False)
+_DEFAULT_PLANNING_SETTINGS = BoardPlanningSettings("", "", False, 0)
 
 
 def _board_planning_settings(board_id: str | None) -> BoardPlanningSettings:
@@ -629,6 +631,13 @@ def _board_planning_settings(board_id: str | None) -> BoardPlanningSettings:
                 planning_skill=(getattr(board, "planning_skill", "") or "").strip(),
                 auto_approve_quick=bool(
                     getattr(board, "planning_auto_approve_quick", False)
+                ),
+                review_max_redrafts=max(
+                    0,
+                    min(
+                        10,
+                        int(getattr(board, "planning_review_max_redrafts", 0) or 0),
+                    ),
                 ),
             )
     except Exception:  # noqa: BLE001 — these are knobs, never fatal
