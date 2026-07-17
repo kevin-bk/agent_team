@@ -45,6 +45,15 @@ _DEFAULT_CONFIG_DIR = {
     "codex": "~/.codex",
 }
 
+#: Optional OpenSandbox PVC / Docker named-volume overrides.  A strict
+#: OpenSandbox runtime may not be able to traverse a host login directory such
+#: as ``~/.claude`` (normally mode 0700), even though an ordinary Docker bind
+#: mount works.  A pre-created credential volume avoids weakening the host
+#: directory permissions and matches the deployment pattern used by auto-test.
+_CREDENTIAL_VOLUME_ENV = {
+    "claude": "AGENT_TEAM_RUNTIME_CLAUDE_CREDENTIAL_VOLUME",
+    "codex": "AGENT_TEAM_RUNTIME_CODEX_CREDENTIAL_VOLUME",
+}
 
 def _default_config_dir(provider: str) -> str:
     """Expanded default login dir for ``provider``, or ``""`` if absent on disk."""
@@ -53,6 +62,12 @@ def _default_config_dir(provider: str) -> str:
         return ""
     path = os.path.expanduser(raw)
     return path if os.path.isdir(path) else ""
+
+
+def _credential_volume(provider: str) -> str:
+    """Configured pre-created credential volume for ``provider``, if any."""
+    env_name = _CREDENTIAL_VOLUME_ENV.get(provider, "")
+    return (os.environ.get(env_name) or "").strip() if env_name else ""
 
 
 def resolve_account_for_provider(provider: str) -> ResolvedAccount | None:
@@ -68,6 +83,20 @@ def resolve_account_for_provider(provider: str) -> ResolvedAccount | None:
     model_name = _PROVIDER_MODEL.get(provider)
     if model_name is None:
         return None
+
+    volume = _credential_volume(provider)
+    if volume:
+        logger.info(
+            "agent_team credentials: using pre-created volume %r for %s",
+            volume,
+            provider,
+        )
+        return ResolvedAccount(
+            name=f"runtime-volume-{provider}",
+            provider=provider,
+            backend="mount",
+            material={"pvc_claim": volume},
+        )
 
     try:
         from plugins.ai_code import models as ai_models

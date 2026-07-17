@@ -169,6 +169,12 @@ def _env(key: str, default: str = "") -> str:
     return (os.environ.get(key) or default).strip()
 
 
+def _env_args(key: str, default: str) -> str:
+    """Read adapter args while preserving an explicit empty override."""
+    raw = os.environ.get(key)
+    return default if raw is None else raw.strip()
+
+
 # Hard-coded turn timeout for agent-team direct-CLI runs. Long-form jobs (e.g. a
 # 90-minute revenge-youtube script) routinely run well past the ai_code default
 # (and past ``_safe_timeout``'s 900s cap), so we pin a generous 3-hour ceiling
@@ -186,7 +192,7 @@ def _engine_runtime(engine: str) -> _EngineRuntime:
     return _EngineRuntime(
         label=f"{spec.label} ACP",
         command=_env(f"AI_CODE_{up}_ACP_COMMAND", spec.command),
-        args=_split_args(_env(f"AI_CODE_{up}_ACP_ARGS", spec.args)),
+        args=_split_args(_env_args(f"AI_CODE_{up}_ACP_ARGS", spec.args)),
         timeout_seconds=_DIRECT_ACP_TURN_TIMEOUT_SECONDS,
         create_timeout_seconds=_DEFAULT_CREATE_TIMEOUT_SECONDS,
     )
