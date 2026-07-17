@@ -123,6 +123,8 @@ CLAUDE_CODE_VERSION=2.1.146 CODEX_VERSION=0.9.0 \
 - OpenSandbox base (`opensandbox/code-interpreter`, clone3/fix1 tag).
 - Node + npm, Python, git, gh, ripgrep, fd, jq, tree, curl, bubblewrap, socat.
 - CLIs: `claude` (`@anthropic-ai/claude-code`), `codex` (`@openai/codex`).
+- ACP adapters: pinned `claude-agent-acp` and `codex-acp`; the Claude planner
+  starts the baked adapter binary and does not fetch it from npm at task runtime.
 - Claude Code headless config baked in (bypass-permissions accepted, its own
   bwrap sandbox disabled — we are already isolated).
 - ACP sidecar: `agent-team-runtime-server` on PATH + the `agent_team` runtime

@@ -62,6 +62,10 @@ class MountBackend:
                 kind="pvc",
                 read_only=False,
                 pvc_claim=pvc_claim,
+                # Credential volumes are operator-provisioned.  A typo must
+                # fail at sandbox creation instead of silently creating an
+                # empty volume that later looks like a provider auth failure.
+                pvc_create_if_not_exists=False,
             )
         else:
             mount = VolumeMount(

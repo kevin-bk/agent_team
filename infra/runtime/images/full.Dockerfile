@@ -204,7 +204,18 @@ RUN curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" \
 ENV PYTHONPATH=/opt/agent-team
 ENV PYTHONUNBUFFERED=1
 ENV AGENT_TEAM_ACP_STORE_DB=/var/lib/agent-team/acp-sessions.db
-ENV AI_CODE_CODEX_ACP_ARGS="-y @agentclientprotocol/codex-acp -c 'sandbox_mode=\"danger-full-access\"' -c 'approval_policy=\"never\"'"
+# Host runs may use the npx fallback, but an isolated runtime must not need npm
+# registry DNS/egress merely to start its planner.  Keep this adapter pinned and
+# baked next to the sidecar (override the version via --build-arg).
+ARG CLAUDE_AGENT_ACP_VERSION=0.57.0
+RUN npm install -g \
+        "@agentclientprotocol/claude-agent-acp@${CLAUDE_AGENT_ACP_VERSION}" \
+    && npm cache clean --force \
+    && command -v claude-agent-acp > /dev/null
+ENV AI_CODE_CLAUDE_ACP_COMMAND=claude-agent-acp
+ENV AI_CODE_CLAUDE_ACP_ARGS=""
+ENV AI_CODE_CODEX_ACP_COMMAND=codex-acp
+ENV AI_CODE_CODEX_ACP_ARGS=""
 ENV INITIAL_AGENT_MODE=agent-full-access
 ENV CODEX_CONFIG="{\"sandbox_mode\":\"danger-full-access\",\"approval_policy\":\"never\"}"
 
@@ -252,6 +263,12 @@ WORKDIR /workspace
 # Do NOT pin USER — the OpenSandbox runtime decides which uid to drop to when
 # it exec's commands via the SDK. Hard-coding USER conflicts with that handoff.
 
+# Install the Yarn Classic binary itself rather than relying on a Corepack shim.
+# Corepack tries to create a per-user cache on first execution; OpenSandbox's
+# strict uid has HOME=/nonexistent and correctly cannot write there.
+RUN npm install -g yarn@1.22.22 \
+    && yarn --version
+
 # --- Smoke check --------------------------------------------------------------
 # Fail the build early if a critical binary is missing (bad mirror / yanked
 # package) or if the sidecar's import graph is broken — not on the first task.
@@ -261,6 +278,7 @@ RUN claude --version \
     && rg --version \
     && git --version \
     && node --version \
+    && yarn --version \
     && python --version \
     && uv --version \
     && uvx --version \

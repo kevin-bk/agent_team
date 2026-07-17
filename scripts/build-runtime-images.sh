@@ -18,7 +18,8 @@
 #   REGISTRY=<dockerhub_user> PUSH=1 PRUNE=1 ./scripts/build-runtime-images.sh full
 #
 #   # Pin CLI versions baked into the `full` image:
-#   CLAUDE_CODE_VERSION=2.1.146 CODEX_VERSION=0.9.0 \
+#   CLAUDE_CODE_VERSION=2.1.146 CLAUDE_AGENT_ACP_VERSION=0.57.0 \
+#     CODEX_VERSION=0.9.0 \
 #     ./scripts/build-runtime-images.sh full
 #
 # Env vars honoured:
@@ -35,6 +36,7 @@
 #                        `linux/arm64` only when the server is arm64; `none`
 #                        disables --platform (use local host arch).
 #   CLAUDE_CODE_VERSION  forwarded as --build-arg to full.Dockerfile
+#   CLAUDE_AGENT_ACP_VERSION forwarded as --build-arg to full.Dockerfile
 #   CODEX_VERSION        forwarded as --build-arg to full.Dockerfile
 #   BASE_IMAGE           override the OpenSandbox base image
 # =============================================================================
@@ -99,6 +101,9 @@ for name in "${targets[@]}"; do
     full)
       if [[ -n "${CLAUDE_CODE_VERSION:-}" ]]; then
         build_args+=(--build-arg "CLAUDE_CODE_VERSION=${CLAUDE_CODE_VERSION}")
+      fi
+      if [[ -n "${CLAUDE_AGENT_ACP_VERSION:-}" ]]; then
+        build_args+=(--build-arg "CLAUDE_AGENT_ACP_VERSION=${CLAUDE_AGENT_ACP_VERSION}")
       fi
       if [[ -n "${CODEX_VERSION:-}" ]]; then
         build_args+=(--build-arg "CODEX_VERSION=${CODEX_VERSION}")

@@ -104,11 +104,23 @@ def _env(key: str, default: str = "") -> str:
     return (os.environ.get(key) or default).strip()
 
 
+def _env_args(key: str, default: str) -> str:
+    """Read adapter args while allowing an explicit empty override.
+
+    Runtime images bake ACP adapters as binaries and intentionally set the
+    corresponding args variable to an empty string.  Treating empty as missing
+    would silently fall back to the host-oriented ``npx`` package arguments and
+    make isolated runs depend on registry DNS/egress again.
+    """
+    raw = os.environ.get(key)
+    return default if raw is None else raw.strip()
+
+
 def engine_runtime(engine: str) -> EngineRuntime:
     """Resolve an engine's command/args from env; the turn timeout is hard-pinned."""
     spec = ENGINES[engine]
     up = engine.upper()
-    args_raw = _env(f"AI_CODE_{up}_ACP_ARGS", spec.args)
+    args_raw = _env_args(f"AI_CODE_{up}_ACP_ARGS", spec.args)
     return EngineRuntime(
         engine=engine,
         label=f"{spec.label} ACP",

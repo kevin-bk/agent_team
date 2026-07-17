@@ -43,6 +43,34 @@ from agent_team.features.board.runtime.sandbox.base import (
 logger = logging.getLogger(__name__)
 
 
+def _resolve_api_key(explicit: str | None) -> str | None:
+    """Resolve the OpenSandbox credential without requiring a secret in ``.env``.
+
+    Direct values retain backward compatibility.  Operators may instead point
+    ``OPEN_SANDBOX_API_KEY_FILE`` at a mode-0600 runtime secret, matching the
+    deployment pattern used by the shared OpenSandbox stack.
+    """
+    direct = (
+        explicit
+        or os.environ.get("OPENSANDBOX_API_KEY")
+        or os.environ.get("OPEN_SANDBOX_API_KEY")
+    )
+    if direct:
+        return direct
+    key_file = os.environ.get("OPEN_SANDBOX_API_KEY_FILE")
+    if not key_file:
+        return None
+    try:
+        value = Path(key_file).expanduser().read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise SandboxAuthError(
+            f"OpenSandbox API key file is unavailable: {key_file}"
+        ) from exc
+    if not value:
+        raise SandboxAuthError(f"OpenSandbox API key file is empty: {key_file}")
+    return value
+
+
 # ---------------------------------------------------------------------------
 # Lazy SDK accessor
 # ---------------------------------------------------------------------------
@@ -319,11 +347,7 @@ class OpenSandboxRuntime(Sandbox):
     ) -> None:
         super().__init__()
         self.server_url = server_url
-        self.api_key = (
-            api_key
-            or os.environ.get("OPENSANDBOX_API_KEY")
-            or os.environ.get("OPEN_SANDBOX_API_KEY")
-        )
+        self.api_key = _resolve_api_key(api_key)
         self.image = image
         self.timeout = timeout
         self.idle_timeout = idle_timeout
