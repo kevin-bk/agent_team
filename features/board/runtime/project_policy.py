@@ -324,6 +324,18 @@ def command_policy(
     repo: str | None,
 ) -> dict | None:
     """Resolve one exact allowlist row, including timeout/expected-exit policy."""
+    # The runner executes the resolved command as a single string through a
+    # shell, but validation tokenises with shlex.split — which does NOT split on
+    # `;` `|` `&&` `$(` `<` `>` `` ` ``. Without this guard a value like
+    # `settings;id` tokenises to one argument that matches a `${MODULE}`
+    # placeholder, passes the allowlist, and then runs `id` as a second shell
+    # command. Reject shell metacharacters on the resolved command so the
+    # validation model matches the execution model (the allowlist is a security
+    # boundary, not a hint).
+    if _SHELL_META.search(command):
+        raise PolicyError(
+            f"verification command contains shell metacharacters: {command!r}"
+        )
     try:
         actual = shlex.split(command)
     except ValueError as exc:

@@ -582,6 +582,17 @@ class WorkerEvaluator:
                 )
                 if issues:
                     return _downgrade_unverified_pass(verdict, issues)
+                # Path/risk gate: a passing candidate must not touch protected,
+                # out-of-scope or (un-accepted) risk-lane paths. Without this the
+                # policy's path rules never actually block a PASS.
+                try:
+                    policy_issues = await asyncio.to_thread(
+                        _strict_policy_issues, self._task_id, workspace_path
+                    )
+                except Exception as exc:  # noqa: BLE001 — fail closed if the gate breaks
+                    policy_issues = [f"policy path gate unavailable: {exc}"]
+                if policy_issues:
+                    return _downgrade_unverified_pass(verdict, policy_issues)
             elif not has_verification_evidence(verdict):
                 return _downgrade_unverified_pass(verdict)
         return verdict
@@ -598,6 +609,43 @@ def _task_workspace_and_board(task_id: str) -> tuple[str, str | None, str]:
         return task.workspace_path, task.board_id, approved_contract_etag
     finally:
         db.close()
+
+
+def _approved_graph_limits(task_id: str) -> dict:
+    """The board's approved graph caps, snapshotted into planning_meta."""
+    with SessionLocal() as db:
+        task = get_task(db, task_id)
+        if task is None:
+            return {}
+        value = task.planning_meta().get("graph_limits")
+        return value if isinstance(value, dict) else {}
+
+
+def _strict_policy_issues(task_id: str, workspace_path: str) -> list[str]:
+    """Backend path/risk gate for the current candidate (fail-closed).
+
+    Compares the candidate's changed paths against the bound policy's
+    protected/allowed/append-only rules and the risk lane. Returns a list of
+    human-readable violations (empty when the candidate is within policy or the
+    board has no bound bundle).
+    """
+    from agent_team.features.board.runtime import project_policy
+
+    with SessionLocal() as db:
+        context = project_policy.enforced_context(db, task_id)
+        if context is None:
+            return []
+        task, bundle = context
+        source, _ = verification_runner.capture_source_state(workspace_path)
+        candidates = project_policy.changed_paths_from_source(source)
+        issues = [
+            f"policy path violation: {row['path']} ({row['reason']})"
+            for row in project_policy.path_violations(bundle, candidates)
+        ]
+        issues.extend(
+            project_policy.risk_lane_issues(bundle, task.planning_meta(), candidates)
+        )
+        return issues
 
 
 class BoardPlanningSettings(NamedTuple):
@@ -803,6 +851,12 @@ async def run_autonomous_loop(
             extra_parts.append(resume_note.strip())
         extra = "\n\n".join(p for p in extra_parts if p) or None
 
+        # Enforce the board's approved total-attempt cap (snapshotted into
+        # graph_limits at approval). Without passing it the graph would only
+        # honour the per-task cap and the board setting would be advisory.
+        graph_limits = await asyncio.to_thread(_approved_graph_limits, task_id)
+        max_total_attempts = graph_limits.get("max_total_attempts")
+
         return await run_task_graph(
             task_id=task_id,
             objective=objective,
@@ -810,6 +864,9 @@ async def run_autonomous_loop(
             run_generator=generator,
             make_evaluator=make_evaluator,
             max_attempts_per_task=max_attempts,
+            max_total_attempts=(
+                int(max_total_attempts) if max_total_attempts is not None else None
+            ),
             budget=budget,
             cancel=cancel,
             on_status=on_status,

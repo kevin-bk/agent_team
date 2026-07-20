@@ -52,13 +52,17 @@ def _deny_read_patterns(db: Session, board_id: str) -> list[str]:
 
 
 def _sanitize_deny_read_paths(repo_dir: Path, patterns: list[str]) -> list[str]:
-    """Remove denied paths from a task worktree without creating Git changes.
+    """Remove untracked denied paths; fail closed on tracked denied paths.
 
-    Canonical clones remain complete and host-only.  In the agent-visible task
-    copy, tracked denied files are marked ``skip-worktree`` before removal so
-    they cannot be read and their deliberate absence does not pollute the task
-    diff.  Untracked denied paths are simply removed.  Symlinks are unlinked,
-    never followed.
+    Canonical clones remain complete and host-only. In the agent-visible task
+    copy, untracked denied paths are simply removed (symlinks unlinked, never
+    followed). A *tracked* denied path cannot be made unreadable this way: its
+    blob stays in the copy's ``.git`` object database, so an agent can still
+    read it via ``git show HEAD:<path>``, ``git cat-file`` or ``git archive``
+    even after the worktree file is gone. Rather than pretend such a secret is
+    protected, preparation fails closed — the operator must untrack and rotate
+    the secret, or add an explicit policy exception (remove the exact path from
+    ``deny_read``).
     """
     if not patterns or not (repo_dir / ".git").exists():
         return []
@@ -95,13 +99,15 @@ def _sanitize_deny_read_paths(repo_dir: Path, patterns: list[str]) -> list[str]:
         if path in denied
         or any(path.startswith(f"{directory}/") for directory in denied_dirs)
     )
-    for offset in range(0, len(tracked_denied), 200):
-        batch = tracked_denied[offset : offset + 200]
-        code, _out, err = _run_git(
-            "-C", str(repo_dir), "update-index", "--skip-worktree", "--", *batch
+    if tracked_denied:
+        raise RuntimeError(
+            "deny_read matches tracked file(s) whose content remains readable "
+            "from the task copy's .git history (git show/cat-file/archive) even "
+            "after worktree removal: "
+            + ", ".join(tracked_denied[:20])
+            + ". Untrack and rotate the secret, or add an explicit policy "
+            "exception by removing the exact path from deny_read."
         )
-        if code != 0:
-            raise RuntimeError(f"cannot hide denied tracked paths: {err}")
 
     for relative in sorted(denied, key=lambda path: (path.count("/"), path), reverse=True):
         target = repo_dir / relative

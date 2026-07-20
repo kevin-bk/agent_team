@@ -137,48 +137,24 @@ stay in lockstep.
   detached rows (and its comment claimed no relationship existed). Guarded the
   lazy access; detached rows expose only the binding id.
 
-### Known issues in this batch (found in review, NOT yet fixed)
+### Review follow-up (fixed in this branch)
 
-These are real defects in the code introduced by this batch. They are recorded
-here so the PR reviewer sees them; fixes are deferred to a follow-up.
+Findings from `review.md` addressed here:
 
-1. **Command allowlist bypass via shell injection** —
-   `verification_runner.run_approved_commands` executes the approved command as
-   a raw string through `sandbox.exec_shell`, while `project_policy.command_policy`
-   validates it with `shlex.split` + argv matching. `shlex.split` does not split
-   on `;` `|` `&&`, so a planner command like `yarn … test settings;id`
-   tokenises to a single `settings;id` value that matches the `${MODULE}`
-   placeholder and passes the allowlist — then the shell runs `id` as a second
-   command. `_SHELL_META` (which already forbids shell metacharacters) is
-   applied only to the policy *template* at bundle-creation, never to the
-   resolved runtime command. The allowlist is therefore not yet a real security
-   boundary. Fix direction: reject shell metacharacters on the resolved command
-   (and/or execute argv without a shell) so the validation model matches the
-   execution model.
-
-2. **Plan reviewer can mutate source and taint the approval baseline** —
-   `planning._run_reviewer` runs on the real task workspace with write access
-   (no disposable copy, unlike the execution-phase evaluator), and
-   `human_actions.approve_plan` captures `approved_source` (via
-   `capture_source_state`, HEAD + dirty/untracked) *after* the planner/reviewer
-   have run. A planner/reviewer edit to a source or protected file (accidental,
-   or from prompt-injection in the content it reviews) is baked into the
-   baseline, so the execution-phase path gate — which diffs the candidate
-   against that baseline — never sees it. Mitigated but not closed on enforced
-   boards: quick-lane auto-approve is blocked there so a human always approves,
-   but the human reviews SPEC/PLAN/TASKS, not the planner's source diff.
-   Non-enforced boards lack even that. Fix direction: capture the baseline from
-   canonical HEAD *before* planning, or run the plan reviewer read-only/
-   disposable.
-
-3. **`deny_read` does not stop a tracked secret from being read** —
-   `task_copy._sanitize_deny_read_paths` removes denied paths from the worktree
-   and marks tracked ones `skip-worktree`, but the blob remains in the task
-   copy's `.git` object database. An agent can still read it via
-   `git show HEAD:.env`, `git cat-file`, `git archive`, or by un-skipping and
-   checking the file back out. The protection is real only for *untracked*
-   secrets (the common `.gitignore` case); a *tracked* secret is not actually
-   unreadable, so `assert_denied_paths_absent`'s "cannot be read" guarantee is
-   overstated for that case. Fix direction: fail closed when a tracked path
-   matches `deny_read` (require untrack/rotate or an explicit exception), and
-   scan `git ls-tree -r HEAD` in addition to the worktree.
+- **[P0] Command allowlist shell-injection bypass** — `command_policy` now
+  rejects shell metacharacters on the resolved command (`_SHELL_META`), so the
+  validation model matches the shell execution model. `settings;id`-style
+  payloads no longer pass the allowlist.
+- **[P1] Path/risk gate was defined but never called** — the strict evaluator's
+  PASS path now runs `_strict_policy_issues` (`path_violations` +
+  `risk_lane_issues` over the candidate's changed paths) and downgrades a PASS
+  on any protected/out-of-scope/un-accepted-risk-lane change.
+- **[P1] `planning_max_total_attempts` was snapshot but not enforced** —
+  `run_autonomous_loop` now reads the approved `graph_limits` and passes
+  `max_total_attempts` into `run_task_graph`.
+- **[P1] `deny_read` did not protect tracked secrets** — the task-copy sanitizer
+  now fails closed when a tracked path matches `deny_read` (its blob stays in
+  `.git`); untracked denied paths are still removed. The operator must untrack/
+  rotate or add an explicit policy exception.
+- **[P1] Plan reviewer could taint the approval baseline** — fixed upstream in
+  `feat/planning-reviewer-workflow` (reviewer drift now voids the verdict).
