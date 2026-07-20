@@ -743,6 +743,18 @@ async def _run_reviewer(
     reviewed_artifact_etags = await asyncio.to_thread(
         artifacts.approved_etags, workspace_path
     )
+    # Snapshot the plan artifacts + source *before* the reviewer runs. The
+    # reviewer executes on the real workspace with write access, so it (or a
+    # prompt-injection in the content it reads) could edit SPEC/PLAN/TASKS or a
+    # source file and then write a `pass`. We compare after the turn and void
+    # the verdict on any drift — an independent review cannot also be the author.
+    from agent_team.features.board.runtime.loop.verification_runner import (
+        capture_source_state,
+    )
+
+    _source_before, source_sha_before = await asyncio.to_thread(
+        capture_source_state, workspace_path
+    )
     run_id = await asyncio.to_thread(
         _create_loop_run,
         task_id=task_id,
@@ -765,6 +777,30 @@ async def _run_reviewer(
             run_id=run_id,
             data=None,
             errors=(f"reviewer run ended with status {result.status!r}",),
+            review_etag=None,
+            reviewed_artifact_etags=reviewed_artifact_etags,
+        )
+
+    # Fail closed if the reviewer mutated the very contract it was grading.
+    current_artifact_etags = await asyncio.to_thread(
+        artifacts.approved_etags, workspace_path
+    )
+    _source_after, source_sha_after = await asyncio.to_thread(
+        capture_source_state, workspace_path
+    )
+    if (
+        current_artifact_etags != reviewed_artifact_etags
+        or source_sha_after != source_sha_before
+    ):
+        return _PlanReviewResult(
+            verdict="needs_human",
+            run_id=run_id,
+            data=None,
+            errors=(
+                "plan reviewer modified the plan artifacts or source during "
+                "review; the review is not independent and cannot auto-approve — "
+                "re-plan or approve manually after inspecting the changes",
+            ),
             review_etag=None,
             reviewed_artifact_etags=reviewed_artifact_etags,
         )

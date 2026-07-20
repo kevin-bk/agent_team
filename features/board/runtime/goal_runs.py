@@ -257,6 +257,23 @@ def _execution_snapshot(db: Session, task: AgentTeamTask, row: AgentTeamGoalRun)
     )
     if planner_run is not None and all(run.id != planner_run.id for run in runs):
         runs.insert(0, planner_run)
+    # The plan reviewer also runs before approval (right after the planner), so
+    # preserve its latest transcript too — otherwise the goal history shows the
+    # Plan → Build → Critic chain without the plan-approval review it claims.
+    reviewer_run = (
+        db.query(AgentTeamRun)
+        .filter(
+            AgentTeamRun.task_id == task.id,
+            AgentTeamRun.role == "reviewer",
+            AgentTeamRun.created_at <= (row.approved_at or datetime.now(UTC)),
+        )
+        .order_by(AgentTeamRun.created_at.desc())
+        .first()
+    )
+    if reviewer_run is not None and all(run.id != reviewer_run.id for run in runs):
+        # Keep chronological order: reviewer follows the planner.
+        insert_at = 1 if (planner_run is not None and runs and runs[0].id == planner_run.id) else 0
+        runs.insert(insert_at, reviewer_run)
     evidence = artifacts.read_json(task.workspace_path, artifacts.EVIDENCE_PATH) or {}
     final_tasks = artifacts.read_json(task.workspace_path, artifacts.TASKS_PATH) or {}
     return {
