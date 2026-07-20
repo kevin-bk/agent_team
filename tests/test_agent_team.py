@@ -2275,11 +2275,14 @@ async def test_run_loop_caps_when_never_passing(db, monkeypatch):
         max_attempts=3,
     )
 
-    # Fail-open: a broken judge never wedges the loop; the budget caps it.
-    assert outcome.outcome == "capped"
-    assert outcome.attempts == 3
-    # Capping without a verified pass is process friction — auto-logged so it
-    # surfaces on the board's Friction page.
+    # Fail-closed: an evaluator that errors has produced no verdict, so the one
+    # builder turn that ran is unverified. Re-running the builder with no
+    # reviewer feedback would only burn the attempt budget against the same
+    # infra failure, so the loop stops for a human instead of looping to a cap.
+    assert outcome.outcome == "needs_human"
+    assert outcome.attempts == 1
+    # The stop is auto-logged as blocking friction so it surfaces on the board's
+    # Friction page instead of an empty "needs review" gate.
     from agent_team.features.board.repositories import journal as journal_repo
 
     rows = journal_repo.list_board_friction(db, board.id)
@@ -2287,7 +2290,54 @@ async def test_run_loop_caps_when_never_passing(db, monkeypatch):
     entry, ftask = rows[0]
     assert entry.type == "friction"
     assert ftask.id == task.id
-    assert "capped" in entry.title
+    assert "evaluator failed" in entry.title.lower()
+
+
+async def test_run_loop_stops_when_judge_returns_no_verdict(db, monkeypatch):
+    """A None verdict (adapter that fails without raising) also fails closed."""
+    from agent_team.features.board.runtime.loop import driver
+    from agent_team.features.board.runtime.loop.driver import GeneratorTurn, run_loop
+    from sqlalchemy.orm import sessionmaker
+
+    factory = sessionmaker(bind=db.get_bind(), autoflush=False, future=True)
+    monkeypatch.setattr(driver, "SessionLocal", factory)
+
+    board = boards_repo.create_board(db, name="B", description=None, columns=None, owner_id=None)
+    db.flush()
+    task = tasks_repo.create_task(
+        db, board_id=board.id, title="T", description=None, status="todo",
+        assignee_id=None, labels=None, priority=None, created_by=None,
+    )
+    db.commit()
+
+    async def fake_generator(attempt_id, prompt):
+        return GeneratorTurn(run_id=None, final_text="...", cancelled=False)
+
+    class NoVerdictEvaluator:
+        async def evaluate(
+            self, *, objective, generator_summary, workspace_path, attempt_id=None
+        ):
+            return None
+
+    outcome = await run_loop(
+        task_id=task.id,
+        objective="obj",
+        workspace_path="/tmp/ws",
+        run_generator=fake_generator,
+        evaluator=NoVerdictEvaluator(),
+        max_attempts=3,
+    )
+    # Stops on the first attempt (one builder turn), not after burning the cap.
+    assert outcome.outcome == "needs_human"
+    assert outcome.attempts == 1
+    from agent_team.features.board.repositories import journal as journal_repo
+
+    rows = journal_repo.list_board_friction(db, board.id)
+    assert len(rows) == 1
+    entry, ftask = rows[0]
+    assert entry.type == "friction"
+    assert ftask.id == task.id
+    assert "no verdict" in entry.title.lower()
 
 
 def test_friction_is_a_first_class_journal_type(db):
