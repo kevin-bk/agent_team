@@ -186,9 +186,14 @@ def test_command_policy_rejects_shell_metacharacters():
     for payload in (
         "yarn test settings;id",
         "yarn test settings && id",
+        "yarn test settings&id",       # single & (background) — reviewer case
         "yarn test settings | id",
+        "yarn test settings\nid",      # bare newline — reviewer case
+        "yarn test settings\rid",
         "yarn test $(id)",
         "yarn test `id`",
+        "yarn test >out",
+        "yarn test (id)",
     ):
         with pytest.raises(project_policy.PolicyError, match="shell metacharacter"):
             project_policy.command_policy(bundle, payload, cwd=".", repo=None)

@@ -209,6 +209,21 @@ allowlists reject shell metacharacters, so log-poisoning (`… || echo done`)
 cannot enter the verified command set. Operators adding side-effect MCP
 servers to a board should remember the reviewer sees them too.
 
+> **Reviewer finding "evaluator has full MCP side effects" — intentionally NOT
+> actioned (product-owner decision, accepted risk, not a defect).**
+> The review recommends restricting verification-role MCP (read-only/opt-in per
+> server). The product owner has decided to keep MCP shared, because:
+> 1. verification genuinely needs tools with effects the pilot boards use
+>    (deploy-log fetch, DB checks that the builder's change actually landed);
+> 2. the completion gate does not rely on tool output — a PASS is only accepted
+>    with matching backend trusted receipts, and the resolved-command allowlist
+>    now rejects every shell metacharacter, so tools cannot manufacture a PASS;
+> 3. side-effecting servers are an operator concern: only servers an operator
+>    explicitly configures on a board are exposed, to any role.
+> A capability/read-only MCP allowlist per role remains a possible future
+> hardening if a board ever needs side-effecting tools for builders but not
+> reviewers; it is deliberately out of scope here.
+
 ### Review follow-up (this branch)
 
 `review.md` findings on feat/reviewer-isolation:
