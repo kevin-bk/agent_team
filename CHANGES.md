@@ -195,3 +195,16 @@ Findings from `review.md` addressed here:
 - *The strict uid could not list the review copy*: `mkdtemp` creates the root
   0700 while the sandbox accesses the mount as "other". The root is widened to
   0755 at creation (ordinary workspaces already carry the read bit).
+
+---
+
+## 5. MCP is shared with reviewer/evaluator roles
+
+An earlier iteration blocked all MCP for verification roles, which broke
+legitimate checks (deploy-log MCP, read-only DB verification). Decision:
+reviewer/evaluator receive the same per-agent MCP config as every other role.
+Safe because verdicts are gated by backend trusted receipts (real exit codes;
+a reviewer PASS without passing receipts is downgraded) and enforced
+allowlists reject shell metacharacters, so log-poisoning (`… || echo done`)
+cannot enter the verified command set. Operators adding side-effect MCP
+servers to a board should remember the reviewer sees them too.

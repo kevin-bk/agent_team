@@ -446,7 +446,9 @@ def _load_run_context(run_id: str) -> dict | None:
             # Per-agent MCP config: this CLI alias may have its own MCP servers
             # configured on the board. The owned ACP engine forwards them to the
             # CLI; any auth/header/env values become secrets to mask in output.
-            if board is not None and run.role not in {"reviewer", "evaluator"}:
+            # Reviewer/evaluator get the same servers — verdicts are still
+            # gated by backend trusted receipts, not by tool output.
+            if board is not None:
                 cfg = board.agent_mcp_for(run.agent_alias)
                 if cfg.get("mcpServers"):
                     mcp_config = cfg
