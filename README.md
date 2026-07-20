@@ -1,8 +1,9 @@
 # Agent Team
 
-Agent Team is an **agent orchestration workspace** for `agent-manager`: a place
-where humans and AI agents plan, execute, verify, and review development work on
-the same task board.
+Agent Team is an **agent orchestration workspace** for
+[BSSCommerce/agent-manager](https://github.com/BSSCommerce/agent-manager): a
+place where humans and AI agents plan, execute, verify, and review development
+work on the same task board.
 
 It started as a Jira-style board, but the current plugin is broader than that:
 it combines task workspaces, real code repositories, direct CLI agents over ACP,
@@ -10,10 +11,12 @@ strict planning, autonomous generator/evaluator loops, verification evidence,
 optional OpenSandbox isolation, a task journal, Jira sync, and Mattermost/Slack
 human communication.
 
-> Agent Team is an `agent-manager` **community plugin**. When enabled it adds a
-> single-page board UI, REST APIs, database models, ASGI mounts, background
-> tickers, and agent tool factories. When disabled, its routes and contributed
-> tools are blocked without changing the rest of agent-manager.
+> Agent Team is an
+> [agent-manager](https://github.com/BSSCommerce/agent-manager) **community
+> plugin**. When enabled it adds a single-page board UI, REST APIs, database
+> models, ASGI mounts, background tickers, and agent tool factories. When
+> disabled, its routes and contributed tools are blocked without changing the
+> rest of agent-manager.
 
 ---
 
