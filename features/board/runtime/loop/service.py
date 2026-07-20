@@ -579,61 +579,64 @@ class WorkerEvaluator:
             # as "other" and needs the read bit that ordinary task workspaces
             # already carry (write/traverse bits are added at mount prepare).
             os.chmod(review_workspace, 0o755)
-        run_id = await asyncio.to_thread(
-            _create_loop_run,
-            task_id=self._task_id,
-            agent_alias=self._evaluator_alias,
-            prompt=prompt,
-            role=RUN_ROLE_EVALUATOR,
-            # Tag the critic run with the attempt it judges so the cockpit can
-            # surface the critic's verification transcript next to the verdict.
-            attempt_id=attempt_id,
-            workspace_override_path=review_workspace,
-        )
-        result = await _drive_to_completion(run_id)
-        # The evaluator can also leave journal notes (risks it spotted, etc.).
-        await asyncio.to_thread(
-            task_journal.ingest_agent_notes,
-            task_id=self._task_id,
-            workspace_path=workspace_path,
-            actor_id=self._evaluator_alias,
-            phase="verification",
-        )
-        if result.status != RUN_DONE:
-            if review_workspace:
-                await asyncio.to_thread(shutil.rmtree, review_workspace, True)
-            return None  # could not evaluate → fail-open
-        if self._strict:
-            verdict = await asyncio.to_thread(
-                _verdict_from_evidence, review_workspace or workspace_path
+        # The disposable review copy must be cleaned up on EVERY exit — a raise
+        # in _drive_to_completion, note ingestion or evidence promotion would
+        # otherwise leak a full source copy next to the task workspace.
+        try:
+            run_id = await asyncio.to_thread(
+                _create_loop_run,
+                task_id=self._task_id,
+                agent_alias=self._evaluator_alias,
+                prompt=prompt,
+                role=RUN_ROLE_EVALUATOR,
+                # Tag the critic run with the attempt it judges so the cockpit
+                # can surface the critic's transcript next to the verdict.
+                attempt_id=attempt_id,
+                workspace_override_path=review_workspace,
             )
-            if verdict is not None and review_workspace:
-                # Promote only the validated verdict artifact. All diagnostic
-                # source writes remain in the disposable snapshot.
-                evidence_text = await asyncio.to_thread(
-                    artifacts.read_text,
-                    review_workspace,
-                    artifacts.EVIDENCE_PATH,
+            result = await _drive_to_completion(run_id)
+            # The evaluator can also leave journal notes (risks it spotted, etc.).
+            await asyncio.to_thread(
+                task_journal.ingest_agent_notes,
+                task_id=self._task_id,
+                workspace_path=workspace_path,
+                actor_id=self._evaluator_alias,
+                phase="verification",
+            )
+            if result.status != RUN_DONE:
+                return None  # could not evaluate → fail-open
+            if self._strict:
+                verdict = await asyncio.to_thread(
+                    _verdict_from_evidence, review_workspace or workspace_path
                 )
-                if evidence_text is not None:
-                    await asyncio.to_thread(
-                        artifacts.write_text,
-                        workspace_path,
+                if verdict is not None and review_workspace:
+                    # Promote only the validated verdict artifact. All diagnostic
+                    # source writes remain in the disposable snapshot.
+                    evidence_text = await asyncio.to_thread(
+                        artifacts.read_text,
+                        review_workspace,
                         artifacts.EVIDENCE_PATH,
-                        evidence_text,
                     )
+                    if evidence_text is not None:
+                        await asyncio.to_thread(
+                            artifacts.write_text,
+                            workspace_path,
+                            artifacts.EVIDENCE_PATH,
+                            evidence_text,
+                        )
+                if verdict is None:
+                    verdict = parse_verdict(result.final_answer)
+            else:
+                # Prefer the file the evaluator wrote (robust for noisy CLI
+                # stdout), then fall back to parsing the JSON it echoed.
+                verdict = await asyncio.to_thread(
+                    _read_verdict_file, workspace_path, rel_path
+                )
+                if verdict is None:
+                    verdict = parse_verdict(result.final_answer)
+        finally:
             if review_workspace:
                 await asyncio.to_thread(shutil.rmtree, review_workspace, True)
-            if verdict is None:
-                verdict = parse_verdict(result.final_answer)
-        else:
-            # Prefer the file the evaluator wrote (robust for noisy CLI stdout),
-            # then fall back to parsing the JSON it echoed in its reply.
-            verdict = await asyncio.to_thread(
-                _read_verdict_file, workspace_path, rel_path
-            )
-            if verdict is None:
-                verdict = parse_verdict(result.final_answer)
         if verdict is None:
             return None
         # Fold the evaluator turn's spend into the budget (it ran a real agent

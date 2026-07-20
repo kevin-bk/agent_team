@@ -208,3 +208,23 @@ a reviewer PASS without passing receipts is downgraded) and enforced
 allowlists reject shell metacharacters, so log-poisoning (`… || echo done`)
 cannot enter the verified command set. Operators adding side-effect MCP
 servers to a board should remember the reviewer sees them too.
+
+### Review follow-up (this branch)
+
+`review.md` findings on feat/reviewer-isolation:
+
+- **[P2] Review workspace leaked on evaluator exception** — the disposable copy
+  was only `rmtree`d on the normal return paths. Its whole lifecycle is now
+  wrapped in `try/finally`, so a raise in run creation, drive, note ingestion
+  or evidence promotion still cleans up the copy.
+- **[P0] Shell-injection allowlist bypass** — fixed in `feat/project-policy`
+  (`command_policy` rejects shell metacharacters); the "MCP is shared" rationale
+  above depends on that fix being present.
+- **[P1] Plan reviewer isolation** — the plan reviewer now fails closed on
+  contract/source drift (`feat/planning-reviewer-workflow`), which is the
+  agreed mitigation short of a separate disposable plan-review workspace.
+- **[P1] Evaluator MCP side effects** — deliberately kept: reviewer/evaluator
+  share the board's MCP because verification genuinely needs tools (deploy
+  logs, read-only DB checks) and the hard completion gate is backend trusted
+  receipts, not tool output. Operators must tag/curate side-effecting servers
+  at the board level (documented in section 5).

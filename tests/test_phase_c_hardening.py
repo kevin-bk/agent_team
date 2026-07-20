@@ -172,6 +172,28 @@ def test_runtime_policy_gate_accepts_repo_root_cwd_commands():
     ) is not None
 
 
+def test_command_policy_rejects_shell_metacharacters():
+    """A resolved command that smuggles a shell metacharacter is rejected, even
+    when its first tokens match an allowlisted argv template — the runner
+    executes the string through a shell, so `;`/`|`/`&&`/`$(`/`` ` `` must not
+    slip past validation (allowlist is a security boundary, not a hint)."""
+    documents = _bundle_documents()  # argv: ["yarn", "test", "${MODULE}"], cwd "."
+    bundle = SimpleNamespace(documents=lambda: documents)
+    # Baseline: a clean allowlisted command resolves.
+    assert project_policy.command_policy(
+        bundle, "yarn test settings", cwd=".", repo=None
+    ) is not None
+    for payload in (
+        "yarn test settings;id",
+        "yarn test settings && id",
+        "yarn test settings | id",
+        "yarn test $(id)",
+        "yarn test `id`",
+    ):
+        with pytest.raises(project_policy.PolicyError, match="shell metacharacter"):
+            project_policy.command_policy(bundle, payload, cwd=".", repo=None)
+
+
 def test_risk_triggers_must_be_relative_globs():
     documents = _bundle_documents()
     documents["paths.yaml"]["risk_triggers"] = ["/etc/passwd"]
@@ -221,7 +243,10 @@ def test_deny_read_file_blocks_enforced_workspace(tmp_path):
         project_policy.assert_denied_paths_absent(_bundle(), str(tmp_path))
 
 
-def test_task_repo_sanitizer_removes_denied_paths_without_dirty_diff(tmp_path):
+def test_task_repo_sanitizer_fails_closed_on_tracked_denied_paths(tmp_path):
+    """A tracked deny_read file is not made unreadable by removing the worktree
+    file — its blob stays in .git (git show/cat-file). Preparation must fail
+    closed rather than pretend the secret is protected."""
     from agent_team.features.repos.task_copy import _sanitize_deny_read_paths
 
     repo = tmp_path / "project-a"
@@ -230,7 +255,6 @@ def test_task_repo_sanitizer_removes_denied_paths_without_dirty_diff(tmp_path):
     (repo / ".env.local").write_text("secret\n", encoding="utf-8")
     (repo / "server").mkdir()
     (repo / "server" / ".env.example").write_text("example\n", encoding="utf-8")
-    (repo / "server" / "settings.ts").write_text("safe\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
     subprocess.run(
         [
@@ -240,11 +264,35 @@ def test_task_repo_sanitizer_removes_denied_paths_without_dirty_diff(tmp_path):
         check=True,
     )
 
+    with pytest.raises(RuntimeError, match="tracked file"):
+        _sanitize_deny_read_paths(repo, [".env.*", "**/.env*"])
+
+
+def test_task_repo_sanitizer_removes_untracked_denied_paths(tmp_path):
+    """Untracked denied paths (the common .gitignore case) are removed cleanly;
+    no blob ever entered .git so nothing is left to read."""
+    from agent_team.features.repos.task_copy import _sanitize_deny_read_paths
+
+    repo = tmp_path / "project-a"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    (repo / "server").mkdir()
+    (repo / "server" / "settings.ts").write_text("safe\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(
+        [
+            "git", "-C", str(repo), "-c", "user.name=Test",
+            "-c", "user.email=test@example.com", "commit", "-qm", "fixture",
+        ],
+        check=True,
+    )
+    # Untracked secrets appear after the commit (e.g. a real .env on disk).
+    (repo / ".env.local").write_text("secret\n", encoding="utf-8")
+
     removed = _sanitize_deny_read_paths(repo, [".env.*", "**/.env*"])
 
-    assert removed == [".env.local", "server/.env.example"]
+    assert removed == [".env.local"]
     assert not (repo / ".env.local").exists()
-    assert not (repo / "server" / ".env.example").exists()
     assert (repo / "server" / "settings.ts").read_text() == "safe\n"
     status = subprocess.run(
         ["git", "-C", str(repo), "status", "--porcelain"],
