@@ -272,3 +272,7 @@ servers to a board should remember the reviewer sees them too.
   that invalidates the React-Query cache once so open views catch up on
   everything missed while disconnected.
 - Static bundle rebuilt (`build:agent-team`) and copied into the plugin.
+- **Review follow-up:** the board SSE stream also reconnects on a *clean* EOF
+  (graceful server shutdown / proxy close), not only on network errors —
+  `onclose` throws a retriable error routed through the same backoff, so a tab
+  no longer goes silent until F5. Regression tests in `src/api/sse.test.ts`.

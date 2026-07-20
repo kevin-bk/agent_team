@@ -150,8 +150,21 @@ export function subscribeBoardEvents(
         /* ignore keep-alive comments / partial frames */
       }
     },
+    onclose() {
+      // fetch-event-source treats a clean EOF (graceful server shutdown, a
+      // proxy closing an idle stream) as a normal close: it does NOT call
+      // onerror, it disposes and resolves. Without this the tab would stop
+      // receiving events until a manual refresh — the exact "dead stream after
+      // restart" bug. Throwing a retriable error routes it through the same
+      // backoff+reconnect path as a network drop (unless the caller aborted).
+      if (ctrl.signal.aborted) return;
+      dropped = true;
+      throw new RetriableError("board stream closed by server");
+    },
     onerror() {
-      // Network drop or non-OK open (server restart) — back off and retry.
+      // Any error (network drop, non-OK open, or the retriable error thrown by
+      // onclose above) — back off and reconnect. Returning a number keeps the
+      // library retrying; throwing here would make it fatal.
       dropped = true;
       return 3000;
     },
