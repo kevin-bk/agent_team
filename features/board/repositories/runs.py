@@ -25,6 +25,7 @@ def create_run(
     prompt: str,
     role: str = RUN_ROLE_CHAT,
     attempt_id: str | None = None,
+    workspace_override_path: str | None = None,
 ) -> AgentTeamRun:
     run = AgentTeamRun(
         human_key=next_human_key(db, RUN_KEY_PREFIX),
@@ -38,6 +39,7 @@ def create_run(
         prompt=prompt,
         role=role,
         attempt_id=attempt_id,
+        workspace_override_path=workspace_override_path,
     )
     db.add(run)
     db.flush()
@@ -88,6 +90,18 @@ def get_latest_task_run_by_role(
         .filter(AgentTeamRun.task_id == task_id, AgentTeamRun.role == role)
         .order_by(AgentTeamRun.created_at.desc())
         .first()
+    )
+
+
+def list_task_runs_by_role(
+    db: Session, *, task_id: str, role: str
+) -> list[AgentTeamRun]:
+    """Return every run of one task role, oldest first for timeline display."""
+    return (
+        db.query(AgentTeamRun)
+        .filter(AgentTeamRun.task_id == task_id, AgentTeamRun.role == role)
+        .order_by(AgentTeamRun.created_at.asc(), AgentTeamRun.human_key.asc())
+        .all()
     )
 
 

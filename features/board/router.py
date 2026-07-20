@@ -60,10 +60,12 @@ from agent_team.features.board.schemas import (
     LoopEvaluationDTO,
     LoopInfoDTO,
     LoopResumeCreate,
+    LoopReviewerRunDTO,
     LoopTaskDTO,
     MentionCreate,
     MentionResponse,
     PlanningAnswerCreate,
+    PlanningApproveCreate,
     PlanningArtifactDTO,
     PlanningArtifactEdit,
     PlanningChangeRequestCreate,
@@ -72,6 +74,9 @@ from agent_team.features.board.schemas import (
     PlanningQuestionDTO,
     PlanningRunCreate,
     PlanningStartCreate,
+    PlanReviewDTO,
+    ProjectPolicyBundleCreate,
+    ProjectPolicyBundleDTO,
     SkillPackDTO,
     TaskCreate,
     TaskMove,
@@ -146,6 +151,69 @@ async def create_board(
     db.commit()
     db.refresh(board)
     return boards_repo.serialize_board(board, task_count=0, my_role="owner")
+
+
+@router.get("/project-policy-bundles")
+async def list_project_policy_bundles(
+    request: Request, db: Session = Depends(get_db)
+):
+    user, err = auth_or_401(db, request)
+    if err:
+        return err
+    from agent_team.features.board.models import AgentTeamProjectPolicyBundle
+
+    rows = db.query(AgentTeamProjectPolicyBundle).order_by(
+        AgentTeamProjectPolicyBundle.project_key,
+        AgentTeamProjectPolicyBundle.created_at.desc(),
+    )
+    return [
+        ProjectPolicyBundleDTO(
+            id=row.id,
+            project_key=row.project_key,
+            schema_version=row.schema_version,
+            source_ref=row.source_ref,
+            file_hashes=row.file_hashes(),
+            bundle_sha256=row.bundle_sha256,
+            created_at=row.created_at.isoformat() if row.created_at else None,
+        )
+        for row in rows
+    ]
+
+
+@router.post("/project-policy-bundles")
+async def create_project_policy_bundle(
+    payload: ProjectPolicyBundleCreate,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    user, err = auth_or_401(db, request)
+    if err:
+        return err
+    if not _is_admin(user):
+        return JSONResponse(status_code=403, content={"detail": "Admin access required"})
+    from agent_team.features.board.runtime import project_policy
+
+    try:
+        row = project_policy.create_bundle(
+            db,
+            documents=payload.documents,
+            file_hashes=payload.file_hashes,
+            source_ref=payload.source_ref,
+            created_by=user.id,
+        )
+    except project_policy.PolicyError as exc:
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
+    db.commit()
+    db.refresh(row)
+    return ProjectPolicyBundleDTO(
+        id=row.id,
+        project_key=row.project_key,
+        schema_version=row.schema_version,
+        source_ref=row.source_ref,
+        file_hashes=row.file_hashes(),
+        bundle_sha256=row.bundle_sha256,
+        created_at=row.created_at.isoformat() if row.created_at else None,
+    )
 
 
 @router.get("/boards/{board_id}")
@@ -259,6 +327,21 @@ async def update_board(
         board.planning_skill = planning_skill
     if payload.planning_auto_approve_quick is not None:
         board.planning_auto_approve_quick = bool(payload.planning_auto_approve_quick)
+    if payload.planning_review_max_redrafts is not None:
+        board.planning_review_max_redrafts = payload.planning_review_max_redrafts
+    if "policy_bundle_id" in payload.model_fields_set:
+        from agent_team.features.board.models import AgentTeamProjectPolicyBundle
+
+        bundle_id = (payload.policy_bundle_id or "").strip() or None
+        if bundle_id and db.get(AgentTeamProjectPolicyBundle, bundle_id) is None:
+            return JSONResponse(
+                status_code=422, content={"detail": "unknown project policy bundle"}
+            )
+        board.policy_bundle_id = bundle_id
+    if payload.planning_max_tasks is not None:
+        board.planning_max_tasks = payload.planning_max_tasks
+    if payload.planning_max_total_attempts is not None:
+        board.planning_max_total_attempts = payload.planning_max_total_attempts
     if payload.runtime_profile is not None:
         from agent_team.features.board.runtime.sandbox.config import validate_overlay
 
@@ -1505,9 +1588,11 @@ async def get_task_loop(task_id: str, request: Request, db: Session = Depends(ge
     task = ctx.task
 
     from agent_team.features.board.models import (
+        RUN_ROLE_CHAT,
         RUN_ROLE_EVALUATOR,
         RUN_ROLE_GENERATOR,
         RUN_ROLE_PLANNER,
+        RUN_ROLE_REVIEWER,
     )
     from agent_team.features.board.repositories import attempts as attempts_repo
     from agent_team.features.board.repositories import runs as runs_repo
@@ -1575,7 +1660,18 @@ async def get_task_loop(task_id: str, request: Request, db: Session = Depends(ge
     planner_run = runs_repo.get_latest_task_run_by_role(
         db, task_id=task_id, role=RUN_ROLE_PLANNER
     )
+    reviewer_runs = runs_repo.list_task_runs_by_role(
+        db, task_id=task_id, role=RUN_ROLE_REVIEWER
+    )
     active_run = runs_repo.get_active_loop_run(db, task_id=task_id)
+    latest_loop_run = next(
+        (
+            run
+            for run in runs_repo.list_runs_for_task(db, task_id)
+            if run.role != RUN_ROLE_CHAT
+        ),
+        None,
+    )
     from agent_team.features.board.runtime.loop import planning_artifacts as artifacts
 
     graph_tasks = [
@@ -1603,6 +1699,16 @@ async def get_task_loop(task_id: str, request: Request, db: Session = Depends(ge
             generator_run.agent_alias if generator_run is not None else None
         ),
         evaluator_agent_id=critic_run.agent_alias if critic_run is not None else None,
+        reviewer_runs=[
+            LoopReviewerRunDTO(
+                run_id=run.id,
+                conversation_id=run.conversation_id,
+                agent_id=run.agent_alias,
+                created_at=run.created_at.isoformat() if run.created_at else None,
+            )
+            for run in reviewer_runs
+            if run.conversation_id
+        ],
         active_run_id=active_run.id if active_run is not None else None,
         active_conversation_id=(
             active_run.conversation_id if active_run is not None else None
@@ -1613,6 +1719,13 @@ async def get_task_loop(task_id: str, request: Request, db: Session = Depends(ge
             bool(task.planning_meta().get("run_params"))
             and (task.loop_state or "") in _RESUMABLE_STATES
             and not is_loop_running(task_id)
+        ),
+        attention_reason=(
+            latest_loop_run.error
+            if latest_loop_run is not None
+            and latest_loop_run.status == "error"
+            and latest_loop_run.error
+            else None
         ),
         attempts=[
             LoopAttemptDTO(
@@ -1813,6 +1926,7 @@ def _planning_info(task) -> PlanningInfoDTO:
     # Lane comes from the on-disk intake (source of truth, survives restarts);
     # auto_approved from the approval metadata stamped at planning time.
     lane_info = artifacts.intake_lane(task.workspace_path)
+    review_data = artifacts.read_plan_review(task.workspace_path)
     return PlanningInfoDTO(
         task_id=task.id,
         loop_state=task.loop_state,
@@ -1825,6 +1939,9 @@ def _planning_info(task) -> PlanningInfoDTO:
         approved_at=meta.get("approved_at"),
         current_goal_run_id=meta.get("current_goal_run_id"),
         review_verdict=meta.get("review_verdict"),
+        plan_review=PlanReviewDTO(**review_data) if review_data is not None else None,
+        review_attempts=int(meta.get("review_attempts") or 0),
+        review_max_redrafts=int(meta.get("review_max_redrafts") or 0),
         lane=lane_info.lane,
         lane_hard_gates=list(lane_info.hard_gates),
         auto_approved=bool(meta.get("auto_approved")),
@@ -2182,24 +2299,33 @@ async def edit_task_planning_artifact(
     return {"ok": True, "path": rel, "etag": new_etag}
 
 
-def _approve_plan(ctx, db) -> object | None:
+def _approve_plan(ctx, db, *, accept_risk_lane: bool = False) -> object | None:
     """Validate artifacts and stamp approval metadata; return an error or None."""
     from agent_team.features.board.runtime.loop import human_actions
 
     try:
-        human_actions.approve_plan(db, ctx.task, ctx.user)
+        human_actions.approve_plan(
+            db, ctx.task, ctx.user, accept_risk_lane=accept_risk_lane
+        )
     except human_actions.ActionError as e:
         return bad_request(str(e))
     return None
 
 
 @router.post("/tasks/{task_id}/planning/approve")
-async def approve_task_planning(task_id: str, request: Request, db: Session = Depends(get_db)):
+async def approve_task_planning(
+    task_id: str,
+    request: Request,
+    payload: PlanningApproveCreate | None = Body(default=None),
+    db: Session = Depends(get_db),
+):
     """Approve the drafted plan (does not start execution)."""
     ctx, err = authz.guard_task(db, request, task_id, min_role="editor")
     if err:
         return err
-    approve_err = _approve_plan(ctx, db)
+    approve_err = _approve_plan(
+        ctx, db, accept_risk_lane=bool(payload and payload.accept_risk_lane)
+    )
     if approve_err:
         return approve_err
     return _planning_info(ctx.task)
@@ -2296,7 +2422,9 @@ async def approve_and_run_task_planning(
     # clears the state).
     was_plan_change = task.loop_state == LoopState.PLAN_CHANGE_REQUESTED.value
 
-    approve_err = _approve_plan(ctx, db)
+    approve_err = _approve_plan(
+        ctx, db, accept_risk_lane=bool(payload.accept_risk_lane)
+    )
     if approve_err:
         return approve_err
 

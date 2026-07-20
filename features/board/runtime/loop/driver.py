@@ -168,9 +168,11 @@ async def run_loop(
     file. Planning is fail-open — if it produces no plan, the loop proceeds from
     the raw objective.
 
-    Each iteration opens an attempt, runs the generator, evaluates it (fail-open:
-    an evaluator error or unparseable verdict is treated as "keep going"), and
-    consults the controller. Two backstops always terminate the loop: the attempt
+    Each iteration opens an attempt, runs the generator, evaluates it, and
+    consults the controller. An evaluator infrastructure error stops for human
+    review immediately: retrying the builder without reviewer feedback only
+    repeats potentially-correct work and wastes the attempt budget. Two backstops
+    always terminate the loop: the attempt
     cap (on the controller) and the resource budget (tokens/cost/runtime). A
     completed objective wins over a budget cap; a cap that stops *continuation*
     routes the task to human review.
@@ -363,11 +365,64 @@ async def run_loop(
                     workspace_path=workspace_path,
                     attempt_id=attempt_id,
                 )
-            except Exception:  # noqa: BLE001 — fail-open: a broken judge must not wedge
+            except Exception as exc:  # noqa: BLE001 — agent/provider boundary
                 logger.warning(
                     "loop evaluation failed for task %s", task_id, exc_info=True
                 )
-                verdict = None
+                # Count the builder turn that did run, but fail closed on the
+                # missing verification. Re-running the builder has no actionable
+                # reviewer feedback and can burn every remaining attempt against
+                # the same infrastructure failure.
+                controller.on_attempt_finished(None)
+                await asyncio.to_thread(
+                    task_journal.record,
+                    task_id=task_id,
+                    phase="verification",
+                    type="friction",
+                    title="Evaluator failed — execution paused for human review",
+                    body=(
+                        "The builder turn completed, but the evaluator could not "
+                        f"produce a verdict: {exc}. Resume after fixing or swapping "
+                        "the evaluator. The builder was not retried without feedback."
+                    ),
+                    actor_type="system",
+                    severity="blocking",
+                    refs=task_journal.refs(
+                        run_id=turn.run_id, attempt_id=attempt_id
+                    ),
+                    metadata={"outcome": "needs_human", "reason": "evaluator_error"},
+                )
+                return await asyncio.to_thread(
+                    _finish, attempt_id, "needs_human"
+                )
+
+            if verdict is None:
+                # Some evaluator adapters represent a failed/error run as a
+                # missing verdict instead of raising. Treat it identically to
+                # the exception path; otherwise the controller re-runs a
+                # potentially-correct builder with no reviewer feedback.
+                controller.on_attempt_finished(None)
+                await asyncio.to_thread(
+                    task_journal.record,
+                    task_id=task_id,
+                    phase="verification",
+                    type="friction",
+                    title="Evaluator produced no verdict — execution paused",
+                    body=(
+                        "The builder turn completed, but the evaluator returned "
+                        "no verdict. Resume after fixing or swapping the evaluator. "
+                        "The builder was not retried without feedback."
+                    ),
+                    actor_type="system",
+                    severity="blocking",
+                    refs=task_journal.refs(
+                        run_id=turn.run_id, attempt_id=attempt_id
+                    ),
+                    metadata={"outcome": "needs_human", "reason": "evaluator_no_verdict"},
+                )
+                return await asyncio.to_thread(
+                    _finish, attempt_id, "needs_human"
+                )
 
         if verdict is not None:
             last_verdict = verdict

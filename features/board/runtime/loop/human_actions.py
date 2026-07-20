@@ -33,6 +33,7 @@ def approve_plan(
     *,
     actor_type: str = "human",
     title: str = "Plan approved",
+    accept_risk_lane: bool = False,
 ) -> None:
     """Validate the drafted artifacts and stamp approval metadata.
 
@@ -57,6 +58,51 @@ def approve_plan(
         if errors:
             raise ActionError("; ".join(errors))
 
+    # A bound policy turns this into an enforced approval. Validate from the
+    # immutable DB row (never the workspace copy), including graph and command
+    # caps, before stamping any approval metadata.
+    policy_identity = None
+    graph_limits = None
+    approved_source = None
+    from agent_team.features.board.runtime import project_policy
+
+    try:
+        bundle = project_policy.bound_bundle(db, task.board_id, required=False)
+        if bundle is not None:
+            board = task.board
+            task_rows = (tasks_data or {}).get("tasks") or []
+            max_tasks = int(getattr(board, "planning_max_tasks", 25) or 25)
+            max_total = int(
+                getattr(board, "planning_max_total_attempts", 30) or 30
+            )
+            if len(task_rows) > max_tasks:
+                raise project_policy.PolicyError(
+                    f"task graph has {len(task_rows)} tasks; board limit is {max_tasks}"
+                )
+            project_policy.assert_commands_allowed(bundle, task_rows)
+            project_policy.assert_denied_paths_absent(bundle, task.workspace_path)
+            policy_identity = project_policy.identity(bundle).as_dict()
+            graph_limits = {
+                "max_tasks": max_tasks,
+                "max_total_attempts": max_total,
+            }
+            from agent_team.features.board.runtime import skills as skills_runtime
+
+            names = list(task.board.skill_ids())
+            if task.board.planning_skill:
+                names.append(task.board.planning_skill)
+            skill_packs = skills_runtime.pinned_manifest(names)
+            from agent_team.features.board.runtime.loop import verification_runner
+
+            approved_source, _approved_source_sha = (
+                verification_runner.capture_source_state(task.workspace_path)
+            )
+    # PolicyError subclasses ValueError; skills.pinned_manifest raises plain
+    # ValueError for an unavailable/unversioned pack — both must surface as an
+    # actionable approval error, not a 500.
+    except ValueError as exc:
+        raise ActionError(str(exc)) from exc
+
     # Clear any active plan-change-request marker: approving (re)settles the plan,
     # so the gate that would otherwise immediately re-pause execution is removed.
     artifacts.archive_change_request(task.workspace_path)
@@ -72,6 +118,19 @@ def approve_plan(
                 task.workspace_path
             ),
             "last_error": None,
+            "policy_bundle": policy_identity,
+            "graph_limits": graph_limits,
+            "skill_packs": skill_packs if policy_identity is not None else [],
+            "approved_source": approved_source,
+            # Explicit human acceptance of policy risk-lane changes (e.g. new
+            # DB migrations). Only meaningful under a bound bundle; the path
+            # gate fails closed on risk-lane changes without it. A system
+            # (quick-lane) approval can never grant it.
+            "risk_lane_accepted": (
+                bool(accept_risk_lane)
+                and actor_type == "human"
+                and policy_identity is not None
+            ),
         }
     )
     task.planning_meta_json = json.dumps(meta, ensure_ascii=False)
@@ -101,6 +160,7 @@ def approve_plan(
             "artifact_etags": meta.get("artifact_etags", {}),
             "goal_run_id": goal_run.id,
             "goal_run_no": goal_run.run_no,
+            "risk_lane_accepted": meta.get("risk_lane_accepted", False),
         },
     )
     db.commit()
@@ -173,7 +233,18 @@ def answer_questions(
     # against the SPEC) would never see the human's decisions. Re-planning
     # (planning phase) regenerates the SPEC, so it does not need this.
     if meta.get("approved") and meta.get("run_params"):
-        artifacts.append_clarifications(task.workspace_path, answered, note)
+        if artifacts.append_clarifications(task.workspace_path, answered, note):
+            # The clarification block is human-authorized contract content
+            # (journaled above with a human actor). Re-stamp the SPEC etag so
+            # the enforced rehash gate does not treat this very action as
+            # post-approval drift and wedge the resumed run at re-approval.
+            current = artifacts.approved_etags(task.workspace_path)
+            if current.get("SPEC.md"):
+                etags = dict(meta.get("artifact_etags") or {})
+                etags["SPEC.md"] = current["SPEC.md"]
+                meta["artifact_etags"] = etags
+                task.planning_meta_json = json.dumps(meta, ensure_ascii=False)
+                db.commit()
 
     # Archive the answered questionnaire so the resumed phase does not re-pause.
     artifacts.archive_questions(task.workspace_path)

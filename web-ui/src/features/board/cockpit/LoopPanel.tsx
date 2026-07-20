@@ -50,8 +50,8 @@ import { GoalStepper, type GoalStage } from "./GoalStepper";
 import {
   LoopTimeline,
   useGoalActivity,
-  type RoleKind,
 } from "./LoopTimeline";
+import type { RoleKind } from "./roleSources";
 import {
   PlannerDiscussion,
   PlanStage,
@@ -388,6 +388,7 @@ export function LoopPanel({
   const showActivity =
     !!info &&
     (!!info.planner_conversation_id ||
+      !!info.reviewer_runs?.length ||
       !!info.generator_conversation_id ||
       info.attempts.some(
         (a) =>
@@ -512,6 +513,8 @@ export function LoopPanel({
                 <ReviewActions
                   state={state}
                   missing={latestEval?.missing ?? ""}
+                  attentionReason={info?.attention_reason ?? ""}
+                  hasVerdict={latestEval !== null}
                   canResume={!!info?.can_resume}
                   agents={agents}
                   cliAgents={cliAgents}
@@ -859,6 +862,8 @@ function StatusBanner({
 function ReviewActions({
   state,
   missing,
+  attentionReason,
+  hasVerdict,
   onRunAgain,
   onAck,
   acking,
@@ -872,6 +877,8 @@ function ReviewActions({
 }: {
   state: LoopState;
   missing: string;
+  attentionReason: string;
+  hasVerdict: boolean;
   onRunAgain: () => void;
   onAck: () => void;
   acking: boolean;
@@ -897,7 +904,9 @@ function ReviewActions({
         <div className="min-w-0 flex-1">
           <p className="text-[13px] font-semibold text-foreground">
             {needsHuman
-              ? "Needs a human decision"
+              ? hasVerdict
+                ? "Needs human review"
+                : "Needs attention"
               : state === "complete"
                 ? "Goal verified complete"
                 : state === "failed"
@@ -911,9 +920,8 @@ function ReviewActions({
           )}
           {needsHuman && !missing && (
             <p className="mt-1 text-[12.5px] text-muted-foreground">
-              The goal stopped at a guardrail (iteration or resource cap) or
-              asked for review. Resume it from where it stopped, plan a new goal,
-              or close.
+              {attentionReason ||
+                "The goal stopped at a guardrail. Resume it from where it stopped, plan a new goal, or close."}
             </p>
           )}
         </div>
@@ -933,7 +941,9 @@ function ReviewActions({
           <RotateCcw className="h-4 w-4" /> Plan a new goal
         </Button>
         <Button variant="ghost" size="sm" onClick={onAck} disabled={acking}>
-          Acknowledge & close
+          {needsHuman && !hasVerdict
+            ? "Close without verification"
+            : "Acknowledge & close"}
         </Button>
       </div>
     </div>
@@ -1033,6 +1043,7 @@ function ResumeControl({
 const ROLE_FILTERS: { key: RoleKind | "all"; label: string }[] = [
   { key: "all", label: "All" },
   { key: "plan", label: "Planner" },
+  { key: "review", label: "Plan reviews" },
   { key: "build", label: "Builder" },
   { key: "critic", label: "Critic" },
 ];

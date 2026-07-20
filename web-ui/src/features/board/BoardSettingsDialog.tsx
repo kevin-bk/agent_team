@@ -1,7 +1,7 @@
 import { ArrowDown, ArrowUp, Plus, Trash2 } from "@/components/icons";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { useSkills, useUpdateBoard } from "@/api/hooks";
+import { useProjectPolicyBundles, useSkills, useUpdateBoard } from "@/api/hooks";
 import type { BoardColumn, BoardDTO, BoardRuntimeProfile } from "@/api/types";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { Button } from "@/components/ui/button";
@@ -108,6 +108,7 @@ export function BoardSettingsDialog({
   const update = useUpdateBoard(board.id);
   const confirm = useConfirm();
   const skills = useSkills();
+  const policyBundles = useProjectPolicyBundles();
   const [name, setName] = useState(board.name);
   const [description, setDescription] = useState(board.description ?? "");
   const [columns, setColumns] = useState<BoardColumn[]>(board.columns);
@@ -118,6 +119,14 @@ export function BoardSettingsDialog({
   const [planningSkill, setPlanningSkill] = useState(board.planning_skill ?? "");
   const [autoApproveQuick, setAutoApproveQuick] = useState(
     board.planning_auto_approve_quick ?? false,
+  );
+  const [reviewMaxRedrafts, setReviewMaxRedrafts] = useState(
+    board.planning_review_max_redrafts ?? 0,
+  );
+  const [policyBundleId, setPolicyBundleId] = useState(board.policy_bundle_id ?? "");
+  const [maxTasks, setMaxTasks] = useState(board.planning_max_tasks ?? 25);
+  const [maxTotalAttempts, setMaxTotalAttempts] = useState(
+    board.planning_max_total_attempts ?? 30,
   );
   const [rt, setRt] = useState<RuntimeDraft>(() => toRuntimeDraft(board.runtime_profile));
 
@@ -131,6 +140,10 @@ export function BoardSettingsDialog({
       setPlanningConventions(board.planning_conventions ?? "");
       setPlanningSkill(board.planning_skill ?? "");
       setAutoApproveQuick(board.planning_auto_approve_quick ?? false);
+      setReviewMaxRedrafts(board.planning_review_max_redrafts ?? 0);
+      setPolicyBundleId(board.policy_bundle_id ?? "");
+      setMaxTasks(board.planning_max_tasks ?? 25);
+      setMaxTotalAttempts(board.planning_max_total_attempts ?? 30);
       setRt(toRuntimeDraft(board.runtime_profile));
     }
   }, [open, board]);
@@ -196,6 +209,16 @@ export function BoardSettingsDialog({
         planning_conventions: planningConventions.trim(),
         planning_skill: planningSkill.trim(),
         planning_auto_approve_quick: autoApproveQuick,
+        planning_review_max_redrafts: Math.max(
+          0,
+          Math.min(10, Math.trunc(reviewMaxRedrafts || 0)),
+        ),
+        policy_bundle_id: policyBundleId || null,
+        planning_max_tasks: Math.max(1, Math.min(500, Math.trunc(maxTasks || 25))),
+        planning_max_total_attempts: Math.max(
+          1,
+          Math.min(5000, Math.trunc(maxTotalAttempts || 30)),
+        ),
         runtime_profile: fromRuntimeDraft(rt),
       });
       toast.success("Board updated");
@@ -301,6 +324,53 @@ export function BoardSettingsDialog({
             </label>
             <label className="grid gap-1.5">
               <span className="text-[12.5px] font-medium text-muted-foreground">
+                Project policy bundle
+              </span>
+              <select
+                value={policyBundleId}
+                onChange={(e) => setPolicyBundleId(e.target.value)}
+                className="h-9 rounded-md border border-input bg-transparent px-2 text-[14px] text-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring"
+              >
+                <option value="">No bundle (advisory only)</option>
+                {(policyBundles.data ?? []).map((bundle) => (
+                  <option key={bundle.id} value={bundle.id}>
+                    {bundle.project_key} · {bundle.bundle_sha256.slice(0, 12)}
+                  </option>
+                ))}
+              </select>
+              <span className="text-[12.5px] text-muted-foreground/80">
+                Binding an immutable bundle enables command, path, digest and
+                provenance gates. Changing it invalidates existing approvals.
+              </span>
+            </label>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="grid gap-1.5">
+                <span className="text-[12.5px] font-medium text-muted-foreground">
+                  Maximum plan tasks
+                </span>
+                <Input
+                  type="number"
+                  min={1}
+                  max={500}
+                  value={maxTasks}
+                  onChange={(e) => setMaxTasks(Number(e.target.value))}
+                />
+              </label>
+              <label className="grid gap-1.5">
+                <span className="text-[12.5px] font-medium text-muted-foreground">
+                  Maximum total attempts
+                </span>
+                <Input
+                  type="number"
+                  min={1}
+                  max={5000}
+                  value={maxTotalAttempts}
+                  onChange={(e) => setMaxTotalAttempts(Number(e.target.value))}
+                />
+              </label>
+            </div>
+            <label className="grid gap-1.5">
+              <span className="text-[12.5px] font-medium text-muted-foreground">
                 Planning skill
               </span>
               <select
@@ -330,10 +400,34 @@ export function BoardSettingsDialog({
                 <span className="text-[12.5px] text-muted-foreground/80">
                   When the planner's risk intake classifies a task as quick
                   (0–1 risk flags, no hard gates like auth or data migrations),
-                  the first plan draft is approved automatically instead of
-                  waiting for a human. Normal and risk lanes, and any re-draft
-                  after human feedback, always require human approval.
+                  the first plan draft may be approved automatically only after
+                  a configured reviewer returns pass. Choosing no reviewer,
+                  normal and risk lanes, and any re-draft after human feedback
+                  always require human approval.
+                  <span className="mt-1 block font-medium text-amber-700 dark:text-amber-300">
+                    This setting has no effect for a planning run that selects
+                    No reviewer.
+                  </span>
                 </span>
+              </span>
+            </label>
+            <label className="grid gap-1.5">
+              <span className="text-[12.5px] font-medium text-muted-foreground">
+                Reviewer re-draft limit
+              </span>
+              <Input
+                type="number"
+                min={0}
+                max={10}
+                step={1}
+                value={reviewMaxRedrafts}
+                onChange={(e) => setReviewMaxRedrafts(Number(e.target.value))}
+              />
+              <span className="text-[12.5px] text-muted-foreground/80">
+                When a reviewer returns fail, let the planner correct the plan
+                this many times before waiting for human approval. Zero keeps
+                the current manual review flow; needs-human and reviewer errors
+                always stop immediately.
               </span>
             </label>
           </div>

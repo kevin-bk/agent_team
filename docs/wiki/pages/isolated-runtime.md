@@ -192,6 +192,8 @@ AGENT_TEAM_RUNTIME_IMAGE=<reg>/agent-team-sandbox:v1 # one image for both strate
 AGENT_TEAM_RUNTIME_IDLE_MINUTES=30             # pause→reap idle sandboxes
 AGENT_TEAM_RUNTIME_WORKSPACE_MODE=mount        # mount | sync
 AGENT_TEAM_RUNTIME_STRICT=1                    # no host fallback
+AGENT_TEAM_RUNTIME_CLAUDE_CREDENTIAL_VOLUME=agent-team-claude-auth # optional pre-created PVC
+AGENT_TEAM_RUNTIME_CODEX_CREDENTIAL_VOLUME=agent-team-codex-auth   # optional pre-created PVC
 OPEN_SANDBOX_DOMAIN=https://<server>
 OPEN_SANDBOX_API_KEY=<key>
 ```

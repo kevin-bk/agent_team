@@ -49,6 +49,7 @@ export const qk = {
   agents: ["agents"] as const,
   cliTargets: ["cli-targets"] as const,
   skills: ["skills"] as const,
+  policyBundles: ["policy-bundles"] as const,
   autopilot: (id: string) => ["autopilot", id] as const,
   autopilotSummary: (id: string) => ["autopilot-summary", id] as const,
   taskSchedule: (taskId: string) => ["task-schedule", taskId] as const,
@@ -495,6 +496,15 @@ export function useSkills() {
   });
 }
 
+export function useProjectPolicyBundles() {
+  const { client } = useApi();
+  return useQuery({
+    queryKey: qk.policyBundles,
+    queryFn: () => client.listProjectPolicyBundles(),
+    staleTime: 60_000,
+  });
+}
+
 export function useTaskRuns(taskId: string | undefined, agentId?: string) {
   const { client } = useApi();
   return useQuery({
@@ -913,7 +923,8 @@ export function useApproveTaskPlanning(taskId: string) {
   const { client } = useApi();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () => client.approveTaskPlanning(taskId),
+    mutationFn: (body?: { accept_risk_lane?: boolean }) =>
+      client.approveTaskPlanning(taskId, body),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: qk.taskPlanning(taskId) });
       void qc.invalidateQueries({ queryKey: qk.taskGoalRuns(taskId) });

@@ -166,9 +166,9 @@ _TASKS_SCHEMA = (
     '      "verification": {\n'
     '        "profiles": ["code", "ui_admin"],\n'
     '        "test_change": "none|add|update",\n'
-    '        "feature_commands": [{"repo": "repo-slug", '
+    '        "feature_commands": [{"repo": "repo-slug", "cwd": ".", '
     '"command": "exact focused test command"}],\n'
-    '        "regression_commands": [{"repo": "repo-slug", '
+    '        "regression_commands": [{"repo": "repo-slug", "cwd": ".", '
     '"command": "exact regression command"}],\n'
     '        "required_evidence": []\n'
     "      },\n"
@@ -249,7 +249,12 @@ def build_planning_prompt(
         "paths. For every task, classify its verification profiles and whether "
         "automated tests must be added or updated. UI/visual profiles require "
         "scenario evidence plus a real screenshot/trace/report artifact; AI "
-        "profiles require scenario evidence. Write every `feature_commands` and "
+        "profiles require scenario evidence. `required_evidence` accepts only "
+        "standard evidence section identifiers: `commands`, `criteria`, "
+        "`scenarios`, and `artifacts`; never put command names, log descriptions, "
+        "or other free text there. Put executable checks in `feature_commands` "
+        "or `regression_commands`, and scope/diff expectations in `acceptance`. "
+        "Write every `feature_commands` and "
         "`regression_commands` entry as a structured `{repo, command}` object. "
         "Use the exact assigned repository slug in `repo`; put only the command "
         "to run inside that repo in `command` (do not prefix it with `cd`). Never "
@@ -637,6 +642,32 @@ def build_answers_addendum(answered: list[dict], note: str | None = None) -> str
         lines.append(f"\nAdditional note from the human:\n{note}")
     lines.append(
         "\nProceed using these decisions. Do not re-ask answered questions."
+    )
+    return "\n".join(lines)
+
+
+def build_review_addendum(
+    blocking_issues: list[str], suggested_fixes: list[str] | None = None
+) -> str:
+    """Render validated reviewer feedback for a bounded planner redraft."""
+    issues = [str(item).strip() for item in blocking_issues if str(item).strip()]
+    fixes = [str(item).strip() for item in (suggested_fixes or []) if str(item).strip()]
+    lines = [
+        "## Adversarial review feedback — redraft required",
+        "The previous draft was rejected by the configured plan reviewer.",
+        "Resolve every blocking issue while preserving valid parts of the contract.",
+        "",
+        "### Blocking issues",
+        _bullets(issues),
+    ]
+    if fixes:
+        lines.extend(["", "### Suggested fixes", _bullets(fixes)])
+    lines.extend(
+        [
+            "",
+            "Overwrite the planning artifacts with the corrected revision. Do not "
+            "implement source changes in this turn.",
+        ]
     )
     return "\n".join(lines)
 

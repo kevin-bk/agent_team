@@ -47,6 +47,12 @@ class BoardUpdate(BaseModel):
     #: Auto-approve strict plans whose risk intake lands in the ``quick`` lane
     #: (first draft only; normal/risk lanes always park for a human).
     planning_auto_approve_quick: bool | None = None
+    #: Automatic reviewer-driven planner re-drafts (0 disables; bounded for safety).
+    planning_review_max_redrafts: int | None = Field(default=None, ge=0, le=10)
+    #: Immutable backend-owned policy release. Null/"" clears the binding.
+    policy_bundle_id: str | None = Field(default=None, max_length=32)
+    planning_max_tasks: int | None = Field(default=None, ge=1, le=500)
+    planning_max_total_attempts: int | None = Field(default=None, ge=1, le=5000)
     #: Isolated-runtime override for this board (see ``RuntimeProfile`` /
     #: ``config.OVERLAY_FIELDS``): provider/runtime_strategy/image/cpu/memory_mb/
     #: idle_timeout_minutes/strict_isolation/workspace_mode/... Empty = env default.
@@ -93,6 +99,12 @@ class BoardDTO(BaseModel):
     planning_skill: str = ""
     #: Auto-approve quick-lane plans on their first draft (default off).
     planning_auto_approve_quick: bool = False
+    #: Automatic reviewer-driven planner re-drafts (0 disables).
+    planning_review_max_redrafts: int = 0
+    policy_bundle_id: str | None = None
+    policy_bundle_sha256: str | None = None
+    planning_max_tasks: int = 25
+    planning_max_total_attempts: int = 30
     #: Isolated-runtime override for this board (owner-only; may embed tuning that
     #: overlays the env defaults). Empty object = use the process env defaults.
     runtime_profile: dict = Field(default_factory=dict)
@@ -122,6 +134,24 @@ class SkillPackDTO(BaseModel):
     description: str
     version: str | None = None
     source: str | None = None
+
+
+class ProjectPolicyBundleCreate(BaseModel):
+    """Parsed policy documents plus hashes of the original authoring files."""
+
+    source_ref: str = Field(min_length=1, max_length=255)
+    documents: dict
+    file_hashes: dict[str, str]
+
+
+class ProjectPolicyBundleDTO(BaseModel):
+    id: str
+    project_key: str
+    schema_version: int
+    source_ref: str
+    file_hashes: dict[str, str]
+    bundle_sha256: str
+    created_at: str | None
 
 
 class BoardMemberDTO(BaseModel):
@@ -269,6 +299,15 @@ class LoopTaskDTO(BaseModel):
     depends_on: list[str] = Field(default_factory=list)
 
 
+class LoopReviewerRunDTO(BaseModel):
+    """One plan-review run whose fresh transcript belongs in Work history."""
+
+    run_id: str
+    conversation_id: str
+    agent_id: str
+    created_at: str | None = None
+
+
 class LoopInfoDTO(BaseModel):
     """Snapshot of a task's autonomous loop for the cockpit."""
 
@@ -293,6 +332,9 @@ class LoopInfoDTO(BaseModel):
     planner_agent_id: str | None = None
     generator_agent_id: str | None = None
     evaluator_agent_id: str | None = None
+    #: Every reviewer uses a fresh conversation. Preserve all of them so
+    #: redraft cycles remain visible instead of exposing only the latest turn.
+    reviewer_runs: list[LoopReviewerRunDTO] = Field(default_factory=list)
     #: The loop run streaming right now (any role) + its conversation, so the
     #: cockpit attaches the live stream to whichever role is currently working.
     active_run_id: str | None = None
@@ -305,6 +347,10 @@ class LoopInfoDTO(BaseModel):
     #: remembered run params and is parked in a resumable state). Drives the
     #: cockpit's "Resume" action.
     can_resume: bool = False
+    #: Concrete reason for a stopped run when no evaluator verdict exists
+    #: (typically the latest generator/evaluator infrastructure error). This
+    #: prevents the cockpit from presenting an empty, misleading review gate.
+    attention_reason: str | None = None
     attempts: list[LoopAttemptDTO] = Field(default_factory=list)
     #: Live task-graph progress from ``TASKS.json`` (empty when not executing
     #: task-by-task). The on-disk file is the source of truth; this mirrors it.
@@ -356,6 +402,16 @@ class PlanningRunCreate(BaseModel):
     max_tokens: int | None = Field(default=None, ge=0)
     max_cost_usd: float | None = Field(default=None, ge=0)
     max_wall_seconds: int | None = Field(default=None, ge=0)
+    #: Explicit human acceptance of policy risk-lane changes (e.g. new DB
+    #: migrations). Without it, an enforced run fails closed when the candidate
+    #: touches a ``risk_triggers`` path.
+    accept_risk_lane: bool = False
+
+
+class PlanningApproveCreate(BaseModel):
+    """Optional approve payload (plain approve, without starting execution)."""
+
+    accept_risk_lane: bool = False
 
 
 class LoopResumeCreate(BaseModel):
@@ -414,6 +470,17 @@ class PlanningArtifactDTO(BaseModel):
     content: str | None = None
 
 
+class PlanReviewDTO(BaseModel):
+    """Validated, canonical projection of ``PLAN_REVIEW.json``."""
+
+    version: int = 1
+    verdict: Literal["pass", "fail", "needs_human"]
+    blocking_issues: list[str] = Field(default_factory=list)
+    suggested_fixes: list[str] = Field(default_factory=list)
+    risk_level: Literal["low", "medium", "high"]
+    reviewed_artifacts: list[str] = Field(default_factory=list)
+
+
 class PlanningInfoDTO(BaseModel):
     """Snapshot of a task's strict planning phase for the cockpit."""
 
@@ -433,6 +500,11 @@ class PlanningInfoDTO(BaseModel):
     current_goal_run_id: str | None = None
     #: Last adversarial reviewer verdict (``pass``/``fail``/``needs_human``).
     review_verdict: str | None = None
+    #: Structured review detail, null when no valid active review exists.
+    plan_review: PlanReviewDTO | None = None
+    #: Durable reviewer-driven redraft progress for the current planning cycle.
+    review_attempts: int = 0
+    review_max_redrafts: int = 0
     #: Lane derived from the planner's risk intake (``quick``/``normal``/
     #: ``risk``), or ``None`` when the planner wrote no usable ``INTAKE.json``.
     #: Recomputed from disk, never trusted from the agent.

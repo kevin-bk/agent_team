@@ -63,7 +63,7 @@ export const LOOP_STATE_META: Record<LoopState, StateMeta> = {
     icon: CheckCircle2,
   },
   waiting_for_human: {
-    label: "Needs review",
+    label: "Needs attention",
     tone: "bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300",
     icon: AlertTriangle,
   },

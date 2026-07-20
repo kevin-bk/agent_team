@@ -33,7 +33,8 @@ import type {
 import { cn } from "@/lib/utils";
 import { ChangesView } from "./code/ChangesView";
 import { ArtifactTabs } from "./PlanningPanel";
-import { LoopTimeline, useGoalActivity, type RoleKind } from "./LoopTimeline";
+import { LoopTimeline, useGoalActivity } from "./LoopTimeline";
+import type { RoleKind } from "./roleSources";
 import type { ResolvedAgent } from "./agentRoles";
 
 export type GoalView =

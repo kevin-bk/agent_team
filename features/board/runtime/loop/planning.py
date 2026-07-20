@@ -34,7 +34,6 @@ from agent_team.features.board.runtime.loop.service import (
     _task_workspace_and_board,
 )
 from agent_team.features.board.runtime.loop.status import LoopState
-from agent_team.features.board.runtime.loop.verdict import parse_verdict
 from core.database.base import SessionLocal
 
 logger = logging.getLogger(__name__)
@@ -43,6 +42,18 @@ logger = logging.getLogger(__name__)
 @dataclass
 class _RunningPlan:
     task: asyncio.Task
+
+
+@dataclass(frozen=True)
+class _PlanReviewResult:
+    """Validated result and provenance from one configured reviewer turn."""
+
+    verdict: str
+    run_id: str
+    data: dict | None
+    errors: tuple[str, ...]
+    review_etag: str | None
+    reviewed_artifact_etags: dict[str, str]
 
 
 #: task_id → the planning job currently drafting it (so a second start is a
@@ -54,6 +65,13 @@ def is_planning_running(task_id: str) -> bool:
     """Whether a strict planning job is actively drafting ``task_id`` now."""
     plan = _RUNNING_PLANS.get(task_id)
     return plan is not None and not plan.task.done()
+
+
+def _planning_meta(task_id: str) -> dict:
+    """Read the durable planning metadata for one task."""
+    with SessionLocal() as db:
+        task = db.get(AgentTeamTask, task_id)
+        return task.planning_meta() if task is not None else {}
 
 
 def _pause_requested(task_id: str) -> bool:
@@ -204,6 +222,7 @@ async def run_planning_job(
     objective: str,
     reviewer_alias: str | None = None,
     allow_auto_approve: bool = True,
+    _review_addendum: str | None = None,
     guidance: str | None = None,
     actor_id: str | None = None,
 ) -> LoopState:
@@ -213,12 +232,14 @@ async def run_planning_job(
     it persists ``waiting_plan_approval`` (or ``failed`` when the planner could
     not produce the required artifacts) and returns.
 
-    Lane-aware exception: when the planner's risk intake lands in the ``quick``
-    lane, the board opted in (``planning_auto_approve_quick``) and
-    ``allow_auto_approve`` is True, the job stamps a *system* approval and parks
-    at ``plan_approved`` instead. Re-drafts after human feedback (request
-    changes / answered questions) pass ``allow_auto_approve=False`` so a human
-    who engaged always gets the final look.
+    Lane-aware exception: when a configured reviewer passes a planner draft
+    whose risk intake lands in the ``quick`` lane, the board opted in
+    (``planning_auto_approve_quick``) and ``allow_auto_approve`` is True, the job
+    stamps a *system* approval and parks at ``plan_approved`` instead. Choosing
+    no reviewer is the cost-free manual-review mode and always parks for human
+    approval. Re-drafts after human feedback (request changes / answered
+    questions) pass ``allow_auto_approve=False`` so a human who engaged always
+    gets the final look.
     """
     workspace_path, board_id, _approved_contract_etag = await asyncio.to_thread(
         _task_workspace_and_board, task_id
@@ -228,6 +249,25 @@ async def run_planning_job(
     # quick-lane auto-approval opt-in.
     settings = await asyncio.to_thread(_board_planning_settings, board_id)
     conventions, harness_skill = settings.conventions, settings.planning_skill
+    review_max_redrafts = max(
+        0, min(10, int(getattr(settings, "review_max_redrafts", 0) or 0))
+    )
+    # A public planning start creates a fresh review cycle. Recursive automatic
+    # redrafts read the counter back from DB so the cap is durable and never
+    # depends on the process-local _RUNNING_PLANS map.
+    if _review_addendum is None:
+        review_attempts = 0
+        await asyncio.to_thread(artifacts.archive_plan_review, workspace_path)
+        review_cycle_meta = {
+            "review_verdict": None,
+            "review_run_id": None,
+            "review_etag": None,
+            "reviewed_artifact_etags": {},
+        }
+    else:
+        durable_meta = await asyncio.to_thread(_planning_meta, task_id)
+        review_attempts = max(0, int(durable_meta.get("review_attempts") or 0))
+        review_cycle_meta = {}
 
     # The prompt must show the workspace path as the agent will see it inside
     # the sandbox, not the host-side absolute path.
@@ -242,8 +282,11 @@ async def run_planning_job(
         task_id,
         state=LoopState.PLANNING,
         meta_updates={
+            **review_cycle_meta,
             "approved": False,
             "last_error": None,
+            "review_attempts": review_attempts,
+            "review_max_redrafts": review_max_redrafts,
             "pause_requested": False,
             "planning_paused": False,
         },
@@ -262,6 +305,8 @@ async def run_planning_job(
             harness_skill=harness_skill,
         )
     )
+    if _review_addendum:
+        prompt = f"{prompt}\n\n{_review_addendum}"
     run_id = await asyncio.to_thread(
         _create_loop_run,
         task_id=task_id,
@@ -405,23 +450,54 @@ async def run_planning_job(
         )
 
     review_verdict: str | None = None
+    review_result: _PlanReviewResult | None = None
+    review_meta: dict = {}
     if reviewer_alias:
-        review_verdict = await _run_reviewer(
+        review_result = await _run_reviewer(
             task_id=task_id,
             reviewer_alias=reviewer_alias,
             workspace_path=workspace_path,
             conventions=conventions,
         )
+        review_verdict = review_result.verdict
+        review_data = review_result.data or {}
+        blocking_issues = list(review_data.get("blocking_issues") or [])
+        body_lines = blocking_issues or list(review_result.errors)
+        review_metadata = {
+            "risk_level": review_data.get("risk_level"),
+            "verdict": review_verdict,
+            "validation_errors": list(review_result.errors),
+            "review_etag": review_result.review_etag,
+            "reviewed_artifact_etags": review_result.reviewed_artifact_etags,
+        }
         task_journal.record(
             task_id=task_id,
             phase="review",
             type="plan_review",
-            title=f"Plan reviewer verdict: {review_verdict or 'unknown'}",
+            title=f"Plan reviewer verdict: {review_verdict}",
+            body="\n".join(body_lines),
             actor_type="agent",
             actor_id=reviewer_alias,
-            severity="warning" if review_verdict not in (None, "pass") else "info",
-            refs=task_journal.refs(artifacts=[artifacts.PLAN_REVIEW_PATH]),
+            severity=(
+                "info"
+                if review_verdict == "pass"
+                else "blocking"
+                if review_verdict in ("error", "needs_human")
+                else "warning"
+            ),
+            refs=task_journal.refs(
+                run_id=review_result.run_id,
+                artifacts=[artifacts.PLAN_REVIEW_PATH],
+            ),
+            metadata=review_metadata,
         )
+
+        review_meta = {
+            "review_verdict": review_verdict,
+            "review_run_id": review_result.run_id,
+            "review_etag": review_result.review_etag,
+            "reviewed_artifact_etags": review_result.reviewed_artifact_etags,
+        }
         if _pause_requested(task_id):
             with SessionLocal() as db:
                 latest = runs_repo.get_latest_task_run_by_role(
@@ -435,8 +511,102 @@ async def run_planning_job(
                 run_id=paused_run_id,
                 board_id=board_id,
             )
+        if review_verdict == "fail" and review_attempts < review_max_redrafts:
+            next_attempt = review_attempts + 1
+            task_journal.record(
+                task_id=task_id,
+                phase="planning",
+                type="state_change",
+                title=(
+                    "Reviewer requested plan re-draft "
+                    f"{next_attempt}/{review_max_redrafts}"
+                ),
+                body="\n".join(blocking_issues),
+                actor_type="system",
+                severity="warning",
+                refs=task_journal.refs(run_id=review_result.run_id),
+                metadata={
+                    "review_attempts": next_attempt,
+                    "review_max_redrafts": review_max_redrafts,
+                },
+            )
+            _persist_planning(
+                task_id,
+                state=LoopState.PLANNING,
+                meta_updates={
+                    **lane_meta,
+                    **review_meta,
+                    "auto_approved": False,
+                    "approved": False,
+                    "review_attempts": next_attempt,
+                    "review_max_redrafts": review_max_redrafts,
+                    "last_error": None,
+                    "planner_id": planner_alias,
+                    "reviewer_id": reviewer_alias,
+                },
+                board_id=board_id,
+            )
+            return await run_planning_job(
+                task_id=task_id,
+                planner_alias=planner_alias,
+                objective=objective,
+                reviewer_alias=reviewer_alias,
+                # Auto-approval remains a first-draft-only feature.
+                allow_auto_approve=False,
+                _review_addendum=planning_prompts.build_review_addendum(
+                    blocking_issues,
+                    list(review_data.get("suggested_fixes") or []),
+                ),
+            )
+
+    review_last_error: str | None = None
+    if review_result is not None and review_verdict == "error":
+        detail = "; ".join(review_result.errors) or "reviewer run failed"
+        review_last_error = f"Plan reviewer error: {detail}"
+    elif (
+        review_verdict == "fail"
+        and review_max_redrafts > 0
+        and review_attempts >= review_max_redrafts
+    ):
+        review_last_error = (
+            "Plan reviewer still rejected the plan after "
+            f"{review_attempts} automatic re-draft(s); human approval is required."
+        )
 
     # ── Quick-lane auto-approval (board opt-in, first draft only) ─────────
+    # No reviewer is an intentional manual-review policy. Surface the reason
+    # when it disables a board's auto-approve opt-in so existing boards do not
+    # appear to have silently stopped auto-approving after this safety change.
+    if (
+        allow_auto_approve
+        and settings.auto_approve_quick
+        and lane_info.lane == artifacts.LANE_QUICK
+        and not reviewer_alias
+    ):
+        task_journal.record(
+            task_id=task_id,
+            phase="review",
+            type="guardrail",
+            title="Quick-lane auto-approval skipped: no reviewer",
+            body=(
+                "This board enables quick-lane auto-approval, but planning was "
+                "started with No reviewer. The draft is waiting for manual "
+                "human approval. Select a reviewer on the next planning run if "
+                "reviewer-gated auto-approval is desired."
+            ),
+            actor_type="system",
+            severity="warning",
+            refs=task_journal.refs(
+                run_id=run_id,
+                artifacts=[artifacts.SPEC_PATH, artifacts.PLAN_PATH, artifacts.TASKS_PATH],
+            ),
+            metadata={
+                "reason": "missing_reviewer",
+                "lane": lane_info.lane,
+                "planning_auto_approve_quick": True,
+            },
+        )
+
     # A failed stamp (e.g. TASKS.json went invalid) falls through to the
     # normal human-approval park — auto-approval must never *lose* a plan.
     if _should_auto_approve(
@@ -452,8 +622,11 @@ async def run_planning_job(
                 state=LoopState.PLAN_APPROVED,
                 meta_updates={
                     **lane_meta,
+                    **review_meta,
                     "auto_approved": True,
                     "review_verdict": review_verdict,
+                    "review_attempts": review_attempts,
+                    "review_max_redrafts": review_max_redrafts,
                     "last_error": None,
                     "planner_id": planner_alias,
                     "reviewer_id": reviewer_alias,
@@ -485,10 +658,13 @@ async def run_planning_job(
         state=LoopState.WAITING_PLAN_APPROVAL,
         meta_updates={
             **lane_meta,
+            **review_meta,
             "auto_approved": False,
             "approved": False,
             "review_verdict": review_verdict,
-            "last_error": None,
+            "review_attempts": review_attempts,
+            "review_max_redrafts": review_max_redrafts,
+            "last_error": review_last_error,
             # Remembered so "request changes" can re-draft with the same agents.
             "planner_id": planner_alias,
             "reviewer_id": reviewer_alias,
@@ -510,14 +686,15 @@ def _should_auto_approve(
     Every guard must hold: the caller allows it (i.e. NOT a re-draft after a
     human requested changes or answered questions), the board opted in, the
     planner's intake genuinely classified the task as ``quick`` (a missing
-    intake is never quick), and the adversarial reviewer — when one ran — did
-    not object. Normal/risk lanes always park for a human.
+    intake is never quick), and a configured adversarial reviewer explicitly
+    returned ``pass``. No reviewer is the manual human-review policy, so it can
+    never auto-approve. Normal/risk lanes always park for a human.
     """
     return (
         allow
         and board_opt_in
         and lane == artifacts.LANE_QUICK
-        and review_verdict in (None, "pass")
+        and review_verdict == "pass"
     )
 
 
@@ -558,8 +735,14 @@ async def _run_reviewer(
     reviewer_alias: str,
     workspace_path: str,
     conventions: str = "",
-) -> str | None:
-    """Run the optional adversarial plan reviewer; return its verdict string."""
+) -> _PlanReviewResult:
+    """Run and strictly validate one adversarial plan-review turn."""
+    # Clear the active path before the run. Otherwise a crash could accidentally
+    # reuse a pass written by the previous plan revision.
+    await asyncio.to_thread(artifacts.archive_plan_review, workspace_path)
+    reviewed_artifact_etags = await asyncio.to_thread(
+        artifacts.approved_etags, workspace_path
+    )
     run_id = await asyncio.to_thread(
         _create_loop_run,
         task_id=task_id,
@@ -577,12 +760,31 @@ async def _run_reviewer(
         phase="review",
     )
     if result.status != RUN_DONE:
-        return None
-    data = artifacts.read_json(workspace_path, artifacts.PLAN_REVIEW_PATH)
-    if isinstance(data, dict) and data.get("verdict"):
-        return str(data["verdict"])
-    verdict = parse_verdict(result.final_answer)
-    return verdict.verdict.value if verdict is not None else None
+        return _PlanReviewResult(
+            verdict="error",
+            run_id=run_id,
+            data=None,
+            errors=(f"reviewer run ended with status {result.status!r}",),
+            review_etag=None,
+            reviewed_artifact_etags=reviewed_artifact_etags,
+        )
+
+    raw_data = await asyncio.to_thread(
+        artifacts.read_json, workspace_path, artifacts.PLAN_REVIEW_PATH
+    )
+    errors = tuple(artifacts.validate_plan_review(raw_data))
+    review_meta = await asyncio.to_thread(
+        artifacts.metadata, workspace_path, artifacts.PLAN_REVIEW_PATH
+    )
+    data = artifacts.normalize_plan_review(raw_data) if not errors else None
+    return _PlanReviewResult(
+        verdict=data["verdict"] if data is not None else "error",
+        run_id=run_id,
+        data=data,
+        errors=errors,
+        review_etag=review_meta.etag if review_meta.exists else None,
+        reviewed_artifact_etags=reviewed_artifact_etags,
+    )
 
 
 def start_planning_job(

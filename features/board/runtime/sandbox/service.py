@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import shlex
+import stat
 from typing import Any
 
 from agent_team.features.board.runtime.acp.engines import CODEX_ACP_DEFAULT_ARGS
@@ -36,6 +37,7 @@ _CODEX_ACP_REQUIRED_CONFIG = {
     "sandbox_mode": "danger-full-access",
     "approval_policy": "never",
 }
+_DEPENDENCY_SEED_ROOT = "/opt/agent-team/project-deps"
 
 
 def _env_int(key: str, default: int) -> int:
@@ -50,9 +52,13 @@ def _env_int(key: str, default: int) -> int:
 
 def _codex_acp_sidecar_env() -> dict[str, str]:
     """Env overrides needed when Codex ACP runs inside OpenSandbox."""
-    args = (os.environ.get("AI_CODE_CODEX_ACP_ARGS") or "").strip()
+    raw_args = os.environ.get("AI_CODE_CODEX_ACP_ARGS")
+    args = raw_args.strip() if raw_args is not None else CODEX_ACP_DEFAULT_ARGS
     env = {
-        "AI_CODE_CODEX_ACP_ARGS": args or CODEX_ACP_DEFAULT_ARGS,
+        # An explicitly empty value selects a baked adapter binary with no
+        # package-manager arguments. Only an unset variable gets the host/npx
+        # fallback.
+        "AI_CODE_CODEX_ACP_ARGS": args,
         # codex-acp uses AgentMode for turn sandboxing. Its default "agent" mode
         # is workspace-write, which makes Codex try nested bubblewrap inside the
         # OpenSandbox container. In this runtime, OpenSandbox is already the
@@ -337,6 +343,52 @@ def _workspace_mount(profile: RuntimeProfile, host_workspace_path: str) -> Volum
     )
 
 
+def _prepare_host_workspace_permissions(host_workspace_path: str) -> None:
+    """Let the capability-dropped OpenSandbox uid write the task workspace.
+
+    OpenSandbox intentionally drops ``CAP_DAC_OVERRIDE``.  Its command process
+    currently reports uid 0, while task workspaces are owned by the host uid;
+    normal owner/group modes therefore classify the sandbox as ``other``.  ACLs
+    are not available on every supported host filesystem, so make only this
+    per-task workspace writable to the isolated uid before mounting it.
+
+    Symlinks are never followed or chmodded, so a workspace link cannot widen
+    permissions outside the task boundary.  Existing execute bits are
+    preserved; directories gain only the traversal bit required for access.
+    """
+    root = os.path.abspath(host_workspace_path)
+
+    def _allow(path: str, *, directory: bool) -> None:
+        if os.path.islink(path):
+            return
+        current = os.stat(path, follow_symlinks=False).st_mode
+        added = stat.S_IWOTH | (stat.S_IXOTH if directory else 0)
+        if current & added == added:
+            # Common after a prior sandbox turn: files are owned by the
+            # user-namespace overflow uid (nobody) but the release handoff has
+            # already made them world-writable. The host cannot chmod those
+            # files and does not need to.
+            return
+        # We have already rejected symlinks above.  Do not pass
+        # follow_symlinks=False to chmod: some supported Python/filesystem
+        # combinations expose stat-without-following but not chmod-without-
+        # following and raise NotImplementedError.
+        os.chmod(path, current | added)
+
+    try:
+        os.makedirs(root, exist_ok=True)
+        _allow(root, directory=True)
+        for current_root, dirs, files in os.walk(root, followlinks=False):
+            for name in dirs:
+                _allow(os.path.join(current_root, name), directory=True)
+            for name in files:
+                _allow(os.path.join(current_root, name), directory=False)
+    except OSError as exc:
+        raise SandboxError(
+            f"Could not prepare task workspace permissions at {root!r}: {exc}"
+        ) from exc
+
+
 # ─── persistent per-task state (ACP sessions survive a sandbox kill) ─────────
 #
 # The sidecar's ACP conversation→session_id map used to live in a sandbox-local
@@ -409,6 +461,75 @@ def _unmark_busy(task_id: str) -> None:
         _busy_counts.pop(task_id, None)
 
 
+def _dependency_seed_mapping() -> dict[str, str]:
+    """Repo slug -> immutable dependency seed baked into the runtime image."""
+    raw = (os.environ.get("AGENT_TEAM_RUNTIME_DEPENDENCY_SEEDS") or "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.warning(
+            "agent_team runtime: ignoring invalid "
+            "AGENT_TEAM_RUNTIME_DEPENDENCY_SEEDS JSON"
+        )
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+
+    mapping: dict[str, str] = {}
+    root = f"{_DEPENDENCY_SEED_ROOT}/"
+    for raw_slug, raw_seed in parsed.items():
+        slug = str(raw_slug or "").strip()
+        seed = os.path.normpath(str(raw_seed or "").strip())
+        if (
+            not slug
+            or slug in {".", ".."}
+            or "/" in slug
+            or "\\" in slug
+            or not seed.startswith(root)
+        ):
+            logger.warning(
+                "agent_team runtime: ignoring unsafe dependency seed mapping %r",
+                raw_slug,
+            )
+            continue
+        mapping[slug] = seed
+    return mapping
+
+
+async def _provision_dependency_seeds(
+    sandbox: Sandbox, profile: RuntimeProfile
+) -> None:
+    """Link task clones to dependency seeds in their private container image.
+
+    Every sandbox gets its own writable container overlay, so dependency
+    mutations cannot cross task or sandbox boundaries. The symlink lives only
+    in that task's isolated workspace.
+    """
+    if not profile.is_sandboxed:
+        return
+    for slug, seed in _dependency_seed_mapping().items():
+        repo = f"{profile.workspace_mount_path.rstrip('/')}/{slug}"
+        dependency_path = f"{repo}/node_modules"
+        command = (
+            "set -e; "
+            f"repo={shlex.quote(repo)}; "
+            f"seed={shlex.quote(seed)}; "
+            f"deps={shlex.quote(dependency_path)}; "
+            '[ -d "$repo" ] || exit 0; '
+            '[ -d "$seed" ] || { echo "dependency seed missing: $seed" >&2; exit 1; }; '
+            'if [ ! -e "$deps" ] && [ ! -L "$deps" ]; then ln -s "$seed" "$deps"; fi; '
+            '[ -d "$deps" ] || { echo "dependency link unavailable: $deps" >&2; exit 1; }'
+        )
+        result = await sandbox.exec_shell(command, timeout_seconds=30)
+        if not result.success:
+            raise SandboxError(
+                f"Could not provision dependency seed for {slug!r}: "
+                f"{(result.stderr or result.stdout)[-500:]}"
+            )
+
+
 async def _finish_prepare(
     sandbox: Sandbox,
     *,
@@ -420,6 +541,7 @@ async def _finish_prepare(
     """Bootstrap assigned repos, then mark the sandbox busy for its caller."""
     from agent_team.features.repos.bootstrap import run_repo_bootstraps
 
+    await _provision_dependency_seeds(sandbox, profile)
     await run_repo_bootstraps(
         sandbox,
         task_id=task_id,
@@ -449,6 +571,9 @@ async def prepare_task_sandbox(
     ``profile.workspace_mount_path`` so host-side git diff / file browser see
     changes immediately. Sync mode is a planned follow-up.
     """
+    if profile.is_sandboxed and profile.workspace_mode == "mount":
+        _prepare_host_workspace_permissions(host_workspace_path)
+
     manager = get_manager(profile)
     # Idempotent: starts the idle-GC backstop on first prepare (needs a running
     # loop, which we have here). A paused sandbox left untouched past idle_ttl is
@@ -781,12 +906,12 @@ async def pause_task_sandbox(
 
 
 async def fix_workspace_ownership(task_id: str, workspace_mount_path: str = "/workspace") -> None:
-    """``chown -R`` the ``.agent-team/`` tree inside the sandbox to the host uid/gid.
+    """Make sandbox-created files writable to later host and sandbox turns.
 
-    Sandbox containers typically run as root, so files they create on bind-mounted
-    volumes are owned by root.  The host process (which runs as a normal user) then
-    cannot modify them.  Running ``chown`` *inside* the sandbox (as root) transfers
-    ownership to the host uid, resolving the mismatch.
+    Strict OpenSandbox drops ``CAP_CHOWN`` / ``CAP_DAC_OVERRIDE``, so uid 0 cannot
+    chown host-owned paths.  It can still chmod files it created itself.  A
+    recursive best-effort chmod therefore hands new artifacts back to the host
+    and keeps them writable when a later sandbox uses a different uid.
 
     Best-effort: silently ignored when no sandbox is open for the task.
     """
@@ -796,12 +921,10 @@ async def fix_workspace_ownership(task_id: str, workspace_mount_path: str = "/wo
     if sb is None or getattr(sb, "state", None) != "open":
         return
 
-    host_uid = os.getuid()
-    host_gid = os.getgid()
-    target = shlex.quote(f"{workspace_mount_path.rstrip('/')}/.agent-team")
+    target = shlex.quote(workspace_mount_path.rstrip("/"))
     try:
         await sb.exec_shell(
-            f"chown -R {host_uid}:{host_gid} {target} 2>/dev/null || true",
+            f"chmod -R a+rwX {target} 2>/dev/null || true",
             timeout_seconds=15,
         )
     except Exception:  # noqa: BLE001

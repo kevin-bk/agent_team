@@ -29,6 +29,7 @@ from agent_team.features.board.runtime.sandbox import cli_exec
 from agent_team.features.board.runtime.sandbox.base import SandboxError
 from agent_team.features.board.runtime.sandbox.config import RuntimeProfile
 from agent_team.features.board.runtime.sandbox.service import (
+    kill_task_sandbox,
     pause_task_sandbox,
     prepare_task_sandbox,
     resolve_profile,
@@ -68,9 +69,15 @@ class SandboxedCliWorker:
             # No print-mode wiring for this engine yet — fail loud, never host-run.
             return await self._fail(ctx, emit, "EngineUnsupported", str(exc))
 
+        # A per-run workspace override must never reuse the task sandbox: its
+        # mounts were fixed at creation on the durable task workspace (see
+        # SidecarAcpWorker.run_turn for the full rationale).
+        task_key = (
+            ctx.run_id if ctx.ephemeral_workspace else (ctx.task_id or ctx.run_id)
+        )
         try:
             sandbox = await prepare_task_sandbox(
-                task_id=ctx.task_id or ctx.run_id,
+                task_id=task_key,
                 host_workspace_path=ctx.workspace_path,
                 profile=profile,
                 board_id=ctx.board_id,
@@ -139,11 +146,15 @@ class SandboxedCliWorker:
                 )
                 await emit(*ev.error(error_class="CliError", message=str(message)))
 
-        # Pause the sandbox so an idle task frees its resources (best-effort).
-        await pause_task_sandbox(
-            ctx.task_id or ctx.run_id,
-            workspace_mount_path=profile.workspace_mount_path,
-        )
+        # Pause the sandbox so an idle task frees its resources (best-effort);
+        # a disposable per-run sandbox is torn down instead of paused.
+        if ctx.ephemeral_workspace:
+            await kill_task_sandbox(task_key)
+        else:
+            await pause_task_sandbox(
+                task_key,
+                workspace_mount_path=profile.workspace_mount_path,
+            )
 
         return TurnResult(
             final_text=parsed.final_text,
