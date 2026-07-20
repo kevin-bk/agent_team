@@ -142,13 +142,15 @@ stay in lockstep.
 Findings from `review.md` addressed here:
 
 - **[P0] Command allowlist shell-injection bypass** — `command_policy` now
-  rejects shell metacharacters on the resolved command (`_SHELL_META`), so the
-  validation model matches the shell execution model. `settings;id`-style
-  payloads no longer pass the allowlist.
+  rejects ALL shell-control characters on the resolved command
+  (`_SHELL_META_RESOLVED`: `; & | < > ( ) $ \` newline/CR`), so the validation
+  model matches shell execution. `settings;id`, `settings&id`, `settings\nid`,
+  `$(id)` and backtick payloads no longer pass the allowlist.
 - **[P1] Path/risk gate was defined but never called** — the strict evaluator's
-  PASS path now runs `_strict_policy_issues` (`path_violations` +
-  `risk_lane_issues` over the candidate's changed paths) and downgrades a PASS
-  on any protected/out-of-scope/un-accepted-risk-lane change.
+  PASS path now runs `_strict_policy_issues`, which diffs the candidate against
+  the approved baseline (`turn_recovery.compare_snapshots`, catching committed
+  AND dirty changes), maps to the policy repo, and downgrades a PASS on any
+  protected/out-of-scope/append-only/un-accepted-risk-lane change.
 - **[P1] `planning_max_total_attempts` was snapshot but not enforced** —
   `run_autonomous_loop` now reads the approved `graph_limits` and passes
   `max_total_attempts` into `run_task_graph`.

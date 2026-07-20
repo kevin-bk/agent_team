@@ -27,7 +27,17 @@ from agent_team.features.board.models import (
 
 POLICY_FILES = ("project.yaml", "evidence.yaml", "paths.yaml")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+#: Template (argv-item) check — tolerates ``${VAR}`` placeholders authored in
+#: the policy, but rejects obvious shell operators inside a single arg.
 _SHELL_META = re.compile(r"\|\||&&|[;|<>`]|\$\(")
+#: Resolved-runtime-command check. The runner joins the command into one string
+#: and executes it through a shell, so ANY shell-control character is unsafe:
+#: separators (``;`` ``&`` ``|`` and a bare newline/CR), redirects (``<`` ``>``),
+#: subshell (``(`` ``)``), substitution (``$`` `` ` ``). Placeholders are already
+#: resolved to concrete values, so a legitimate verification command never needs
+#: these — reviewer showed ``settings&id`` and ``settings\nid`` slipping past the
+#: old ``&&``/``||``-only pattern.
+_SHELL_META_RESOLVED = re.compile(r"[;&|<>()$`\n\r]")
 
 
 class PolicyError(ValueError):
@@ -332,7 +342,7 @@ def command_policy(
     # command. Reject shell metacharacters on the resolved command so the
     # validation model matches the execution model (the allowlist is a security
     # boundary, not a hint).
-    if _SHELL_META.search(command):
+    if _SHELL_META_RESOLVED.search(command):
         raise PolicyError(
             f"verification command contains shell metacharacters: {command!r}"
         )

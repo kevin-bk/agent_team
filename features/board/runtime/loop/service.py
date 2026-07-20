@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import subprocess
 import uuid
 from dataclasses import dataclass
 from typing import NamedTuple
@@ -580,19 +581,24 @@ class WorkerEvaluator:
                     trusted_receipts=trusted_receipts,
                     current_source_sha256=current_source_sha256,
                 )
+                # Path/risk gate: a passing candidate must not touch protected,
+                # out-of-scope or (un-accepted) risk-lane paths. Compared against
+                # the approved baseline so committed changes are caught too.
+                source_for_policy, _ = await asyncio.to_thread(
+                    verification_runner.capture_source_state, workspace_path
+                )
+                try:
+                    issues.extend(
+                        await asyncio.to_thread(
+                            _strict_policy_issues,
+                            self._task_id,
+                            source_for_policy,
+                        )
+                    )
+                except Exception as exc:  # fail closed when enforcement is broken
+                    issues.append(f"policy gate unavailable: {exc}")
                 if issues:
                     return _downgrade_unverified_pass(verdict, issues)
-                # Path/risk gate: a passing candidate must not touch protected,
-                # out-of-scope or (un-accepted) risk-lane paths. Without this the
-                # policy's path rules never actually block a PASS.
-                try:
-                    policy_issues = await asyncio.to_thread(
-                        _strict_policy_issues, self._task_id, workspace_path
-                    )
-                except Exception as exc:  # noqa: BLE001 — fail closed if the gate breaks
-                    policy_issues = [f"policy path gate unavailable: {exc}"]
-                if policy_issues:
-                    return _downgrade_unverified_pass(verdict, policy_issues)
             elif not has_verification_evidence(verdict):
                 return _downgrade_unverified_pass(verdict)
         return verdict
@@ -621,13 +627,13 @@ def _approved_graph_limits(task_id: str) -> dict:
         return value if isinstance(value, dict) else {}
 
 
-def _strict_policy_issues(task_id: str, workspace_path: str) -> list[str]:
-    """Backend path/risk gate for the current candidate (fail-closed).
+def _strict_policy_issues(task_id: str, source: dict) -> list[str]:
+    """Return backend path-gate findings for the current candidate.
 
-    Compares the candidate's changed paths against the bound policy's
-    protected/allowed/append-only rules and the risk lane. Returns a list of
-    human-readable violations (empty when the candidate is within policy or the
-    board has no bound bundle).
+    Compares the candidate ``source`` snapshot against the approved baseline
+    (``approved_source``) so it catches BOTH committed and dirty changes, maps
+    them to the policy's target repo, and classifies added vs modified (needed
+    for append-only). Fail-closed: a missing baseline is itself an issue.
     """
     from agent_team.features.board.runtime import project_policy
 
@@ -636,15 +642,73 @@ def _strict_policy_issues(task_id: str, workspace_path: str) -> list[str]:
         if context is None:
             return []
         task, bundle = context
-        source, _ = verification_runner.capture_source_state(workspace_path)
-        candidates = project_policy.changed_paths_from_source(source)
+        approved_source = task.planning_meta().get("approved_source")
+        if not isinstance(approved_source, dict):
+            return ["policy path gate has no approved source snapshot"]
+        from agent_team.features.board.runtime import turn_recovery
+
+        delta = turn_recovery.compare_snapshots(
+            task.workspace_path, approved_source, source
+        )
+        changed = delta.get("changed_files") or []
+        repo_paths = [
+            str(repo.get("path") or ".")
+            for repo in source.get("repos") or []
+            if isinstance(repo, dict)
+        ]
+        approved_heads = {
+            str(repo.get("path") or "."): str(repo.get("head") or "")
+            for repo in approved_source.get("repos") or []
+            if isinstance(repo, dict)
+        }
+        policy_repo = str(
+            bundle.documents()["project.yaml"]["source"]["repo_logical_id"]
+        )
+        target_repo = policy_repo if policy_repo in repo_paths else (
+            "." if "." in repo_paths else ""
+        )
+        if not target_repo:
+            return [f"policy target repo {policy_repo!r} is not present in source snapshot"]
+        target_prefix = "" if target_repo == "." else f"{target_repo}/"
+        candidates = []
+        for row in changed:
+            full_path = str(row.get("path") or "")
+            if target_prefix and not full_path.startswith(target_prefix):
+                continue
+            path = full_path[len(target_prefix) :] if target_prefix else full_path
+            repo_rel = target_repo
+            added = row.get("change") == "added"
+            old_head = approved_heads.get(repo_rel, "")
+            if not added and old_head:
+                repo_root = (
+                    task.workspace_path
+                    if repo_rel == "."
+                    else os.path.join(task.workspace_path, repo_rel)
+                )
+                existed = subprocess.run(
+                    ["git", "cat-file", "-e", f"{old_head}:{path}"],
+                    cwd=repo_root,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                ).returncode == 0
+                added = not existed and os.path.exists(os.path.join(repo_root, path))
+            candidates.append(
+                {
+                    "path": path,
+                    "git_state": "untracked" if added else "modified",
+                }
+            )
+        violations = project_policy.path_violations(bundle, candidates)
         issues = [
             f"policy path violation: {row['path']} ({row['reason']})"
-            for row in project_policy.path_violations(bundle, candidates)
+            for row in violations
         ]
         issues.extend(
             project_policy.risk_lane_issues(bundle, task.planning_meta(), candidates)
         )
+        if delta.get("snapshot_truncated"):
+            issues.append("policy path comparison was truncated")
         return issues
 
 
