@@ -321,3 +321,122 @@
   content: attr(data-placeholder);
   @apply pointer-events-none float-left h-0 text-muted-foreground/50;
 }
+
+/* User guide reading surface. The guide stays in the product's UI typeface so
+   non-technical readers can move easily between instructions and controls. */
+.guide-prose {
+  @apply max-w-[820px] font-sans text-[15.5px] text-foreground-strong;
+  line-height: 1.78;
+}
+.guide-prose > :first-child {
+  margin-top: 0;
+}
+.guide-prose p {
+  @apply my-4;
+}
+.guide-prose ul {
+  @apply my-4 list-disc space-y-1.5 pl-6;
+}
+.guide-prose ol {
+  @apply my-4 list-decimal space-y-1.5 pl-6;
+}
+.guide-prose li::marker {
+  color: hsl(var(--muted-foreground));
+}
+.guide-heading-2,
+.guide-heading-3 {
+  @apply relative scroll-mt-6 font-sans font-semibold tracking-[-0.015em] text-foreground-strong;
+}
+.guide-heading-2 {
+  @apply mb-3 mt-11 border-t border-border pt-8 text-[24px] leading-8;
+}
+.guide-heading-3 {
+  @apply mb-2 mt-7 text-[18px] leading-7;
+}
+.guide-heading-anchor {
+  @apply ml-2 text-primary opacity-0 no-underline transition-opacity;
+}
+.guide-heading-2:hover .guide-heading-anchor,
+.guide-heading-3:hover .guide-heading-anchor,
+.guide-heading-anchor:focus {
+  @apply opacity-60;
+}
+.guide-prose a {
+  @apply font-medium text-primary underline decoration-primary/35 underline-offset-[3px] transition hover:decoration-primary;
+}
+.guide-prose strong {
+  @apply font-semibold text-foreground-strong;
+}
+.guide-prose code {
+  @apply rounded bg-surface-3 px-1.5 py-0.5 font-mono text-[0.84em] text-foreground-strong;
+}
+.guide-prose pre {
+  @apply my-5 overflow-x-auto rounded-lg border border-slate-800 px-4 py-4 text-[13px] leading-6 shadow-sm;
+  background: hsl(var(--code-bg));
+}
+.guide-prose pre code {
+  @apply bg-transparent p-0 text-slate-100;
+}
+.guide-prose blockquote {
+  @apply my-6 rounded-r-md border-l-[3px] border-primary bg-primary/5 px-5 py-1 text-foreground;
+}
+.guide-prose blockquote p {
+  @apply my-3;
+}
+.guide-prose hr {
+  @apply my-10 border-border;
+}
+.guide-prose table {
+  @apply my-6 w-full border-separate border-spacing-0 overflow-hidden rounded border border-border text-[13.5px] leading-5;
+}
+.guide-prose thead {
+  @apply bg-surface-1;
+}
+.guide-prose th {
+  @apply border-b border-border px-3 py-2.5 text-left font-semibold text-foreground-strong;
+}
+.guide-prose td {
+  @apply border-b border-border px-3 py-2.5 align-top;
+}
+.guide-prose tr:last-child td {
+  @apply border-b-0;
+}
+.guide-prose th + th,
+.guide-prose td + td {
+  @apply border-l border-border;
+}
+.guide-prose img {
+  @apply my-7 h-auto max-w-full rounded-lg border border-border bg-surface-1 shadow-raised;
+}
+.guide-diagram {
+  @apply my-7 overflow-x-auto rounded-lg border border-border bg-surface-1 p-4 text-center;
+}
+.guide-diagram svg {
+  @apply mx-auto h-auto max-w-full;
+}
+.guide-diagram-loading {
+  @apply my-7 flex min-h-32 items-center justify-center gap-2 rounded-lg border border-border bg-surface-1 text-sm text-muted-foreground;
+}
+.guide-diagram-loading span {
+  @apply h-4 w-4 animate-spin rounded-full border-2 border-border-strong border-t-primary;
+}
+.guide-diagram-error {
+  @apply my-7 rounded-lg border border-rose-300 bg-rose-50 p-4 text-sm text-rose-800 dark:border-rose-800 dark:bg-rose-900/20 dark:text-rose-200;
+}
+.guide-diagram-error pre {
+  @apply mb-0 mt-3;
+}
+
+@media (max-width: 640px) {
+  .guide-prose {
+    @apply text-[15px];
+    line-height: 1.72;
+  }
+  .guide-heading-2 {
+    @apply mt-9 pt-6 text-[22px];
+  }
+  .guide-prose table {
+    display: block;
+    overflow-x: auto;
+  }
+}

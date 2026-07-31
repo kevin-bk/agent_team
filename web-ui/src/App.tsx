@@ -21,6 +21,7 @@ import { ChatView } from "@/features/chat/ChatView";
 import { ReposPage } from "@/features/repos/ReposPage";
 import { ChannelsPage } from "@/features/comm/ChannelsPage";
 import { SandboxesPage } from "@/features/sandboxes/SandboxesPage";
+import { GuidePage } from "@/features/guide/GuidePage";
 
 const LS_PROFILE = "da.profile";
 
@@ -29,6 +30,7 @@ function viewFromPath(pathname: string): View {
   if (pathname.startsWith("/repositories")) return "repos";
   if (pathname.startsWith("/channels")) return "channels";
   if (pathname.startsWith("/sandboxes")) return "sandboxes";
+  if (pathname.startsWith("/guide")) return "guide";
   return "board";
 }
 
@@ -65,6 +67,7 @@ function Shell() {
     else if (v === "repos") navigate("/repositories");
     else if (v === "channels") navigate("/channels");
     else if (v === "sandboxes") navigate("/sandboxes");
+    else if (v === "guide") navigate("/guide/start");
     else navigate(`/${v}`);
   };
 
@@ -146,6 +149,8 @@ export function App() {
           <Route path="repositories" element={<ReposPage />} />
           <Route path="channels" element={<ChannelsPage />} />
           <Route path="sandboxes" element={<SandboxesPage />} />
+          <Route path="guide" element={<Navigate to="/guide/start" replace />} />
+          <Route path="guide/:slug" element={<GuidePage />} />
           <Route path="*" element={<Navigate to="/boards" replace />} />
         </Route>
       </Routes>

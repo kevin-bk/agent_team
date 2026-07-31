@@ -1,5 +1,6 @@
 import {
   Cpu,
+  FileText,
   FolderGit2,
   LayoutGrid,
   MessagesSquare,
@@ -21,6 +22,7 @@ interface NavItem {
 const ITEMS: NavItem[] = [
   { id: "board", label: "Boards", icon: LayoutGrid },
   { id: "chat", label: "Chats", icon: MessagesSquare },
+  { id: "guide", label: "Guide", icon: FileText },
 ];
 
 const ADMIN_ITEMS: NavItem[] = [
@@ -61,7 +63,7 @@ export function NavRail({
         />
       </a>
 
-      <nav className="flex items-center gap-0.5">
+      <nav className="flex min-w-0 items-center gap-0.5">
         {items.map(({ id, label, icon: Icon }) => {
           const active = view === id;
           return (
@@ -70,15 +72,17 @@ export function NavRail({
               type="button"
               onClick={() => onViewChange(id)}
               aria-current={active ? "page" : undefined}
+              aria-label={label}
+              title={label}
               className={cn(
-                "flex h-9 cursor-pointer items-center gap-2 rounded-md px-3 text-[13.5px] font-medium transition-colors duration-150",
+                "flex h-9 w-9 cursor-pointer items-center justify-center gap-2 rounded-md text-[13.5px] font-medium transition-colors duration-150 xl:w-auto xl:justify-start xl:px-3",
                 active
                   ? "bg-white/20 text-white"
                   : "text-nav-foreground/80 hover:bg-nav-hover hover:text-white",
               )}
             >
               <Icon className="h-[18px] w-[18px] shrink-0" />
-              <span>{label}</span>
+              <span className="hidden xl:inline">{label}</span>
             </button>
           );
         })}

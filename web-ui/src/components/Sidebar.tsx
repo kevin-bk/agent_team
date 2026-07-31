@@ -6,7 +6,7 @@ import { SessionList } from "@/features/sessions/SessionList";
 import { cn } from "@/lib/utils";
 import { ProfilePicker } from "./ProfilePicker";
 
-export type View = "board" | "chat" | "repos" | "channels" | "sandboxes";
+export type View = "board" | "chat" | "repos" | "channels" | "sandboxes" | "guide";
 
 /**
  * The contextual project sidebar that sits between the deep-blue {@link NavRail}
@@ -36,6 +36,7 @@ export function Sidebar({
     view === "repos" ||
     view === "channels" ||
     view === "sandboxes" ||
+    view === "guide" ||
     view === "board"
   )
     return null;

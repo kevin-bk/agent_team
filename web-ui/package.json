@@ -47,6 +47,7 @@
     "diff": "^7.0.0",
     "highlight.js": "^11.11.0",
     "lucide-react": "^1.22.0",
+    "mermaid": "^11.16.0",
     "monaco-editor": "^0.52.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

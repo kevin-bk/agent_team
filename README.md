@@ -11,6 +11,10 @@ strict planning, autonomous generator/evaluator loops, verification evidence,
 optional OpenSandbox isolation, a task journal, Jira sync, and Mattermost/Slack
 human communication.
 
+New to Agent Team? Start with the
+[Vietnamese user guide](user-guide/README.md), including the required Claude/Codex and
+Skill Packs setup before running the first task.
+
 > Agent Team is an
 > [agent-manager](https://github.com/BSSCommerce/agent-manager) **community
 > plugin**. When enabled it adds a single-page board UI, REST APIs, database
