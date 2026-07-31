@@ -9,7 +9,7 @@
 > [`pages/board-wiki.md`](pages/board-wiki.md)). Knowledge is **compiled once and
 > kept current** instead of disappearing into chat threads and PR descriptions.
 
-Last updated: 2026-07-02 · Owner: `agent_team` plugin
+Last updated: 2026-07-31 · Owner: `agent_team` plugin
 
 ---
 
@@ -20,9 +20,11 @@ Last updated: 2026-07-02 · Owner: `agent_team` plugin
 2. **Why → how.** Every page leads with *why the thing exists* (the problem and
    the decision), then *how it is implemented* (modules, data, flow), then
    *gotchas*.
-3. **Two layers of docs.** This `wiki/` is the **curated** layer. The deep,
-   long-form design briefs live in [`../plans/`](../plans/) and are the **raw
-   source**. Wiki pages summarise and link to them rather than duplicating them.
+3. **Three layers of docs.** This `wiki/` is the **curated technical** layer.
+   Deep, long-form design briefs live in [`../plans/`](../plans/); the
+   Vietnamese [`../../user-guide/`](../../user-guide/) teaches product concepts
+   and workflows to end users. See
+   [`pages/user-guide.md`](pages/user-guide.md) for the boundaries.
 4. **Cite code, don't paraphrase it blindly.** Paths are relative to the plugin
    root (`community_plugins/agent_team/`). When a wiki claim and the code
    disagree, the code wins — fix the wiki.
@@ -76,6 +78,7 @@ Last updated: 2026-07-02 · Owner: `agent_team` plugin
 |---|---|
 | [`guides/maintaining-the-wiki.md`](guides/maintaining-the-wiki.md) | **How to update this wiki**: which code to read to verify a claim, where to edit, and the done-checklist. Read before editing any page. |
 | [`guides/development.md`](guides/development.md) | Build/test/lint, and the recipe for adding a feature end-to-end (model → migration → repo → router → web-ui). |
+| [`pages/user-guide.md`](pages/user-guide.md) | The Vietnamese user guide, its in-app Markdown reader, build pipeline, content contract, and maintenance checklist. |
 | [`decisions.md`](decisions.md) | The key architectural decisions and *why* (ADR-style). |
 | [`roadmap.md`](roadmap.md) | What's shipped, what's next, and the phasing for each subsystem. |
 

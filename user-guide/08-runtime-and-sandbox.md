@@ -17,6 +17,43 @@ ACP, MCP, lý do chọn protocol và vai trò của OpenSandbox, hãy đọc
 Chỉ agent CLI trực tiếp (`cli:claude`, `cli:codex`, `cli:cursor`) đi qua worker
 cách ly. Agent LLM graph thông thường chạy trong tiến trình Agent Manager.
 
+## Cách nhanh nhất: dùng image đã chuẩn bị sẵn
+
+Trên Docker host chạy OpenSandbox, có thể pull trước image sau (OpenSandbox cũng
+có thể tự pull khi tạo sandbox lần đầu):
+
+```bash
+docker pull k3v1nbk/agent-team-sandbox:latest
+```
+
+Image này đã chuẩn bị:
+
+- Node.js và npm/npx;
+- Python và các công cụ package phổ biến;
+- Git cùng các command-line utility cần cho coding task;
+- Claude Code và Codex CLI;
+- ACP sidecar dùng cho strategy `acp_sidecar`;
+- các thành phần hỗ trợ test và browser automation của runtime đầy đủ.
+
+Đây là lựa chọn khuyến nghị để bắt đầu vì không cần tự lắp đặt lại toolchain.
+Image không chứa tài khoản Claude/Codex của bạn: Agent Team vẫn mount thư mục
+đăng nhập subscription được cấu hình trong AI Code Factory.
+
+Nếu công ty cần thêm system package, pin phiên bản CLI hoặc áp dụng hardening
+riêng, có thể build một image mới từ tài liệu tham khảo có sẵn:
+
+```bash
+# Chạy từ root của plugin agent_team
+./scripts/build-runtime-images.sh full
+
+# Build và push lên registry riêng
+REGISTRY=<dockerhub-user> PUSH=1 ./scripts/build-runtime-images.sh full
+```
+
+Script sử dụng `infra/runtime/images/full.Dockerfile`, tạo cả tag versioned và
+`:latest`. Nên giữ `BUILD_PLATFORM=linux/amd64` khi OpenSandbox server chạy trên
+amd64.
+
 ## Bên trong một task sandbox có gì?
 
 ```mermaid
@@ -91,7 +128,7 @@ có thể có bí mật trong header/biến môi trường và quy tắc cho ph�
 ```bash
 AGENT_TEAM_RUNTIME_PROVIDER=opensandbox
 AGENT_TEAM_RUNTIME_STRATEGY=acp_sidecar
-AGENT_TEAM_RUNTIME_IMAGE=<registry>/agent-team-sandbox:v1
+AGENT_TEAM_RUNTIME_IMAGE=k3v1nbk/agent-team-sandbox:latest
 AGENT_TEAM_RUNTIME_IDLE_MINUTES=30
 AGENT_TEAM_RUNTIME_WORKSPACE_MODE=mount
 AGENT_TEAM_RUNTIME_STRICT=1
@@ -99,7 +136,8 @@ OPEN_SANDBOX_DOMAIN=https://<opensandbox-server>
 OPEN_SANDBOX_API_KEY=<key>
 ```
 
-Image và thiết lập dung lượng cụ thể phụ thuộc vào cách triển khai. Hướng dẫn
-build image và thiết lập server nằm trong `infra/runtime/`.
+Image và thiết lập dung lượng cụ thể phụ thuộc vào cách triển khai. Có thể bắt
+đầu bằng image dựng sẵn ở trên; hướng dẫn build image riêng và thiết lập server
+nằm trong `infra/runtime/`.
 
 Tiếp theo: [Ví dụ xuyên suốt của Chizy](09-chizy-end-to-end-example.md).

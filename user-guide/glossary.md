@@ -35,7 +35,10 @@ Bản ghi đáng tin cậy do backend/môi trường thực thi tạo, chứng m
 ## Direct CLI agent
 
 Engine lập trình Claude, Codex hoặc Cursor có bí danh `cli:<engine>`, được điều
-khiển trực tiếp qua ACP mà không cần bộ điều phối LLM riêng.
+khiển trực tiếp qua ACP mà không cần bộ điều phối LLM riêng. User có thể chat
+theo từng lượt với engine này ngay trong task detail; nhãn `no LLM` trên UI chỉ
+có nghĩa là không có LLM orchestrator ở giữa, không có nghĩa coding agent không
+dùng AI. Xem [Chat trực tiếp với Claude hoặc Codex](15-direct-cli-chat.md).
 
 ## Evaluator
 

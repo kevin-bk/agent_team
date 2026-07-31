@@ -1,6 +1,6 @@
 # Overview — what Agent Team is and why
 
-Last updated: 2026-06-29 · [↩ index](index.md)
+Last updated: 2026-07-31 · [↩ index](index.md)
 
 ## Why it exists
 
@@ -44,8 +44,11 @@ collaborators share one directory instead of each agent having a private one.
 
 ## Three layers of behaviour (each additive)
 
-1. **Chat (always on).** `@mention` → one run → one streamed answer. Unchanged by
-   everything below.
+1. **Chat (always on).** In task detail, choose a staffed agent or **Direct CLI**
+   Claude/Codex, send a message, and receive one streamed run. The human drives
+   the next turn; the conversation keeps using the task's shared workspace.
+   This remains unchanged by everything below. The user-facing flow is
+   documented in [`../../user-guide/15-direct-cli-chat.md`](../../user-guide/15-direct-cli-chat.md).
 2. **Autonomous loop (opt-in per task).** A controller drives a *generator* worker
    and an independent *evaluator* until the goal is **verified**, with budgets and
    a human-review gate. See [`pages/autonomous-loop.md`](pages/autonomous-loop.md).
@@ -89,6 +92,7 @@ agent_team/
 ├── web.py / spa.py  # Auth helpers / serves the built SPA
 ├── db_migrations/   # SQL migrations (auto-applied by the core runner)
 ├── docs/            # plans/ (raw design briefs) + wiki/ (this knowledge base)
+├── user-guide/      # Vietnamese product/setup/operation guide + screenshots
 ├── web-ui/          # React + Vite source for the SPA
 ├── static/          # Built SPA bundle (served by the plugin)
 └── features/

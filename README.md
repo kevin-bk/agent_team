@@ -214,7 +214,7 @@ Agent Team to run CLI agents inside OpenSandbox:
 ```bash
 AGENT_TEAM_RUNTIME_PROVIDER=opensandbox
 AGENT_TEAM_RUNTIME_STRATEGY=acp_sidecar   # or oneshot
-AGENT_TEAM_RUNTIME_IMAGE=<registry>/agent-team-sandbox:v1
+AGENT_TEAM_RUNTIME_IMAGE=k3v1nbk/agent-team-sandbox:latest
 AGENT_TEAM_RUNTIME_IDLE_MINUTES=30
 AGENT_TEAM_RUNTIME_WORKSPACE_MODE=mount
 AGENT_TEAM_RUNTIME_STRICT=1
@@ -227,7 +227,10 @@ for the next one, and are garbage-collected when idle. The `acp_sidecar` strateg
 runs an in-sandbox ACP bridge so live plan cards, tool frames, MCP traffic, and
 thinking frames can stream back to the same cockpit UI.
 
-For image build and server setup, see [infra/runtime](infra/runtime/README.md).
+The ready-to-use image includes Node.js, Python, Claude Code, Codex, the ACP
+sidecar, and the runtime testing toolchain. Credentials still come from the
+Claude/Codex subscription environments in AI Code Factory. For a custom image
+or server setup, see [infra/runtime](infra/runtime/README.md).
 
 ---
 

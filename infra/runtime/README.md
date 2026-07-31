@@ -28,6 +28,31 @@ supports both execution strategies
 runtime subtree (ACP stack + protocol) baked into the image — no `src/`, no
 `core`/`plugins`.
 
+## Recommended ready-to-use image
+
+For the fastest setup, use the maintained public image:
+
+```bash
+docker pull k3v1nbk/agent-team-sandbox:latest
+```
+
+It already contains Node.js, Python, Git and common CLI utilities, Claude Code,
+Codex, the ACP sidecar, and the full runtime testing/browser toolchain described
+below. Configure it explicitly in the app environment:
+
+```bash
+AGENT_TEAM_RUNTIME_IMAGE=k3v1nbk/agent-team-sandbox:latest
+```
+
+The image contains tools, **not account credentials**. Prefer Claude/Codex
+subscription accounts in AI Code Factory and mount their
+`CLAUDE_CONFIG_DIR`/`CODEX_HOME` into the sandbox. This is usually substantially
+more cost-efficient for continuous coding-agent workloads than metered API
+usage, subject to the subscription plan's terms and limits.
+
+Use the build script in this repository when you need custom packages, pinned
+CLI versions, a private registry, or organization-specific hardening.
+
 ## Run an OpenSandbox server
 
 On the host that should run the task sandboxes (can be the same box as the app):
@@ -143,7 +168,7 @@ Point the process env at the provider + image (see
 
 ```bash
 AGENT_TEAM_RUNTIME_PROVIDER=opensandbox
-AGENT_TEAM_RUNTIME_IMAGE=myuser/agent-team-sandbox:v1  # default: agent-team/agent-team-sandbox:latest
+AGENT_TEAM_RUNTIME_IMAGE=k3v1nbk/agent-team-sandbox:latest
 OPEN_SANDBOX_DOMAIN=https://<your-opensandbox-server>
 OPEN_SANDBOX_API_KEY=<key>
 
@@ -177,7 +202,7 @@ Enable the sidecar strategy:
 ```bash
 AGENT_TEAM_RUNTIME_PROVIDER=opensandbox
 AGENT_TEAM_RUNTIME_STRATEGY=acp_sidecar
-AGENT_TEAM_RUNTIME_IMAGE=myuser/agent-team-sandbox:v1
+AGENT_TEAM_RUNTIME_IMAGE=k3v1nbk/agent-team-sandbox:latest
 AGENT_TEAM_RUNTIME_SIDECAR_PORT=8871      # in-sandbox server port (proxied to host)
 ```
 

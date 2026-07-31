@@ -8,6 +8,7 @@ import {
   Search,
 } from "@/components/icons";
 import { cn } from "@/lib/utils";
+import { GitHubIcon } from "@/features/repos/gitPlatform";
 import { GuideMarkdown } from "./GuideMarkdown";
 import {
   getGuideDocument,
@@ -47,15 +48,33 @@ export function GuidePage() {
     <div className="flex h-full min-h-0 bg-background">
       <aside className="hidden w-[278px] shrink-0 flex-col border-r border-border bg-surface-1 lg:flex">
         <div className="border-b border-border px-4 py-4">
-          <Link
-            to="/guide/start"
-            className="flex items-center gap-2 text-[15px] font-semibold text-foreground"
-          >
-            <span className="flex h-8 w-8 items-center justify-center rounded bg-primary text-primary-foreground">
+          <div className="flex items-start gap-2 text-foreground">
+            <Link
+              to="/guide/start"
+              aria-label="Agent Team Guide"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-primary text-primary-foreground transition hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
               <FileText className="h-[18px] w-[18px]" />
+            </Link>
+            <span className="min-w-0 pt-px">
+              <Link
+                to="/guide/start"
+                className="block text-[15px] font-semibold leading-4 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                Agent Team Guide
+              </Link>
+              <a
+                href="https://github.com/kevin-bk"
+                target="_blank"
+                rel="noopener noreferrer"
+                title="Kevin trên GitHub"
+                className="mt-1 inline-flex w-fit items-center gap-1 text-[11px] font-normal leading-4 text-muted-foreground transition hover:text-sky-600 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:hover:text-sky-300"
+              >
+                From Kevin with love <span aria-hidden="true">💙</span>
+                <GitHubIcon className="h-3 w-3" />
+              </a>
             </span>
-            Agent Team Guide
-          </Link>
+          </div>
           <label className="relative mt-3 block">
             <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
             <span className="sr-only">Tìm trong hướng dẫn</span>
@@ -232,9 +251,9 @@ function GuideLanding() {
       to: "/guide/before-first-task",
     },
     {
-      label: "Tôi muốn chạy task",
-      detail: "Tạo board, duyệt plan, test và đọc evidence.",
-      to: "/guide/create-first-board",
+      label: "Tôi muốn chat với agent",
+      detail: "Mở task, chọn Claude/Codex và làm việc theo từng lượt.",
+      to: "/guide/direct-cli-chat",
     },
   ], []);
 
@@ -245,9 +264,16 @@ function GuideLanding() {
           <span className="rounded bg-primary/10 px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.1em] text-primary">
             Agent Team Handbook
           </span>
-          <span className="rounded-full border border-sky-200 bg-sky-50 px-3 py-1.5 text-xs font-medium text-sky-800 shadow-sm dark:border-sky-700 dark:bg-sky-900/40 dark:text-sky-200">
-            From Kevin with Love <span className="font-mono font-bold text-sky-500">&lt;3</span>
-          </span>
+          <a
+            href="https://github.com/kevin-bk"
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Kevin trên GitHub"
+            className="inline-flex items-center gap-1.5 rounded-full border border-sky-200 bg-sky-50 px-3 py-1.5 text-xs font-medium text-sky-800 shadow-sm transition hover:border-sky-300 hover:bg-sky-100 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 dark:border-sky-700 dark:bg-sky-900/40 dark:text-sky-200 dark:hover:border-sky-600 dark:hover:bg-sky-900/60"
+          >
+            From Kevin with love <span aria-hidden="true">💙</span>
+            <GitHubIcon className="h-3.5 w-3.5" />
+          </a>
         </div>
         <h1 className="mt-6 max-w-3xl text-3xl font-semibold tracking-[-0.03em] text-foreground-strong sm:text-[42px] sm:leading-[1.12]">
           Hiểu Agent Team từ task đầu tiên đến engineering loop có bằng chứng.

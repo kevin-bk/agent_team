@@ -121,6 +121,13 @@ thể tạo sandbox trên Docker hoặc Kubernetes và cung cấp API để:
 Trong Agent Team, mục tiêu chính là **một sandbox cho mỗi task**. Hai task không
 chia sẻ workspace.
 
+Khi setup thực tế, có thể bắt đầu với
+`k3v1nbk/agent-team-sandbox:latest`. Image đã có Node.js, Python, Claude Code,
+Codex và ACP sidecar; người vận hành chỉ cần cấu hình OpenSandbox server,
+runtime profile và mount thư mục đăng nhập subscription. Nếu cần tùy biến,
+`scripts/build-runtime-images.sh` và
+`infra/runtime/images/full.Dockerfile` là mẫu build chính thức trong repository.
+
 ```mermaid
 flowchart TB
     HOST["Máy chủ Agent Manager"]

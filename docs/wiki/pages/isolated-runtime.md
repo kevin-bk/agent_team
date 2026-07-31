@@ -1,6 +1,6 @@
 # Isolated runtime (OpenSandbox)
 
-Last updated: 2026-07-04 · [↩ index](../index.md) · Source:
+Last updated: 2026-07-31 · [↩ index](../index.md) · Source:
 [`../../plans/opensandbox-runtime-implementation-plan.md`](../../plans/opensandbox-runtime-implementation-plan.md),
 [`../../plans/opensandbox-phase2-acp-sidecar.md`](../../plans/opensandbox-phase2-acp-sidecar.md),
 `features/board/runtime/sandbox/`
@@ -188,7 +188,7 @@ environment (e.g. verifying an MCP binary exists in the image).
 ```bash
 AGENT_TEAM_RUNTIME_PROVIDER=opensandbox        # default: local (host)
 AGENT_TEAM_RUNTIME_STRATEGY=oneshot            # oneshot | acp_sidecar
-AGENT_TEAM_RUNTIME_IMAGE=<reg>/agent-team-sandbox:v1 # one image for both strategies
+AGENT_TEAM_RUNTIME_IMAGE=k3v1nbk/agent-team-sandbox:latest
 AGENT_TEAM_RUNTIME_IDLE_MINUTES=30             # pause→reap idle sandboxes
 AGENT_TEAM_RUNTIME_WORKSPACE_MODE=mount        # mount | sync
 AGENT_TEAM_RUNTIME_STRICT=1                    # no host fallback
@@ -231,6 +231,10 @@ staffed agents**. See
 
 ## Image (`infra/runtime/`)
 
+- **Recommended ready-to-use image:** `k3v1nbk/agent-team-sandbox:latest`.
+  Operators can set this explicitly to avoid rebuilding the standard toolchain.
+  It contains no account credentials; Claude/Codex subscription login folders
+  still come from the AI Code Factory environment pool.
 - `agent-team-sandbox` (built from `full.Dockerfile`) — **one** image for both
   strategies: claude + codex CLIs +
   `agent-team-runtime-server` + the `agent_team` runtime subtree (ACP stack +
@@ -290,7 +294,7 @@ staffed agents**. See
 
 Built by `scripts/build-runtime-images.sh` (operator runs on their server; the
 app never builds images at runtime). Build context = the plugin root. See
-[`../../infra/runtime/README.md`](../../infra/runtime/README.md).
+[`../../../infra/runtime/README.md`](../../../infra/runtime/README.md).
 
 ## Gotchas
 

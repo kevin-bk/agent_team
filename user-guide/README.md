@@ -99,16 +99,18 @@ flowchart TB
 ### Tôi cần tạo board và chạy task
 
 1. [Tạo board đầu tiên](04-create-your-first-board.md)
-2. [Chạy task đầu tiên](05-run-your-first-task.md)
-3. [Lập kế hoạch và phê duyệt](06-planning-and-approval.md)
-4. [Kiểm thử và xác minh](07-testing-and-verification.md)
+2. [Chat trực tiếp với Claude hoặc Codex](15-direct-cli-chat.md)
+3. [Chạy task qua engineering loop](05-run-your-first-task.md)
+4. [Lập kế hoạch và phê duyệt](06-planning-and-approval.md)
+5. [Kiểm thử và xác minh](07-testing-and-verification.md)
 
 ### Tôi là BA hoặc Product Owner
 
 1. [Tổng quan dễ hiểu](02-agent-team-in-plain-language.md)
-2. [Engineering loop](13-engineering-loop.md)
-3. [Chạy task đầu tiên](05-run-your-first-task.md)
-4. [Lập kế hoạch và phê duyệt](06-planning-and-approval.md)
+2. [Chat trực tiếp với Claude hoặc Codex](15-direct-cli-chat.md)
+3. [Engineering loop](13-engineering-loop.md)
+4. [Chạy task qua engineering loop](05-run-your-first-task.md)
+5. [Lập kế hoạch và phê duyệt](06-planning-and-approval.md)
 
 ### Tôi là QA hoặc trưởng nhóm
 
@@ -136,7 +138,8 @@ flowchart TB
 ### Phần C — Sử dụng hằng ngày
 
 - [Tạo board đầu tiên](04-create-your-first-board.md)
-- [Chạy task đầu tiên](05-run-your-first-task.md)
+- [Chat trực tiếp với Claude hoặc Codex](15-direct-cli-chat.md)
+- [Chạy task qua engineering loop](05-run-your-first-task.md)
 - [Lập kế hoạch và phê duyệt](06-planning-and-approval.md)
 - [Kiểm thử và xác minh](07-testing-and-verification.md)
 

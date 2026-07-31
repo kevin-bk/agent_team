@@ -1,6 +1,6 @@
 # Development guide
 
-Last updated: 2026-06-29 · [↩ index](../index.md)
+Last updated: 2026-07-31 · [↩ index](../index.md)
 
 How to build, test, lint, and add a feature end-to-end the way this codebase
 expects.
@@ -63,6 +63,27 @@ The codebase has a consistent shape. To add, say, a new entity + endpoint:
    targets are registered.
 9. **Wiki** — update the relevant page in `docs/wiki/` (and this guide / the
    catalog if you added a subsystem).
+10. **User guide** — when behaviour changes what an end user must understand,
+    configure, click, approve, or verify, update the relevant file in
+    `user-guide/`. See
+    [`../pages/user-guide.md`](../pages/user-guide.md) for the reader contract.
+
+## Updating the user guide
+
+The in-app Guide is compiled from `user-guide/*.md`; it is not read dynamically
+by the backend. After editing guide content:
+
+```bash
+cd community_plugins/agent_team/web-ui
+npm run typecheck
+npm run test
+npm run build:agent-team
+```
+
+The last command regenerates `static/`, which must be committed. A new chapter
+also needs a metadata entry in
+`web-ui/src/features/guide/guideContent.ts` and an updated expected document
+count in `guideContent.test.ts`.
 
 ## Gotchas worth knowing
 

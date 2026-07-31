@@ -100,10 +100,17 @@ const definitions: GuideDefinition[] = [
     section: "Sử dụng hằng ngày",
   },
   {
+    filename: "15-direct-cli-chat.md",
+    slug: "direct-cli-chat",
+    title: "Chat trực tiếp với agent",
+    summary: "Làm việc theo từng lượt với Claude hoặc Codex ngay trong task detail.",
+    section: "Sử dụng hằng ngày",
+  },
+  {
     filename: "05-run-your-first-task.md",
     slug: "run-first-task",
-    title: "Chạy task đầu tiên",
-    summary: "Từ yêu cầu ban đầu đến khi agent bắt đầu thực thi.",
+    title: "Chạy task qua engineering loop",
+    summary: "Từ yêu cầu, plan và phê duyệt đến thực thi có xác minh.",
     section: "Sử dụng hằng ngày",
   },
   {

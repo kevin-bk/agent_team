@@ -1,7 +1,11 @@
-# Chạy task đầu tiên
+# Chạy task qua engineering loop
 
 > Dành cho: BA, Product Owner, lập trình viên, QA hoặc trưởng nhóm  
 > Kết quả: tạo task, có kế hoạch được phê duyệt và bắt đầu thực thi có xác minh.
+
+Trang này hướng dẫn chế độ có kiểm soát chặt. Nếu muốn trao đổi trực tiếp với
+Claude/Codex theo từng lượt — workflow phổ biến cho công việc hằng ngày — hãy đọc
+[Chat trực tiếp với Claude hoặc Codex](15-direct-cli-chat.md).
 
 ## 1. Viết task đủ rõ ràng
 

@@ -1,6 +1,6 @@
 # Maintaining this wiki (a guide for future LLMs)
 
-Last updated: 2026-06-29 · [↩ index](../index.md)
+Last updated: 2026-07-31 · [↩ index](../index.md)
 
 > **Read this before you edit any wiki page.** This wiki is read by both humans
 > and AI agents to understand `agent_team`. Stale or wrong docs are worse than
@@ -17,16 +17,23 @@ the claim before you write it.
 
 When code and the wiki disagree, **the code wins** — fix the wiki.
 
-## 1. The two layers (don't confuse them)
+## 1. The three documentation layers (don't confuse them)
 
 | Layer | Path | What it is | Who edits |
 |---|---|---|---|
 | **Raw** | `docs/plans/*.md` | long-form design briefs (often "Proposed"/"Status: …"). Historical intent + deep rationale. | append-only-ish; rarely rewritten |
 | **Curated** | `docs/wiki/` (this) | short, interlinked, *current* truth. One concept per page. | kept in sync with code |
+| **User-facing** | `user-guide/` | Vietnamese onboarding, setup, daily workflows, and plain-language concepts rendered in the in-app Guide. | kept in sync with user-visible behaviour |
 
 A wiki page **links to** its plan brief as the deep source; it does **not**
 duplicate 1,400 lines of it. If you find yourself pasting a whole plan into the
 wiki, stop — summarise and link instead.
+
+The user guide may explain the same feature again for a different audience, but
+it must not become a second technical specification. Keep implementation details
+here; keep user decisions, steps, screenshots, and expected outcomes in
+`user-guide/`. Its reader/build contract is documented in
+[`../pages/user-guide.md`](../pages/user-guide.md).
 
 ## 2. When to update the wiki
 
@@ -42,6 +49,9 @@ shape:
   [`../glossary.md`](../glossary.md).
 - A whole new subsystem → add a `pages/<name>.md` **and** register it in the
   [`../index.md`](../index.md) Map.
+- A change to setup, navigation, approvals, verification, or another
+  user-visible workflow → update the affected file in `user-guide/` and rebuild
+  the SPA.
 
 Pure refactors with **no behaviour change** usually need no wiki edit (but check
 that the page doesn't name a moved/renamed module).
@@ -83,6 +93,7 @@ The map of which files back which page:
 | `jira-integration` | `features/board/jira/*` |
 | `communication-gateway` | `features/comm/*` (`router,service,inbound,models,providers/*`) |
 | `agent-tools-and-autopilot` | `plugin.py`, `runtime/{image_tools,git_tools,status_tools}.py`, `autopilot_scheduler.py` |
+| `user-guide` | `user-guide/*`, `web-ui/src/features/guide/*`, `App.tsx`, `components/NavRail.tsx` |
 
 ### Step 3 — Edit, keeping the house style
 - Lead with **why** (problem + decision), then **how** (modules/data/flow), then
@@ -127,6 +138,7 @@ done < <(find . -name '*.md')
 - [ ] New page registered in `index.md`; new term in `glossary.md`; new decision in
       `decisions.md`; shipped phase moved in `roadmap.md`.
 - [ ] Facts duplicated elsewhere in the wiki were updated consistently.
+- [ ] User-visible changes were reflected in `user-guide/` and the SPA was rebuilt.
 - [ ] Internal links resolve (Step 5 prints "All internal links resolve.").
 - [ ] If I changed a doc that quotes code (e.g. `guides/development.md` commands),
       the command still works.

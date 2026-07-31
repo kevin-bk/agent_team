@@ -48,6 +48,25 @@ triển như sau:
 Agent Team tổ chức những thành phần này thành một quy trình có thể theo dõi và
 kiểm chứng.
 
+## Hai cách làm việc chính
+
+Phần lớn người dùng bắt đầu bằng **Direct CLI chat**: mở task detail, chọn Claude
+hoặc Codex rồi gửi yêu cầu theo từng lượt. Agent làm việc trực tiếp trong
+workspace của task; con người xem kết quả và quyết định bước tiếp theo.
+
+Khi task có nhiều bước, rủi ro cao hoặc cần bằng chứng kiểm thử có thể audit,
+người dùng có thể chạy **engineering loop**. Lúc đó controller điều phối plan,
+generator, command test và evaluator theo quy tắc đã cấu hình.
+
+```text
+Direct CLI chat  = con người ở trong vòng phản hồi
+Engineering loop = hệ thống tự chạy vòng phản hồi có guardrail
+```
+
+Hai chế độ dùng chung board, task, workspace, repository, skill và MCP. Xem
+[Chat trực tiếp với Claude hoặc Codex](15-direct-cli-chat.md) để bắt đầu với
+workflow phổ biến nhất.
+
 ## Sáu thành phần tối thiểu
 
 ```mermaid
@@ -193,11 +212,11 @@ flowchart TD
     DONE --> NOTIFY["Thông báo Mattermost/Slack"]
 ```
 
-## Ba cách sử dụng Agent Team
+## Ba mức kiểm soát khi sử dụng Agent Team
 
 | Cách | Có duyệt kế hoạch? | Có vòng đánh giá? | Dùng khi |
 |---|---:|---:|---|
-| Chat một lượt | Không bắt buộc | Không | Hỏi đáp, nghiên cứu, thao tác nhỏ |
+| Direct CLI chat nhiều lượt | Không bắt buộc | Không | Hỏi đáp, nghiên cứu, pair-work và thay đổi nhỏ/vừa |
 | Lập kế hoạch nghiêm ngặt | Có | Tùy cách chạy | Cần duyệt phạm vi trước khi code |
 | Vòng lặp tự động | Có | Có | Muốn agent tự sửa theo phản hồi đến khi đạt hoặc chạm quy tắc an toàn |
 

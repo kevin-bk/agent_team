@@ -8,7 +8,7 @@ import {
 
 describe("guide content bundle", () => {
   it("bundles every guide chapter with a unique route", () => {
-    expect(guideDocuments).toHaveLength(16);
+    expect(guideDocuments).toHaveLength(17);
     expect(new Set(guideDocuments.map((doc) => doc.slug)).size).toBe(
       guideDocuments.length,
     );

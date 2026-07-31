@@ -1,6 +1,6 @@
 # Architecture
 
-Last updated: 2026-06-29 · [↩ index](index.md)
+Last updated: 2026-07-31 · [↩ index](index.md)
 
 How the plugin is wired into agent-manager, and how a single agent turn flows
 from an HTTP request to live UI updates.
@@ -121,3 +121,10 @@ bundle** from `static/`. The API client/hooks/types live under `web-ui/src/api/`
 (`client.ts`, `hooks.ts`, `types.ts`) and the board cockpit under
 `web-ui/src/features/`. Rebuild with `npm run build:agent-team` (copies
 `dist-agent-team/` → `../static/`). The board and task views update live over SSE.
+
+The top-level **Guide** view is also part of this SPA. Its source content remains
+in `user-guide/*.md`; Vite imports the Markdown and screenshots at build time,
+and the reader serves them at `/agent-team/guide/:slug`. It does not introduce a
+runtime Markdown endpoint. See
+[`pages/user-guide.md`](pages/user-guide.md) for the content contract and build
+pipeline.

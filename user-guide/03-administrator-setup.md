@@ -68,11 +68,18 @@ Cấu hình khuyến nghị cho môi trường production:
 - strategy: `acp_sidecar` để có đầy đủ ACP streaming và MCP passthrough
 - workspace mode: `mount`
 - strict isolation: bật
-- image có Claude/Codex, Node, Git, bộ công cụ kiểm thử và công cụ trình duyệt mà dự án
-  yêu cầu
+- image: `k3v1nbk/agent-team-sandbox:latest` để dùng ngay môi trường đã có
+  Claude, Codex, Node.js, Python, Git, ACP sidecar và các công cụ kiểm thử phổ
+  biến
+
+Image chỉ cung cấp chương trình và toolchain; thông tin đăng nhập Claude/Codex
+vẫn lấy từ môi trường subscription trong AI Code Factory và được mount vào
+sandbox. Không bake credential vào Docker image.
 
 Xem [Môi trường thực thi và sandbox](08-runtime-and-sandbox.md) để hiểu vòng đời
-và các biến môi trường.
+và các biến môi trường. Nếu cần image riêng, repository có sẵn
+`infra/runtime/images/full.Dockerfile` và `scripts/build-runtime-images.sh` làm
+mẫu build/push.
 
 ## Phân biệt skill catalog và skill được chọn cho board
 

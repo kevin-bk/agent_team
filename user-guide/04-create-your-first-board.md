@@ -111,4 +111,6 @@ Board sẵn sàng khi:
 - thành viên biết ai có quyền phê duyệt kế hoạch.
 - notification channel gửi thử thành công, nếu board sử dụng notification.
 
-Tiếp theo: [Chạy task đầu tiên](05-run-your-first-task.md).
+Tiếp theo: [Chat trực tiếp với Claude hoặc Codex](15-direct-cli-chat.md), workflow
+được dùng nhiều nhất cho công việc hằng ngày. Với task cần plan và xác minh chặt
+chẽ, xem [Chạy task qua engineering loop](05-run-your-first-task.md).

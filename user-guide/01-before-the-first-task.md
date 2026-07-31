@@ -53,6 +53,12 @@ Mở **AI Code Factory → Claude Environments**.
 
 ![Thiết lập Claude Environments](assets/screenshots/claude-environments.png)
 
+> **Khuyến nghị về chi phí:** ưu tiên đăng nhập bằng tài khoản Claude
+> subscription thay vì sử dụng API key. Với khối lượng coding agent chạy thường
+> xuyên, subscription thường tối ưu chi phí hơn rất nhiều so với API tính tiền
+> theo token. Hãy sử dụng tài khoản và mức concurrency phù hợp với điều khoản,
+> giới hạn của gói mà công ty đã đăng ký.
+
 Với tài khoản subscription, sử dụng một thư mục riêng cho từng tài khoản:
 
 ```bash
@@ -76,6 +82,11 @@ Không để hai bản ghi môi trường trỏ vào cùng một thư mục đă
 Mở **AI Code Factory → Codex Environments**.
 
 ![Thiết lập Codex Environments](assets/screenshots/codex-environments.png)
+
+Tương tự Claude, nên ưu tiên tài khoản ChatGPT/Codex subscription thay vì OpenAI
+API key cho coding workload thường xuyên. API key phù hợp hơn khi công ty cần
+billing theo mức sử dụng, quota API riêng hoặc một luồng không được subscription
+hỗ trợ.
 
 Codex không tự tạo custom `CODEX_HOME`, vì vậy cần tạo thư mục trước:
 
@@ -103,7 +114,8 @@ Khi Agent Team chạy task:
 
 Cơ chế chuyển tiếp thông tin xác thực vào sandbox hiện dựa trên thư mục đăng
 nhập, không dựa trên trường API key lưu trong môi trường AI Code. Vì vậy, với
-OpenSandbox, nên đăng nhập bằng gói thuê bao với `CLAUDE_CONFIG_DIR` hoặc
+OpenSandbox, khuyến nghị đăng nhập bằng gói subscription với
+`CLAUDE_CONFIG_DIR` hoặc
 `CODEX_HOME` hợp lệ. Môi trường dùng API key vẫn hữu ích cho pool riêng của
 plugin AI Code, nhưng trong luồng OpenSandbox hiện tại không nên coi nó là
 phương án thay thế cho thư mục đăng nhập được mount.
